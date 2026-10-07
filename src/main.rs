@@ -4919,6 +4919,10 @@ impl eframe::App for App {
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--version") {
+        println!("cellworks {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if args.get(1).map(String::as_str) == Some("--claude-smoke") && args.len() > 2 {
         // check: the real CLI in a host, rendered by the terminal parser
         let id = uuid::Uuid::new_v4().to_string();

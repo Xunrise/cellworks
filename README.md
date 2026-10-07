@@ -133,3 +133,12 @@ cargo build --release
 cargo test --release                       # fast tests
 cargo test --release -- --include-ignored  # also the tests that need local checkouts (see CLAUDE.md)
 ```
+
+## Releases
+
+Every push to `main` builds Cellworks for macOS (Apple silicon) and Linux (x86_64) and publishes a GitHub
+release with `cellworks-v<version>-<target>.tar.gz` archives and their SHA-256 sums
+(`.github/workflows/release.yml`). `cellworks --version` prints the version a binary was built as.
+
+The patch number goes up by one with each release. For a minor or major release, raise `version` in `Cargo.toml` above
+the latest tag; that push is released as exactly that version.

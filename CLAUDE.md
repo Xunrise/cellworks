@@ -53,6 +53,8 @@ line, items, code) plus links, and the map, folder views, ⌘K search, lanes and
   temp files.
 - Cluster access stays read-only (`kubectl get` only).
 - Commit messages: conventional commits, e.g. `feat(map): …`, `fix(jira): …`.
+- Every push to `main` is released (`.github/workflows/release.yml`): patch versions bump automatically; bump
+  `Cargo.toml` for minor or major releases.
 
 ## Checks
 
