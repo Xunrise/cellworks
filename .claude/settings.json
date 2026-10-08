@@ -23,7 +23,7 @@
               "source": "git-subdir",
               "url": "squer-solutions/The-Factory",
               "path": "plugins/factory",
-              "ref": "v1.8.0"
+              "ref": "c2fa0c28df62cd606ecefe26150d47fc86a384ef"
             }
           }
         ]

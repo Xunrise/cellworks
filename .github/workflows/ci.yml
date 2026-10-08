@@ -15,6 +15,13 @@ on:
   # main.
   pull_request_review:
     types: [submitted, dismissed]
+  # The build stage starts this for the pull request it opens, which triggers
+  # no pull_request event of its own.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: The pull request to check.
+        required: true
   # Nightly mutation testing, with mutation-command below.
   # schedule:
   #   - cron: '0 3 * * *'
@@ -24,7 +31,7 @@ permissions:
 
 jobs:
   checks:
-    uses: squer-solutions/The-Factory/.github/workflows/sdlc-checks.yml@v1.8.0
+    uses: squer-solutions/The-Factory/.github/workflows/sdlc-checks.yml@c2fa0c28df62cd606ecefe26150d47fc86a384ef  # trial of The-Factory PR #31, not a release
     secrets: inherit
     # Reviews and issue timelines for separation of duties, comments for
     # break-glass, the change record and architecture drift, and the runs
@@ -35,6 +42,7 @@ jobs:
       issues: read
       actions: read
     with:
+      pr: ${{ inputs.pr }}
       separation-of-duties: true
       # The house scanners, each optional. A command installs the tool it
       # runs and writes its report into $SDLC_REPORT_DIR, uploaded as
