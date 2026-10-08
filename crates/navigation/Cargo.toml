@@ -1,0 +1,9 @@
+[package]
+name = "cellworks-navigation"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+cellworks-editing = { path = "../editing" }
+cellworks-map = { path = "../map" }

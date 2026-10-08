@@ -29,6 +29,7 @@ flowchart TB
   bin --> ag
   bin --> src
   bin --> dk
+  bin --> code
   bin --> ws
   nav --> map
   nav --> ed
