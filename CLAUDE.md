@@ -1,80 +1,85 @@
-# Cellworks: notes for Claude
+# Cellworks
 
-A native Rust (edition 2024) desktop app: eframe/egui 0.36. Read `README.md` for what it does from a user's point of
-view. This file is about the code.
+A native desktop map that makes an engineer's projects, code, AI agent sessions, tickets, infrastructure and data navigable in one place.
 
-## Layout
+## Tech stack
 
-| File | Responsibility |
-|---|---|
-| `src/main.rs` | The app: the `App` state, input, all drawing (`draw_world`, `draw_machine`), panels, palette (⌘K), folder views, navigation history, session windows, editor windows, CLI modes, and the UI tests at the bottom. Large; find things by function name. |
-| `src/world.rs` | The world model and layout: `scan` (code projects), `parse_cells` / `parse_jarvis` (domain knowledge), `jira_world`, `graph_world` (generic node/link maps), districts and sub-districts, physics (`step`, `separate*`), and layout tests. |
-| `src/ast.rs` | tree-sitter analysis per file: functions with complexity, imports, calls. |
-| `src/backend.rs` | Everything outside the map: Claude transcript tailing, project discovery, git, Herdr. |
-| `src/term.rs` | Detachable Claude Code sessions: `cellworks --host` owns the pty and a Unix socket; the app attaches and renders with vt100. |
-| `src/nvim.rs` | Embedded Neovim client (`--embed`, ext_linegrid). |
-| `src/jira.rs` | Atlassian remote MCP client: OAuth (dynamic registration + PKCE), JSON-RPC over HTTP via `curl`, ticket sync and cache. |
-| `src/otc.rs` | Infrastructure loader: Terraform blocks plus live `kubectl get`; also `Node`, the generic map node. |
-| `src/data.rs` | Data-structure loader: Knex migration replay, Mongo, proto, DTOs, service usage. |
-| `src/settings.rs` | Persisted settings. |
-| `src/shapes.rs` | Machine outlines per file type. |
+- Rust, edition 2024, stable toolchain; a Cargo workspace with one crate per bounded context
+  ([ADR-0002](docs/adr/0002-cargo-workspace-crate-per-bounded-context.md))
+- eframe/egui 0.36 with the wgpu backend ([ADR-0001](docs/adr/0001-egui-as-ui-framework.md))
+- tree-sitter for code analysis ([ADR-0004](docs/adr/0004-tree-sitter-for-code-analysis.md))
+- git, kubectl, nvim and curl as child processes ([ADR-0003](docs/adr/0003-external-tools-as-child-processes.md))
+- No async runtime: background work on `std::thread`, results over `std::sync::mpsc`
+- macOS first; the release workflow also builds Linux
 
-## How a project becomes a map
+## How to run things
 
-1. A project is identified by its path.
-   - Plain folders are code projects.
-   - `jira:`, `otc:` and `data:` prefixes select the other loaders; see the top of `world::scan`.
-2. `scan` builds a `World`: factories (`Fac`, a folder) hold sections (`Section`, a file, ticket, table, …), and those
-   hold items (`Item`, a function, column, sub-task, …).
-   - `deps`, `dependents`, `calls_out`, `calls_in` and `links` between sections become lanes.
-   - `finish` derives the belts, assigns districts and sub-districts from factory ids (`district/...`), and lays the map
-     out.
-3. `World::step` runs the physics.
-4. `App::draw_world` renders it with level-of-detail.
+```
+cargo build --release                          # must stay warning-free
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all --check
+cargo test --workspace                         # unit and acceptance tests
+cargo test --workspace --release -- --ignored --nocapture   # measurement tests (chapter 10 scenarios)
+```
 
-New kinds of maps should go through `graph_world`: produce `otc::Node`s (district, folder, title, body, state, path,
-line, items, code) plus links, and the map, folder views, ⌘K search, lanes and navigation come for free.
+Tests never open windows; the UI is driven headlessly. Do not open app windows over the user's screen without asking.
 
-## Navigation seams
+## Domain at a glance
 
-- `fit_to`, `goto_section`, `navigate_to`, `enter_scope` / `leave_scope`, and `reveal` (opens the folder view that shows
-  a factory).
-- `record` / `restore` drive back and forward history.
-- `show_code` flies to another project and applies `pending_dir` once that project's map has loaded and been fitted.
-- Prefer these over setting `goal` / `goal_zoom` by hand, so that history, the editor hold and folder views stay
-  consistent.
+Cellworks shows an engineer's projects (code, Jira, infrastructure, data) on one zoomable map, and their Claude Code
+sessions as units moving across it. The people who use it are the code architect, the AI engineer / operator, the
+ticket and ops persona, the data persona and an onboarding colleague. Contexts: **Workspace** (projects, settings,
+rescan), **Map** (the source-agnostic graph of districts, groups, nodes, items and lanes, its layout and rendering),
+**CodeAnalysis**, **DomainKnowledge**, **Sources** (Jira, infrastructure, data loaders), **AgentSessions**,
+**Navigation** and **Editing**. Flow: Workspace identifies a project → a loader (CodeAnalysis, Sources,
+DomainKnowledge) writes nodes and lanes into the Map → Navigation moves the selection through layers →
+Editing opens a node on request, while AgentSessions place live sessions on the map. Neutral terms are canonical;
+the Warhammer 40k words are display theme only. Full model: `docs/domain/`.
+
+## Where things live
+
+- `docs/domain/` — bounded contexts, glossary, context map
+- `docs/arc42/` — architecture documentation
+- `docs/adr/` — architecture decision records
+- `docs/services/<component>/` — per-component docs; start at its `README.md` (purpose + index
+  of that component's documents)
+- `docs/discovery/` — discovery evidence: the prototype findings and spikes
+- `Cargo.toml` — the `cellworks` binary package and the workspace; context crates in `crates/<name>/`
+
+## Foreign systems
+
+Detail in `docs/arc42/03-context.md`.
+
+- Claude Code — sessions observed through transcripts in `~/.claude/projects`; how sessions are driven is still open
+- git — status, numstat, branches, worktrees, via the CLI
+- Neovim — embedded with `nvim --embed`
+- Atlassian remote MCP — Jira sync over HTTPS, Cellworks as its own OAuth client
+- Kubernetes — read-only `kubectl get`
+- Terraform — files read from infrastructure repositories
+
+## Cross-context communication
+
+- In-process only. A downstream crate calls the upstream crate's public API; crate dependencies follow the
+  context map, and the binary wires the flows that would otherwise form a cycle (`docs/arc42/05-building-blocks.md`).
+- Background results reach the UI thread as `<Context>Event` enums with past-tense variants (e.g.
+  `SessionEvent::FileWritten`), sent over `std::sync::mpsc` and drained once per frame.
+- Identifiers use the glossary's neutral terms (District, Group, Node, Item, Lane, Session). The Warhammer 40k
+  words are display theme only and appear only in UI strings.
+
+## Per-component conventions
+
+Each component's docs live in its own folder, fronted by a `README.md` that states the component's
+purpose and indexes the folder's documents. Before working on a story, read the `README.md` of the
+component(s) it touches and open only the documents its index points you at:
+- `docs/services/cellworks/README.md` — the desktop app: all crates of the workspace
 
 ## Conventions
 
-- Keep it small. Reuse what is here before adding a helper; add a dependency only when a few lines cannot do it. For
-  example, HTTP goes through `curl` in `jira.rs`.
-- Comments explain why, not what. No commented-out code.
-- Secrets never go on a command line: `jira.rs` passes headers through curl's stdin config and bodies through private
-  temp files.
-- Cluster access stays read-only (`kubectl get` only).
-- Commit messages: conventional commits, e.g. `feat(map): …`, `fix(jira): …`.
-- Every push to `main` is released (`.github/workflows/release.yml`): patch versions bump automatically; bump
-  `Cargo.toml` for minor or major releases.
-
-## Checks
-
-```sh
-cargo build --release   # must stay warning-free
-cargo test --release    # fast tests
-cargo test --release -- --include-ignored --nocapture
-```
-
-The ignored tests exercise real checkouts: `~/Projects/Accounts/acme`, `~/Projects/TheFactory/The-Factory`, and a
-reachable cluster for `otc`. They print what they measured, such as layout size or overlap counts. Run them when you
-touch layout, physics or the loaders, and skip the ones you have no checkout for.
-
-Smoke modes, when the window is not needed:
-
-| Command | Checks |
-|---|---|
-| `cellworks --scan <project path>` | scan summary (also `jira:…`, `otc:…`, `data:…`) |
-| `cellworks --jira-sync jira:<site>/<KEY>` | sign in to Atlassian if needed, sync, summarise |
-| `cellworks --nvim-smoke <file>` | the embedded Neovim |
-| `cellworks --term-smoke`, `--claude-smoke <dir>` | session hosts |
-
-Do not open test windows over the user's screen without asking; prefer the smoke modes and tests.
+- **Every source code change must be motivated by a story.** Use `gherkin-story-authoring` for
+  behavioral changes (new features, rule changes) and `chore-story` for non-behavioral changes
+  (layout tweaks, refactorings, dependency updates, tooling).
+- Story IDs: `STORY-NNN` / Epic IDs: `EPIC-NNN` / ADR IDs: `NNNN`
+- Branch names: `STORY-NNN-kebab-case-title`
+- Commit messages: Conventional Commits with `Refs: STORY-NNN` in footer
+- One change request per story, draft while in progress, squash on merge
+- Default branch: `main`

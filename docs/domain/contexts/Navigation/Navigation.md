@@ -1,0 +1,43 @@
+# Context: Navigation
+
+How the user moves through the map with keyboard and mouse: layers of detail, a selection the keyboard acts on, Enter and Esc to move one layer in or out, a per-node item menu, a global palette, a per-layer tree, and back/forward history.
+
+Terms: [`glossary.md`](glossary.md) — this context's own vocabulary, in the folder beside this file.
+
+## Participants
+- Every persona — keyboard first, mouse as alternative
+
+## Behaviour
+Source refs are line numbers of [the prototype findings](../../../discovery/2026-10-08-prototype-findings.md).
+
+- Layers Universe → Project → Directory → File; the layer follows from selection and zoom (L143-150). Districts are the nodes of the Project layer (product owner, 2026-10-08).
+- h/j/k/l and arrows move between nodes of the current layer, in spatial or list-order mode (`m`); the camera pans only when the selection leaves the middle of the view (L152-157).
+- Enter goes one layer in: lock a project, open a district's folder view, frame a group (~70% of the view), frame a node close enough to read it (~55%), and a second Enter on a node opens the editor (L159-167).
+- Esc goes one layer out: editor → node → group → leave the folder view → district → project → universe (L169-171).
+- The selection always shows a pulsing outline (L173).
+- Item menu (Space / right-click): a pop-up on the node with only its connections and actions, busy kinds in submenus, typing filters (L175-180). Palette (⌘K) searches everything and lists every action (L182). View options menu (`v`) stays open for several changes (L184).
+- Tree (E): per-layer explorer that frames the map on the row under the cursor, re-roots as the layer changes, sized to its content (L186-204).
+- ⌘-click a lane travels to its far end; ⌘-hover previews it (L90). Back/forward history of views (L91, L212).
+- A jump into a project still loading applies after its first fit; a jump to a node hidden by the folder view opens the folder view containing it; switching projects closes the folder view (L230-233).
+- The keyboard belongs to whatever has focus; map keys act only otherwise (L236).
+
+## Tactical model
+
+> Status: not yet discovered
+> The tactical model emerges during implementation. A story adds an
+> entry here only for a new aggregate, a changed aggregate boundary or
+> a new invariant — the code is the rest of the model. Do not
+> pre-populate from the discovery source: tactical choices are made at
+> code time, not at analysis time.
+
+### Aggregates
+_No entries yet._
+
+### Entities (non-aggregate roots)
+_No entries yet._
+
+### Value objects
+_No entries yet._
+
+### Domain services
+_No entries yet._
