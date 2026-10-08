@@ -6,7 +6,8 @@ name: SDLC Stage 5 — review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    # closed: a pull request into test that merged moves its issue to done.
+    types: [opened, synchronize, reopened, closed]
   issue_comment:
     types: [created]
   pull_request_review_comment:
@@ -27,7 +28,7 @@ jobs:
       issues: write
       id-token: write
       actions: read
-    uses: squer-solutions/The-Factory/.github/workflows/sdlc-review.yml@c2fa0c28df62cd606ecefe26150d47fc86a384ef  # trial of The-Factory PR #31, not a release
+    uses: squer-solutions/The-Factory/.github/workflows/sdlc-review.yml@c0706c8bc73216717b9599d03e1d779615e2a4c4  # trial of The-Factory PR #31, not a release
     secrets: inherit
     with:
       pr: ${{ inputs.pr }}

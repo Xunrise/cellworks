@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   checks:
-    uses: squer-solutions/The-Factory/.github/workflows/sdlc-checks.yml@c2fa0c28df62cd606ecefe26150d47fc86a384ef  # trial of The-Factory PR #31, not a release
+    uses: squer-solutions/The-Factory/.github/workflows/sdlc-checks.yml@c0706c8bc73216717b9599d03e1d779615e2a4c4  # trial of The-Factory PR #31, not a release
     secrets: inherit
     # Reviews and issue timelines for separation of duties, comments for
     # break-glass, the change record and architecture drift, and the runs
