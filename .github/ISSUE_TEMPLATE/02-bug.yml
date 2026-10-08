@@ -1,0 +1,77 @@
+name: Bug — something is broken
+description: Report behaviour that is wrong. Becomes an intent if it needs design work.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A small, well-bounded bug goes straight to a fix. Anything larger is
+        written up as an `intent.md` and enters the lifecycle at Stage 1 — a
+        maintainer decides which, and applies `sdlc:intent` if it is the latter.
+
+        The fix will begin by writing a **failing test that reproduces this**,
+        committed before the fix, so a guard can stop the test being rewritten
+        to make the failure disappear. The more precisely you describe the
+        symptom, the better that test is.
+
+  - type: textarea
+    id: symptom
+    attributes:
+      label: What happens?
+      description: The symptom as you observed it. Include exact error text if there is any.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should happen instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How can someone else see it happen?
+      description: >-
+        Steps, a command, a URL, or the conditions under which it occurs. If it
+        is intermittent, say how often and what seems to correlate.
+      placeholder: |
+        1. Open the claims list
+        2. Filter to "closed"
+        3. The count in the header still shows the unfiltered total
+    validations:
+      required: true
+
+  - type: dropdown
+    id: blast-radius
+    attributes:
+      label: Who is affected?
+      options:
+        - Just me / one user
+        - Some users, with a workaround
+        - Some users, no workaround
+        - Everyone
+        - Unknown
+    validations:
+      required: true
+
+  - type: input
+    id: first-seen
+    attributes:
+      label: When did it start?
+      description: A date, a release, or "always" / "unknown".
+      placeholder: After Tuesday's deploy
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else?
+      description: >-
+        Logs, screenshots, or the change you suspect. Redact anything sensitive
+        — do not paste credentials, tokens, or personal data into this issue.
+    validations:
+      required: false

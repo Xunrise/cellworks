@@ -1,0 +1,20 @@
+name: SDLC Stage 6 — monitor
+
+# Calls The-Factory's monitor stage at the pinned version. The trigger lives here;
+# everything else — the steps, scripts, skills and hooks — is the factory's.
+# Move to a new factory version with The-Factory's scripts/upgrade.sh.
+
+on:
+  schedule:
+    # 06:00 UTC daily.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    uses: squer-solutions/The-Factory/.github/workflows/sdlc-monitor.yml@v1.8.0
+    secrets: inherit

@@ -4,3 +4,14 @@ docs/node_modules
 # OS / editor cruft
 .DS_Store
 /target
+
+# Claude Code local overrides — settings.json is committed, .local is not
+.claude/settings.local.json
+
+# The SDLC harness, checked out from The-Factory by every stage. Never part of
+# this repository.
+.factory/
+
+# Business context as the stages see it; locally a symlink to context.
+# No trailing slash: a `dir/` pattern does not match a symlink to a directory.
+factory-context

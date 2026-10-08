@@ -1,0 +1,84 @@
+name: CI
+
+# The checks to require on `test` and `main`. The artifact gate is the
+# factory's, at the pinned version; add this product's build and test jobs
+# beside it.
+
+on:
+  push:
+    branches: [main, test]
+  # labeled and unlabeled re-run the checks when sdlc:break-glass is applied
+  # or removed, and record its use.
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  # An approval re-runs the separation-of-duties check on pull requests into
+  # main.
+  pull_request_review:
+    types: [submitted, dismissed]
+  # Nightly mutation testing, with mutation-command below.
+  # schedule:
+  #   - cron: '0 3 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    uses: squer-solutions/The-Factory/.github/workflows/sdlc-checks.yml@v1.8.0
+    secrets: inherit
+    # Reviews and issue timelines for separation of duties, comments for
+    # break-glass, the change record and architecture drift, and the runs
+    # and artifacts on test it reads.
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      actions: read
+    with:
+      separation-of-duties: true
+      # The house scanners, each optional. A command installs the tool it
+      # runs and writes its report into $SDLC_REPORT_DIR, uploaded as
+      # sdlc-scan-<name>.
+      # sast-command: semgrep scan --config auto --sarif --output "$SDLC_REPORT_DIR/semgrep.sarif" --error
+      # dependency-scan-command: osv-scanner scan --recursive --format json --output "$SDLC_REPORT_DIR/osv.json" .
+      # sbom-command: syft dir:. --output cyclonedx-json="$SDLC_REPORT_DIR/sbom.json"
+      # Architecture metrics run on every push to test and main. JavaScript
+      # and TypeScript need nothing; another stack prints
+      # schema/arch-metrics.json from its own command.
+      # arch-metrics-command: ./scripts/arch-metrics.sh
+      # Nightly, with the schedule trigger above: runs the mutation tests and
+      # writes the score, a percentage such as 81.5, to
+      # $SDLC_REPORT_DIR/mutation-score.
+      # mutation-command: ./scripts/mutation.sh
+
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      # The workspace arrives with the first story; until then there is
+      # nothing to build.
+      - if: hashFiles('Cargo.toml') != ''
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - if: hashFiles('Cargo.toml') != ''
+        uses: Swatinem/rust-cache@v2
+      - if: hashFiles('Cargo.toml') != ''
+        run: cargo fmt --all --check
+      - if: hashFiles('Cargo.toml') != ''
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - if: hashFiles('Cargo.toml') != ''
+        run: cargo test --workspace
+
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # SC2016 alone is excluded: it fires on single-quoted strings containing
+      # markdown backticks, which the SDLC comments write deliberately.
+      - uses: docker://rhysd/actionlint:1.7.12
+        env:
+          SHELLCHECK_OPTS: --exclude=SC2016
+        with:
+          args: -color

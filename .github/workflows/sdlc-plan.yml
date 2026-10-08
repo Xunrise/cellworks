@@ -1,0 +1,21 @@
+name: SDLC Stage 3 — plan
+
+# Calls The-Factory's plan stage at the pinned version. The trigger lives here;
+# everything else — the steps, scripts, skills and hooks — is the factory's.
+# Move to a new factory version with The-Factory's scripts/upgrade.sh.
+
+on:
+  push:
+    branches: ['feature/**']
+    paths:
+      - 'sdlc/[0-9][0-9][0-9][0-9]-*/spec.md'
+  workflow_dispatch:
+
+jobs:
+  plan:
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    uses: squer-solutions/The-Factory/.github/workflows/sdlc-plan.yml@v1.8.0
+    secrets: inherit

@@ -1,4 +1,5 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
     "allow": [
       "Skill",
@@ -9,5 +10,27 @@
     "ask": [
       "Bash(gh pr merge:*)"
     ]
+  },
+  "extraKnownMarketplaces": {
+    "the-factory": {
+      "source": {
+        "source": "settings",
+        "name": "the-factory",
+        "plugins": [
+          {
+            "name": "factory",
+            "source": {
+              "source": "git-subdir",
+              "url": "squer-solutions/The-Factory",
+              "path": "plugins/factory",
+              "ref": "v1.8.0"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "enabledPlugins": {
+    "factory@the-factory": true
   }
 }

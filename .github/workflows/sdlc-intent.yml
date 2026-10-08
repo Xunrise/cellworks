@@ -1,0 +1,18 @@
+name: SDLC Stage 1 — intent
+
+# Calls The-Factory's intent stage at the pinned version. The trigger lives here;
+# everything else — the steps, scripts, skills and hooks — is the factory's.
+# Move to a new factory version with The-Factory's scripts/upgrade.sh.
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  intent:
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    uses: squer-solutions/The-Factory/.github/workflows/sdlc-intent.yml@v1.8.0
+    secrets: inherit

@@ -1,0 +1,24 @@
+name: SDLC Stage 5 — review
+
+# Calls The-Factory's review stage at the pinned version. The trigger lives here;
+# everything else — the steps, scripts, skills and hooks — is the factory's.
+# Move to a new factory version with The-Factory's scripts/upgrade.sh.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  review:
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    uses: squer-solutions/The-Factory/.github/workflows/sdlc-review.yml@v1.8.0
+    secrets: inherit

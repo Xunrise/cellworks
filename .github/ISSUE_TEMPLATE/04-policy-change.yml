@@ -1,0 +1,80 @@
+name: Policy change — amend a skill, CLAUDE.md, or REVIEW.md
+description: Propose a change to the rules Claude works to. Requires a named policy owner.
+title: "[policy] "
+labels: ["policy"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The files in `.claude/`, `CLAUDE.md`, and `REVIEW.md` steer every
+        session and every automated stage in this product, so a change to them
+        is a change to how all work gets done. They are reviewed like code.
+
+        The stage skills, hooks and agents themselves belong to The-Factory.
+        Change those there, where the eval suite guards them.
+
+  - type: dropdown
+    id: target
+    attributes:
+      label: What are you changing?
+      options:
+        - A policy skill in .claude/skills/
+        - CLAUDE.md
+        - REVIEW.md
+        - sdlc/bands.yaml
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: path
+    attributes:
+      label: Which file?
+      placeholder: .claude/skills/secure-api-review/SKILL.md
+    validations:
+      required: true
+
+  - type: input
+    id: owner
+    attributes:
+      label: Who owns this policy?
+      description: >-
+        The person who signs off the change. A policy without a named owner
+        cannot be enforced, because there is nobody to resolve a conflict with
+        it when the spec stage flags one.
+      placeholder: data governance — A. Novak
+    validations:
+      required: true
+
+  - type: textarea
+    id: change
+    attributes:
+      label: What should change, and why?
+      description: The current rule, the proposed rule, and what prompted it.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: enforcement
+    attributes:
+      label: Must this rule hold without exception?
+      description: >-
+        A skill is advisory — it makes the rule likely to be applied. A rule
+        that must always hold needs something deterministic behind it: a hook,
+        a CI check, or a review pass.
+      options:
+        - "No — advisory guidance is enough (a skill)"
+        - "Yes — it needs a hook or a CI check behind it"
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Has this been got wrong before?
+      description: >-
+        Links to PRs, reviews, or incidents. The working rule is that when the
+        same mistake happens twice, the correction goes into `CLAUDE.md`.
+    validations:
+      required: false
