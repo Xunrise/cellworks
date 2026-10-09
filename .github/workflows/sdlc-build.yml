@@ -19,7 +19,7 @@ jobs:
       issues: write
       id-token: write
       actions: write   # the stage starts the pull request's checks and review
-    uses: squer-solutions/The-Factory/.github/workflows/sdlc-build.yml@c0706c8bc73216717b9599d03e1d779615e2a4c4  # trial of The-Factory PR #31, not a release
+    uses: squer-solutions/The-Factory/.github/workflows/sdlc-build.yml@8a2518f24e4041c617c9fad065ca5a9b37126f1f  # trial of The-Factory PR #31, not a release
     secrets: inherit
     with:
       # This product's checks, re-run after the agent finishes. Keep it the
