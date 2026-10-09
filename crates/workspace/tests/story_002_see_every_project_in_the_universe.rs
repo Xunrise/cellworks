@@ -59,7 +59,9 @@ fn labels_in(harness: &Harness<'_>) -> Vec<String> {
 
 /// One frame of the universe view, and what it labelled.
 fn labels(universe: &Universe) -> Vec<String> {
-    let mut harness = Harness::new_ui(|ui| ui::universe(ui, universe));
+    let mut harness = Harness::new_ui(|ui| {
+        ui::universe(ui, universe);
+    });
     harness.run();
     labels_in(&harness)
 }
@@ -200,7 +202,9 @@ fn a_universe_taller_than_the_window_scrolls() {
 
     let mut harness = Harness::builder()
         .with_size(egui::vec2(400.0, 300.0))
-        .build_ui(|ui| ui::universe(ui, &universe));
+        .build_ui(|ui| {
+            ui::universe(ui, &universe);
+        });
     harness.run();
 
     harness.get_by_label("project-199").scroll_to_me();

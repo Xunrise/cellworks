@@ -1,5 +1,5 @@
-//! The window the binary owns: the universe of the Workspace context, and the
-//! options the window opens with.
+//! The window the binary owns: the universe of the Workspace context or the
+//! project opened from it, and the options the window opens with.
 //!
 //! `draw` is kept apart from [`CellworksApp`] so a test can run a frame
 //! through an [`egui::Ui`] without eframe, winit or a window, and
@@ -10,17 +10,34 @@
 //! STORY-001's deferred conventions land: the scan runs on a `std::thread`,
 //! its results arrive as `WorkspaceEvent` values over a `std::sync::mpsc`
 //! channel, and the UI thread drains them once per frame with `try_recv` and
-//! never waits.
+//! never waits. A project opened from the universe is read the same way, with
+//! `CodeAnalysisEvent` values.
 
+use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
-use cellworks_workspace::{ScanState, Sources, Universe, WorkspaceEvent, start_scan};
+use cellworks_code_analysis::{GitCli, GitListing, start_load};
+use cellworks_map::{default_prefix_rule, prefix_rule};
+use cellworks_workspace::{Project, ScanState, Sources, Universe, WorkspaceEvent, start_scan};
 
-/// The Cellworks application: the universe it shows, and the scan that fills
-/// it in.
+use crate::opened::{OpenedNotice, OpenedProject, ProjectState};
+
+/// Shown from the moment a project is opened until its map arrives.
+const READING: &str = "Reading the project…";
+
+/// Shown when a project was read and has nothing to draw.
+const EMPTY: &str = "This project has no files to show.";
+
+/// Shown when the read ended without a map.
+const FAILED: &str = "Could not read this project.";
+
+/// The Cellworks application: the universe it shows, the scan that fills it
+/// in, and the project opened from it, if any.
 pub struct CellworksApp {
     universe: Universe,
     events: Option<Receiver<WorkspaceEvent>>,
+    opened: Option<OpenedProject>,
+    git: Arc<dyn GitListing + Send + Sync>,
 }
 
 impl CellworksApp {
@@ -33,10 +50,14 @@ impl CellworksApp {
             Some(sources) => CellworksApp {
                 universe: Universe::scanning(&sources),
                 events: Some(start_scan(sources)),
+                opened: None,
+                git: Arc::new(GitCli),
             },
             None => CellworksApp {
                 universe: Universe::without_home(),
                 events: None,
+                opened: None,
+                git: Arc::new(GitCli),
             },
         }
     }
@@ -47,14 +68,48 @@ impl CellworksApp {
         CellworksApp {
             universe,
             events: Some(events),
+            opened: None,
+            git: Arc::new(GitCli),
         }
     }
 
-    /// Takes whatever the scan has sent so far. Never waits.
+    /// The same app asking `git` about repositories instead of the real git,
+    /// so a test never runs it.
+    pub fn with_git(self, git: Arc<dyn GitListing + Send + Sync>) -> CellworksApp {
+        CellworksApp { git, ..self }
+    }
+
+    /// Takes whatever the scan and the read have sent so far. Never waits.
     pub fn apply_pending(&mut self) {
         if let Some(events) = &self.events {
             self.universe.drain(events);
         }
+        if let Some(opened) = &mut self.opened {
+            opened.drain();
+        }
+    }
+
+    /// The project that is open, if any.
+    pub fn opened(&self) -> Option<&OpenedProject> {
+        self.opened.as_ref()
+    }
+
+    /// Opens `project` and starts reading it with the district prefix rule its
+    /// settings name; an unknown name reads with the default and says so.
+    pub fn open(&mut self, project: Project) {
+        let named = project.district_prefix.clone();
+        let rule = named.as_deref().and_then(prefix_rule);
+        let events = start_load(
+            project.id.path().to_owned(),
+            project.name.clone(),
+            rule.unwrap_or_else(default_prefix_rule),
+            Arc::clone(&self.git),
+        );
+        let mut opened = OpenedProject::reading(events);
+        if let (Some(name), None) = (named, rule) {
+            opened.note(OpenedNotice::UnknownDistrictPrefix { name });
+        }
+        self.opened = Some(opened);
     }
 
     /// The universe as it currently stands.
@@ -66,21 +121,74 @@ impl CellworksApp {
 impl eframe::App for CellworksApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.apply_pending();
+        draw(ui, self);
 
-        // egui draws on demand, and a scan finishing is not an input event.
-        // Asking for the next frame while the scan is still running is what
+        // egui draws on demand, and a scan or read finishing is not an input
+        // event. Asking for the next frame while one is still running is what
         // gets its result onto the screen without anyone touching the mouse.
-        if self.universe.scan() == &ScanState::Scanning {
+        // Asked after `draw`, because the frame that opens a project is the
+        // one `draw` opens it in.
+        let reading = self
+            .opened
+            .as_ref()
+            .is_some_and(|opened| opened.state() == &ProjectState::Reading);
+        if self.universe.scan() == &ScanState::Scanning || reading {
             ui.ctx().request_repaint();
         }
-
-        draw(ui, &self.universe);
     }
 }
 
-/// Paints one frame: the universe of the Workspace context.
-pub fn draw(ui: &mut egui::Ui, universe: &Universe) {
-    cellworks_workspace::ui::universe(ui, universe);
+/// Paints one frame: the universe, or the opened project. A double-click on a
+/// project opens it; Esc goes back to the universe.
+pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
+    match &app.opened {
+        None => {
+            if let Some(project) = cellworks_workspace::ui::universe(ui, &app.universe) {
+                app.open(project);
+            }
+        }
+        Some(_) if ui.input(|input| input.key_pressed(egui::Key::Escape)) => {
+            app.opened = None;
+            cellworks_workspace::ui::universe(ui, &app.universe);
+        }
+        Some(opened) => {
+            egui::CentralPanel::default().show(ui, |ui| project(ui, opened));
+        }
+    }
+}
+
+fn project(ui: &mut egui::Ui, opened: &OpenedProject) {
+    for notice in opened.notices() {
+        ui.label(notice_text(notice));
+    }
+    match opened.state() {
+        ProjectState::Reading => {
+            ui.label(READING);
+        }
+        ProjectState::Empty => {
+            ui.label(EMPTY);
+        }
+        ProjectState::Failed => {
+            ui.label(FAILED);
+        }
+        ProjectState::Mapped(map) => cellworks_map::ui::project(ui, map),
+    }
+}
+
+/// A notice, written beside the opened project.
+fn notice_text(notice: &OpenedNotice) -> String {
+    match notice {
+        OpenedNotice::FolderSkipped { path, reason } => {
+            format!("Could not read {}: {reason}", path.display())
+        }
+        OpenedNotice::GitExcludesUnavailable { reason } => format!(
+            "git could not say which files it ignores, so ignored files may be on the map: {reason}"
+        ),
+        OpenedNotice::UnknownDistrictPrefix { name } => format!(
+            "The district prefix \"{name}\" is unknown; using \"{}\".",
+            default_prefix_rule().name
+        ),
+    }
 }
 
 /// The options the window opens with: its title, its application id — Wayland

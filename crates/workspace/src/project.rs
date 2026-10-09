@@ -32,6 +32,9 @@ pub struct Project {
     pub id: ProjectId,
     /// Its display name: the last component of that path.
     pub name: String,
+    /// The district prefix rule its settings name, as written there. Only the
+    /// Map knows what the name means.
+    pub district_prefix: Option<String>,
 }
 
 impl Project {
@@ -49,6 +52,7 @@ impl Project {
         Project {
             id: ProjectId(canonical_path),
             name,
+            district_prefix: None,
         }
     }
 }

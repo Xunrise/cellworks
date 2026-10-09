@@ -67,6 +67,21 @@ pub(crate) fn merge(
     (projects, events)
 }
 
+/// Gives each project the district prefix its settings name. A setting for a
+/// folder that is not a project is ignored.
+pub(crate) fn attach_district_prefixes(projects: &mut [Project], prefixes: &[(PathBuf, String)]) {
+    for (path, prefix) in prefixes {
+        let Ok(folder) = FolderIdentity::of(path) else {
+            continue;
+        };
+        for project in projects.iter_mut() {
+            if FolderIdentity::of(project.id.path()).is_ok_and(|other| other == folder) {
+                project.district_prefix = Some(prefix.clone());
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,6 +174,19 @@ mod tests {
             ),
             "{events:?}"
         );
+    }
+
+    #[test]
+    fn a_district_prefix_reaches_the_project_it_names_and_no_other() {
+        let tree = TestTree::new();
+        let alpha = canonical(&tree.repository("Projects/alpha"));
+        let beta = canonical(&tree.repository("Projects/beta"));
+        let (mut projects, _) = merge(&[alpha.clone(), beta], &[]);
+
+        attach_district_prefixes(&mut projects, &[(alpha, "none".to_owned())]);
+
+        assert_eq!(projects[0].district_prefix.as_deref(), Some("none"));
+        assert_eq!(projects[1].district_prefix, None);
     }
 
     /// Letter case follows the filesystem, so this test asks the filesystem

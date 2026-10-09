@@ -22,7 +22,6 @@ Source refs are line numbers of [the prototype findings](../../../discovery/2026
 
 ## Tactical model
 
-> Status: not yet discovered
 > The tactical model emerges during implementation. A story adds an
 > entry here only for a new aggregate, a changed aggregate boundary or
 > a new invariant — the code is the rest of the model. Do not
@@ -30,13 +29,17 @@ Source refs are line numbers of [the prototype findings](../../../discovery/2026
 > code time, not at analysis time.
 
 ### Aggregates
-_No entries yet._
+- **ProjectMap** — one opened project: its districts, sub-districts, groups and nodes, each identified by the canonical
+  path of its folder or file, and the rectangle each occupies. Built only by cutting a project's included files with a
+  district strategy and laying them out. Invariant: no two drawn rectangles overlap, and the only rectangle that
+  contains another is a parent containing its own child (STORY-003).
 
 ### Entities (non-aggregate roots)
 _No entries yet._
 
 ### Value objects
-_No entries yet._
+- **PrefixRule** — the named rule that finds a project's district level in the directories strategy; chosen per project
+  in the settings file, `one-wrapper-folder` by default (STORY-003).
 
 ### Domain services
 _No entries yet._

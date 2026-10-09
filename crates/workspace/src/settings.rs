@@ -17,8 +17,14 @@ use std::path::{Path, PathBuf};
 
 use crate::event::WorkspaceEvent;
 
-/// The key the settings file carries, and the only one this story reads.
+/// The folders added by hand.
 const ADDED_FOLDERS: &str = "added_folders";
+
+/// The per-project tables, keyed by the project's absolute path.
+const PROJECTS: &str = "projects";
+
+/// A project's district prefix rule, inside its table.
+const DISTRICT_PREFIX: &str = "district_prefix";
 
 /// Which convention names the settings file's directory.
 ///
@@ -61,6 +67,9 @@ pub(crate) struct AddedFolders {
     /// One event per entry that did not, plus one for a file that could not be
     /// read or parsed at all.
     pub(crate) events: Vec<WorkspaceEvent>,
+    /// The canonical path of every `[projects."<path>"]` table that resolved,
+    /// and the district prefix rule it names.
+    pub(crate) district_prefixes: Vec<(PathBuf, String)>,
 }
 
 /// Reads the folders `settings_file` adds.
@@ -103,6 +112,16 @@ pub(crate) fn read(settings_file: &Path) -> AddedFolders {
                 path: PathBuf::from(entry),
                 reason,
             }),
+        }
+    }
+
+    // A table whose path does not resolve is ignored: it configures a project
+    // that is not there.
+    let projects = table.get(PROJECTS).and_then(toml::Value::as_table);
+    for (path, settings) in projects.into_iter().flatten() {
+        let prefix = settings.get(DISTRICT_PREFIX).and_then(toml::Value::as_str);
+        if let (Some(prefix), Ok(canonical)) = (prefix, resolve(Path::new(path))) {
+            added.district_prefixes.push((canonical, prefix.to_owned()));
         }
     }
 
@@ -251,6 +270,29 @@ mod tests {
         let added = read(&settings);
 
         assert_eq!(added.folders, vec![canonical(&work)]);
+        assert!(added.events.is_empty(), "{:?}", added.events);
+    }
+
+    #[test]
+    fn a_project_table_names_that_projects_district_prefix() {
+        let tree = TestTree::new();
+        let shop = tree.plain_folder("work/shop");
+        let settings = tree.file(
+            "settings.toml",
+            &format!(
+                "[projects.\"{}\"]\ndistrict_prefix = \"none\"\n\n\
+                 [projects.\"/nowhere/at/all\"]\ndistrict_prefix = \"none\"\n",
+                shop.display()
+            ),
+        );
+
+        let added = read(&settings);
+
+        assert_eq!(
+            added.district_prefixes,
+            vec![(canonical(&shop), "none".to_owned())],
+            "the table that resolves is read, the one that does not is ignored"
+        );
         assert!(added.events.is_empty(), "{:?}", added.events);
     }
 

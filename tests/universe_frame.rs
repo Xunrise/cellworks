@@ -35,8 +35,8 @@ fn sources() -> Sources {
 
 /// The text of every labelled entry one frame of `cellworks::draw` put on the
 /// screen. egui carries a label's text in the node's value.
-fn labels(universe: &Universe) -> Vec<String> {
-    let mut harness = Harness::new_ui(|ui| cellworks::draw(ui, universe));
+fn labels(app: &mut CellworksApp) -> Vec<String> {
+    let mut harness = Harness::new_ui(|ui| cellworks::draw(ui, app));
     harness.run();
 
     let root = harness.root();
@@ -58,7 +58,7 @@ fn the_frame_body_renders_the_workspace_universe() {
     let mut app = CellworksApp::over(Universe::scanning(&sources()), receiver);
 
     assert_eq!(
-        labels(app.universe()),
+        labels(&mut app),
         vec![SCANNING.to_owned()],
         "before anything is drained the frame shows the scanning state"
     );
@@ -71,7 +71,7 @@ fn the_frame_body_renders_the_workspace_universe() {
     app.apply_pending();
 
     assert_eq!(
-        labels(app.universe()),
+        labels(&mut app),
         vec!["alpha".to_owned()],
         "once the scan has reported, the frame lists its projects"
     );
@@ -85,7 +85,7 @@ fn draining_an_empty_channel_returns_rather_than_waiting() {
     // The sender is alive and silent: a `recv` here would never return.
     app.apply_pending();
 
-    assert_eq!(labels(app.universe()), vec![SCANNING.to_owned()]);
+    assert_eq!(labels(&mut app), vec![SCANNING.to_owned()]);
     drop(sender);
 }
 
@@ -98,7 +98,7 @@ fn a_scan_thread_that_goes_away_before_reporting_leaves_the_scanning_state() {
     app.apply_pending();
 
     assert_eq!(
-        labels(app.universe()),
+        labels(&mut app),
         vec!["Could not finish scanning for projects.".to_owned()],
         "rather than showing \"Scanning\" for ever"
     );

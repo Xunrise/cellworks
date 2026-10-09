@@ -6,6 +6,7 @@
 //! and no selection here — those belong to the Map and Navigation contexts.
 
 use crate::Sources;
+use crate::project::Project;
 use crate::universe::{Notice, NoticeKind, ScanState, Universe};
 
 /// Shown from the first frame until the first result arrives, so a slow walk
@@ -16,18 +17,24 @@ const SCANNING: &str = "Scanning for projects…";
 /// "Scanning" on the screen for ever.
 const FAILED: &str = "Could not finish scanning for projects.";
 
-/// Draws the universe.
-pub fn universe(ui: &mut egui::Ui, universe: &Universe) {
-    egui::CentralPanel::default().show(ui, |ui| {
-        // Every project must be reachable however many there are, so the
-        // list scrolls once it is taller than the window.
-        egui::ScrollArea::vertical()
-            .auto_shrink(false)
-            .show(ui, |ui| entries(ui, universe));
-    });
+/// Draws the universe, and returns the project the engineer double-clicked
+/// to open, if any.
+pub fn universe(ui: &mut egui::Ui, universe: &Universe) -> Option<Project> {
+    egui::CentralPanel::default()
+        .show(ui, |ui| {
+            // Every project must be reachable however many there are, so the
+            // list scrolls once it is taller than the window.
+            egui::ScrollArea::vertical()
+                .auto_shrink(false)
+                .show(ui, |ui| entries(ui, universe))
+                .inner
+        })
+        .inner
 }
 
-fn entries(ui: &mut egui::Ui, universe: &Universe) {
+fn entries(ui: &mut egui::Ui, universe: &Universe) -> Option<Project> {
+    let mut opened = None;
+
     match universe.scan() {
         ScanState::Scanning => {
             ui.label(SCANNING);
@@ -40,7 +47,14 @@ fn entries(ui: &mut egui::Ui, universe: &Universe) {
         }
         ScanState::Reported(projects) => {
             for project in projects {
-                ui.label(project.name.as_str());
+                // The sense goes on the response, not the widget, so the
+                // entry stays a label in the accessibility tree.
+                let entry = ui
+                    .label(project.name.as_str())
+                    .interact(egui::Sense::click());
+                if entry.double_clicked() {
+                    opened = Some(project.clone());
+                }
             }
         }
     }
@@ -48,6 +62,8 @@ fn entries(ui: &mut egui::Ui, universe: &Universe) {
     for notice in universe.notices() {
         ui.label(notice_text(notice));
     }
+
+    opened
 }
 
 /// What an empty universe tells the engineer.

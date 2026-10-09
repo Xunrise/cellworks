@@ -32,7 +32,7 @@ flowchart LR
 |---|---|
 | Engineer | Navigates the map, edits files, creates and steers Claude Code sessions. |
 | Project folders | Scans code, domain docs, Knex migrations, proto files and DTOs; watches for changes to rescan. |
-| git | Reads status, numstat, branches and worktrees; switches branches and adds worktrees on request. |
+| git | Reads the files a repository shows (`ls-files`), status, numstat, branches and worktrees; switches branches and adds worktrees on request. |
 | Claude Code | Creates and steers sessions that survive restarts of Cellworks. |
 | Claude transcripts | Discovers every session on the machine and follows what it reads and writes. |
 | Neovim | Embedded editor. |
@@ -62,7 +62,7 @@ tools; there is no SLA.
 ### git
 
 - **Protocol:** the `git` CLI, run per project.
-- **Data:** status, numstat, branch and worktree lists.
+- **Data:** the files a repository shows and does not ignore (`ls-files`), status, numstat, branch and worktree lists.
 - **Auth:** none beyond the user's git setup; Cellworks does not push or fetch.
 
 ### Neovim

@@ -31,6 +31,7 @@ flowchart TB
   bin --> dk
   bin --> code
   bin --> ws
+  bin --> map
   nav --> map
   nav --> ed
   code --> map
@@ -46,7 +47,8 @@ Two relationships of the context map are not crate dependencies: CodeAnalysis �
 projects) and AgentSessions → Workspace (session folders become projects, writes trigger rescans). As crate
 dependencies they would form a cycle through `map → workspace`, so the binary wires them: it takes the events from
 `code-analysis` and `agent-sessions` and calls `workspace`. Sources → Navigation ("show code") is a lane to a node in
-another project and needs no crate dependency either.
+another project and needs no crate dependency either. The binary also depends on `map` directly: it holds the opened
+project's map and calls the Map's painter from the frame loop it owns.
 
 | Crate | Context | Responsibility | Interface it offers |
 |---|---|---|---|

@@ -81,7 +81,8 @@ fn non_empty(variable: &str) -> Option<std::ffi::OsString> {
 pub fn scan(sources: &Sources) -> Vec<WorkspaceEvent> {
     let discovered = discovery::discover(&sources.projects_folder);
     let added = settings::read(&sources.settings_file);
-    let (projects, unidentified) = registry::merge(&discovered.folders, &added.folders);
+    let (mut projects, unidentified) = registry::merge(&discovered.folders, &added.folders);
+    registry::attach_district_prefixes(&mut projects, &added.district_prefixes);
 
     let mut events = discovered.events;
     events.extend(added.events);

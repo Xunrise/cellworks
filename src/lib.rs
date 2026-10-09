@@ -6,5 +6,6 @@
 
 pub mod app;
 pub mod cli;
+pub mod opened;
 
 pub use app::draw;

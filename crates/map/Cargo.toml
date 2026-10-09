@@ -6,3 +6,4 @@ publish = false
 
 [dependencies]
 cellworks-workspace = { path = "../workspace" }
+egui = { workspace = true }

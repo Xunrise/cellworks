@@ -39,6 +39,7 @@ const GRAPH: [(&str, &str, &[&str]); 9] = [
             "cellworks-agent-sessions",
             "cellworks-code-analysis",
             "cellworks-domain-knowledge",
+            "cellworks-map",
             "cellworks-navigation",
             "cellworks-sources",
             "cellworks-workspace",

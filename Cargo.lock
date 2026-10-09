@@ -561,12 +561,14 @@ dependencies = [
  "cellworks-agent-sessions",
  "cellworks-code-analysis",
  "cellworks-domain-knowledge",
+ "cellworks-map",
  "cellworks-navigation",
  "cellworks-sources",
  "cellworks-workspace",
  "eframe",
  "egui",
  "egui_kittest",
+ "tempfile",
  "toml",
 ]
 
@@ -582,6 +584,7 @@ name = "cellworks-code-analysis"
 version = "0.0.0"
 dependencies = [
  "cellworks-map",
+ "tempfile",
 ]
 
 [[package]]
@@ -601,6 +604,7 @@ name = "cellworks-map"
 version = "0.0.0"
 dependencies = [
  "cellworks-workspace",
+ "egui",
 ]
 
 [[package]]
