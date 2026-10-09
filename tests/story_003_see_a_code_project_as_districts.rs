@@ -8,39 +8,23 @@
 //! after the scenarios pin the frame's requirements in `spec.md`, each naming
 //! its requirement in its doc comment.
 
-use std::fs;
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::{Duration, Instant};
 
 use cellworks::app::CellworksApp;
-use cellworks::opened::ProjectState;
 use cellworks_code_analysis::{GitListing, GitUnavailable};
-use cellworks_map::ProjectMap;
-use cellworks_workspace::{Project, Sources, Universe, WorkspaceEvent};
 use egui::Rect;
 use egui::accesskit::Role;
 use egui_kittest::Harness;
-use egui_kittest::kittest::{NodeT, Queryable};
+use egui_kittest::kittest::NodeT;
+
+use common::{Recorded, Tree, app, await_read, double_click, harness, labels, map, open};
 
 const READING: &str = "Reading the project…";
 const EMPTY: &str = "This project has no files to show.";
 const FAILED: &str = "Could not read this project.";
-
-/// What git says, recorded: the files it lists, or that it cannot answer.
-struct Recorded(Result<Vec<PathBuf>, GitUnavailable>);
-
-impl Recorded {
-    fn listing(files: &[&str]) -> Arc<Recorded> {
-        Arc::new(Recorded(Ok(files.iter().map(PathBuf::from).collect())))
-    }
-}
-
-impl GitListing for Recorded {
-    fn visible_files(&self, _: &Path) -> Result<Vec<PathBuf>, GitUnavailable> {
-        self.0.clone()
-    }
-}
 
 /// A git that does not answer until the test lets go of it.
 struct Blocking(Mutex<mpsc::Receiver<()>>);
@@ -58,130 +42,6 @@ struct Panicking;
 impl GitListing for Panicking {
     fn visible_files(&self, _: &Path) -> Result<Vec<PathBuf>, GitUnavailable> {
         panic!("the read thread goes away");
-    }
-}
-
-/// A folder tree for one project, under a temporary directory.
-struct Tree {
-    _directory: tempfile::TempDir,
-    root: PathBuf,
-}
-
-impl Tree {
-    fn project(name: &str, files: &[&str]) -> Tree {
-        let directory = tempfile::tempdir().expect("a temporary directory");
-        let root = directory.path().join(name);
-        fs::create_dir_all(&root).expect("create the project folder");
-        for file in files {
-            let path = root.join(file);
-            fs::create_dir_all(path.parent().expect("a parent")).expect("create the folder");
-            fs::write(path, "").expect("write the file");
-        }
-        let root = fs::canonicalize(root).expect("the project folder resolves");
-        Tree {
-            _directory: directory,
-            root,
-        }
-    }
-
-    fn repository(name: &str, files: &[&str]) -> Tree {
-        let tree = Tree::project(name, files);
-        fs::create_dir(tree.root.join(".git")).expect("create .git");
-        tree
-    }
-
-    fn as_project(&self, district_prefix: Option<&str>) -> Project {
-        Project {
-            district_prefix: district_prefix.map(str::to_owned),
-            ..Project::at(self.root.clone())
-        }
-    }
-}
-
-/// An app whose universe holds `projects`, asking `git` about repositories.
-fn app(projects: Vec<Project>, git: Arc<dyn GitListing + Send + Sync>) -> CellworksApp {
-    let sources = Sources {
-        projects_folder: PathBuf::from("/nowhere/Projects"),
-        settings_file: PathBuf::from("/nowhere/settings.toml"),
-    };
-    let (sender, receiver) = mpsc::channel();
-    sender
-        .send(WorkspaceEvent::ProjectsDiscovered(projects))
-        .expect("the app is listening");
-    let mut app = CellworksApp::over(Universe::scanning(&sources), receiver).with_git(git);
-    app.apply_pending();
-    app
-}
-
-/// A frame every 1/60 s, so the two clicks of a double-click fall within
-/// egui's double-click delay; the harness's default step is a quarter second.
-fn harness(app: CellworksApp) -> Harness<'static, CellworksApp> {
-    let mut harness = Harness::builder()
-        .with_size(egui::vec2(1200.0, 900.0))
-        .with_step_dt(1.0 / 60.0)
-        .build_ui_state(|ui, app: &mut CellworksApp| cellworks::draw(ui, app), app);
-    harness.run();
-    harness
-}
-
-/// The user opens the project: a double-click on its entry in the universe.
-fn double_click(harness: &mut Harness<'_, CellworksApp>, name: &str) {
-    let entry = harness.get_by_label(name);
-    entry.click();
-    entry.click();
-    harness.run();
-}
-
-/// Lets the read finish, then draws the frame that shows it.
-fn await_read(harness: &mut Harness<'_, CellworksApp>) {
-    let started = Instant::now();
-    loop {
-        harness.state_mut().apply_pending();
-        let reading = harness
-            .state()
-            .opened()
-            .is_some_and(|opened| opened.state() == &ProjectState::Reading);
-        if !reading || started.elapsed() > Duration::from_secs(30) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    harness.run();
-}
-
-/// Opens the project of `tree` and returns the frame that shows its map.
-fn open(
-    tree: &Tree,
-    district_prefix: Option<&str>,
-    git: Arc<dyn GitListing + Send + Sync>,
-) -> Harness<'static, CellworksApp> {
-    let project = tree.as_project(district_prefix);
-    let name = project.name.clone();
-    let mut harness = harness(app(vec![project], git));
-    double_click(&mut harness, &name);
-    await_read(&mut harness);
-    harness
-}
-
-/// The text of every label in the frame, in tree order.
-fn labels(harness: &Harness<'_, CellworksApp>) -> Vec<String> {
-    let root = harness.root();
-    std::iter::once(root)
-        .chain(root.children_recursive())
-        .filter_map(|node| {
-            let node = node.accesskit_node();
-            match node.role() {
-                Role::Label => node.value().map(|text| text.to_string()),
-                _ => None,
-            }
-        })
-        .collect()
-}
-
-fn map(harness: &Harness<'_, CellworksApp>) -> ProjectMap {
-    match harness.state().opened().map(|opened| opened.state()) {
-        Some(ProjectState::Mapped(map)) => map.clone(),
-        other => panic!("expected a mapped project, got {other:?}"),
     }
 }
 

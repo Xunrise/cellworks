@@ -17,7 +17,9 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
 use cellworks_code_analysis::{GitCli, GitListing, start_load};
-use cellworks_map::{default_prefix_rule, prefix_rule};
+use cellworks_map::{ProjectMap, default_prefix_rule, prefix_rule};
+use cellworks_navigation::{Moved, Navigation};
+use cellworks_workspace::ui::UniverseClick;
 use cellworks_workspace::{Project, ScanState, Sources, Universe, WorkspaceEvent, start_scan};
 
 use crate::opened::{OpenedNotice, OpenedProject, ProjectState};
@@ -32,11 +34,12 @@ const EMPTY: &str = "This project has no files to show.";
 const FAILED: &str = "Could not read this project.";
 
 /// The Cellworks application: the universe it shows, the scan that fills it
-/// in, and the project opened from it, if any.
+/// in, the project opened from it, if any, and where the view is.
 pub struct CellworksApp {
     universe: Universe,
     events: Option<Receiver<WorkspaceEvent>>,
     opened: Option<OpenedProject>,
+    navigation: Navigation,
     git: Arc<dyn GitListing + Send + Sync>,
 }
 
@@ -51,12 +54,14 @@ impl CellworksApp {
                 universe: Universe::scanning(&sources),
                 events: Some(start_scan(sources)),
                 opened: None,
+                navigation: Navigation::default(),
                 git: Arc::new(GitCli),
             },
             None => CellworksApp {
                 universe: Universe::without_home(),
                 events: None,
                 opened: None,
+                navigation: Navigation::default(),
                 git: Arc::new(GitCli),
             },
         }
@@ -69,6 +74,7 @@ impl CellworksApp {
             universe,
             events: Some(events),
             opened: None,
+            navigation: Navigation::default(),
             git: Arc::new(GitCli),
         }
     }
@@ -94,6 +100,30 @@ impl CellworksApp {
         self.opened.as_ref()
     }
 
+    /// The layer the view is on, what is framed and what is selected.
+    pub fn navigation(&self) -> &Navigation {
+        &self.navigation
+    }
+
+    /// The opened project's map, once it has arrived.
+    fn map(&self) -> Option<&ProjectMap> {
+        match self.opened.as_ref()?.state() {
+            ProjectState::Mapped(map) => Some(map),
+            _ => None,
+        }
+    }
+
+    /// The universe's project whose folder is `path`.
+    fn project_at(&self, path: &std::path::Path) -> Option<Project> {
+        match self.universe.scan() {
+            ScanState::Reported(projects) => projects
+                .iter()
+                .find(|project| project.id.path() == path)
+                .cloned(),
+            _ => None,
+        }
+    }
+
     /// Opens `project` and starts reading it with the district prefix rule its
     /// settings name; an unknown name reads with the default and says so.
     pub fn open(&mut self, project: Project) {
@@ -110,6 +140,7 @@ impl CellworksApp {
             opened.note(OpenedNotice::UnknownDistrictPrefix { name });
         }
         self.opened = Some(opened);
+        self.navigation.opened(project.id.path().to_owned());
     }
 
     /// The universe as it currently stands.
@@ -138,40 +169,77 @@ impl eframe::App for CellworksApp {
     }
 }
 
-/// Paints one frame: the universe, or the opened project. A double-click on a
-/// project opens it; Esc goes back to the universe.
+/// Paints one frame: the universe, or the opened project. A click selects a
+/// project or an element of the map, a double-click opens a project; Enter
+/// moves one layer in and Esc one layer out.
 pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
+    let (enter, esc) = ui.input(|input| {
+        (
+            input.key_pressed(egui::Key::Enter),
+            input.key_pressed(egui::Key::Escape),
+        )
+    });
+    if esc {
+        let map = app.map().cloned();
+        if app.navigation.esc(map.as_ref()) == Some(Moved::Closed) {
+            app.opened = None;
+        }
+    }
+    if enter {
+        let map = app.map().cloned();
+        if let Some(Moved::Opened(path)) = app.navigation.enter(map.as_ref())
+            && let Some(project) = app.project_at(&path)
+        {
+            app.open(project);
+        }
+    }
+
     match &app.opened {
         None => {
-            if let Some(project) = cellworks_workspace::ui::universe(ui, &app.universe) {
-                app.open(project);
+            match cellworks_workspace::ui::universe(ui, &app.universe, app.navigation.selection()) {
+                Some(UniverseClick::Selected(project)) => {
+                    app.navigation.select(project.id.path().to_owned());
+                }
+                Some(UniverseClick::Opened(project)) => app.open(project),
+                None => {}
             }
         }
-        Some(_) if ui.input(|input| input.key_pressed(egui::Key::Escape)) => {
-            app.opened = None;
-            cellworks_workspace::ui::universe(ui, &app.universe);
-        }
         Some(opened) => {
-            egui::CentralPanel::default().show(ui, |ui| project(ui, opened));
+            let clicked = egui::CentralPanel::default()
+                .show(ui, |ui| project(ui, opened, &app.navigation))
+                .inner;
+            if let Some(path) = clicked {
+                app.navigation.select(path);
+            }
         }
     }
 }
 
-fn project(ui: &mut egui::Ui, opened: &OpenedProject) {
+/// Draws the opened project, and returns the element clicked, if any.
+fn project(
+    ui: &mut egui::Ui,
+    opened: &OpenedProject,
+    navigation: &Navigation,
+) -> Option<std::path::PathBuf> {
     for notice in opened.notices() {
         ui.label(notice_text(notice));
     }
     match opened.state() {
         ProjectState::Reading => {
             ui.label(READING);
+            None
         }
         ProjectState::Empty => {
             ui.label(EMPTY);
+            None
         }
         ProjectState::Failed => {
             ui.label(FAILED);
+            None
         }
-        ProjectState::Mapped(map) => cellworks_map::ui::project(ui, map),
+        ProjectState::Mapped(map) => {
+            cellworks_map::ui::project(ui, map, navigation.framing(map), navigation.selection())
+        }
     }
 }
 

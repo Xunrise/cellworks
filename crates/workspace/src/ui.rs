@@ -2,8 +2,13 @@
 //! in, and whatever it could not do.
 //!
 //! The only module of this crate that depends on egui, and the only one that
-//! holds a word the engineer reads. There is no layout, no district, no zoom
-//! and no selection here — those belong to the Map and Navigation contexts.
+//! holds a word the engineer reads. There is no layout, no district and no
+//! zoom here — those belong to the Map context. The selection belongs to
+//! Navigation: this view outlines the project it is handed and reports clicks.
+
+use std::path::Path;
+
+use egui::StrokeKind;
 
 use crate::Sources;
 use crate::project::Project;
@@ -17,23 +22,40 @@ const SCANNING: &str = "Scanning for projects…";
 /// "Scanning" on the screen for ever.
 const FAILED: &str = "Could not finish scanning for projects.";
 
-/// Draws the universe, and returns the project the engineer double-clicked
-/// to open, if any.
-pub fn universe(ui: &mut egui::Ui, universe: &Universe) -> Option<Project> {
+/// A click on a project's entry.
+#[derive(Clone, Debug, PartialEq)]
+pub enum UniverseClick {
+    /// One click: the engineer selects the project.
+    Selected(Project),
+    /// A double-click: the engineer opens the project.
+    Opened(Project),
+}
+
+/// Draws the universe with the project at `selected` outlined, and returns
+/// the entry the engineer clicked, if any.
+pub fn universe(
+    ui: &mut egui::Ui,
+    universe: &Universe,
+    selected: Option<&Path>,
+) -> Option<UniverseClick> {
     egui::CentralPanel::default()
         .show(ui, |ui| {
             // Every project must be reachable however many there are, so the
             // list scrolls once it is taller than the window.
             egui::ScrollArea::vertical()
                 .auto_shrink(false)
-                .show(ui, |ui| entries(ui, universe))
+                .show(ui, |ui| entries(ui, universe, selected))
                 .inner
         })
         .inner
 }
 
-fn entries(ui: &mut egui::Ui, universe: &Universe) -> Option<Project> {
-    let mut opened = None;
+fn entries(
+    ui: &mut egui::Ui,
+    universe: &Universe,
+    selected: Option<&Path>,
+) -> Option<UniverseClick> {
+    let mut clicked = None;
 
     match universe.scan() {
         ScanState::Scanning => {
@@ -52,8 +74,20 @@ fn entries(ui: &mut egui::Ui, universe: &Universe) -> Option<Project> {
                 let entry = ui
                     .label(project.name.as_str())
                     .interact(egui::Sense::click());
+                if selected == Some(project.id.path()) {
+                    ui.painter().rect_stroke(
+                        entry.rect.expand(2.0),
+                        2.0,
+                        ui.visuals().selection.stroke,
+                        StrokeKind::Outside,
+                    );
+                    ui.ctx()
+                        .accesskit_node_builder(entry.id, |node| node.set_selected(true));
+                }
                 if entry.double_clicked() {
-                    opened = Some(project.clone());
+                    clicked = Some(UniverseClick::Opened(project.clone()));
+                } else if entry.clicked() {
+                    clicked = Some(UniverseClick::Selected(project.clone()));
                 }
             }
         }
@@ -63,7 +97,7 @@ fn entries(ui: &mut egui::Ui, universe: &Universe) -> Option<Project> {
         ui.label(notice_text(notice));
     }
 
-    opened
+    clicked
 }
 
 /// What an empty universe tells the engineer.

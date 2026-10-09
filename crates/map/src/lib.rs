@@ -13,10 +13,12 @@ pub mod ui;
 
 use std::path::{Path, PathBuf};
 
+use egui::Rect;
+
 pub use districts::{
     Directories, DistrictStrategy, PREFIX_RULES, PrefixRule, default_prefix_rule, prefix_rule,
 };
-pub use graph::{District, Group, Node, ProjectMap, SubDistrict};
+pub use graph::{District, Found, Group, Node, ProjectMap, SubDistrict};
 
 impl ProjectMap {
     /// The map of a project: `strategy` cuts `files`, relative to `root`, into
@@ -37,4 +39,15 @@ impl ProjectMap {
             extent,
         }
     }
+}
+
+/// Which part of a map a frame shows, and how large.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Framing {
+    /// The rectangle to show, at the layout's own scale.
+    pub area: Rect,
+    /// The share of the view's width or height it fills, whichever is tighter.
+    pub fill: f32,
+    /// Whether it may be drawn larger than the layout's own size.
+    pub scale_up: bool,
 }

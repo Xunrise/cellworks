@@ -31,7 +31,12 @@ Source refs are line numbers of [the prototype findings](../../../discovery/2026
 > code time, not at analysis time.
 
 ### Aggregates
-_No entries yet._
+- **Navigation** (`cellworks_navigation::Navigation`): what is framed (the Universe, the open project, a folder or a
+  node) and the selection. Invariants: the layer follows from what is framed (a folder is the Directory layer, a node
+  the File layer); Enter moves the frame to the selection, Esc moves it to the folder holding what is framed and
+  selects that folder, and leaving a district frames the whole project with the district still selected. The
+  selection is a path read on the current layer, so the district of a project's top-level files, which has the
+  project's own path, is never mistaken for the project. (STORY-004)
 
 ### Entities (non-aggregate roots)
 _No entries yet._
