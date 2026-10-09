@@ -4,8 +4,10 @@
 //! Defined by docs/domain/contexts/CodeAnalysis/CodeAnalysis.md. So far it
 //! finds a project's included files and hands them to the Map: in a git
 //! repository git says which files it shows, elsewhere the folder is walked,
-//! and hidden folders are left out either way. [`load`] is an ordinary
-//! blocking function and [`start_load`] is the thread around it.
+//! and hidden folders are left out either way. With ignored files switched on,
+//! git is not asked: the folder is walked into hidden folders too, and only
+//! `.git` folders are left out. [`load`] is an ordinary blocking function and
+//! [`start_load`] is the thread around it.
 
 mod event;
 mod files;
@@ -23,12 +25,14 @@ pub use git::{GitCli, GitListing, GitUnavailable};
 ///
 /// Blocking: called on the background thread [`start_load`] spawns, and
 /// directly from a test. [`CodeAnalysisEvent::ProjectMapped`] comes last, and
-/// not at all when the project folder itself cannot be read.
+/// not at all when the project folder itself cannot be read. With `ignored`,
+/// git-ignored files and hidden folders are on the map too.
 pub fn load(
     root: &Path,
     name: &str,
     prefix: &'static PrefixRule,
     git: &dyn GitListing,
+    ignored: bool,
 ) -> Vec<CodeAnalysisEvent> {
     let project = root.to_path_buf();
     let mut events = Vec::new();
@@ -45,7 +49,9 @@ pub fn load(
     // A repository exactly when `.git` is there, of either kind: a directory,
     // or the file a linked worktree has.
     let is_repository = root.join(".git").symlink_metadata().is_ok();
-    let listed = if is_repository {
+    // ponytail: with ignored files on, a large ignored tree (`target/`,
+    // `node_modules/`) is walked and mapped in full; cap it if that is slow.
+    let listed = if is_repository && !ignored {
         git.visible_files(root)
     } else {
         Err(GitUnavailable(String::new()))
@@ -54,13 +60,13 @@ pub fn load(
     let files = match listed {
         Ok(files) => files,
         Err(GitUnavailable(reason)) => {
-            if is_repository {
+            if is_repository && !ignored {
                 events.push(CodeAnalysisEvent::GitExcludesUnavailable {
                     project: project.clone(),
                     reason,
                 });
             }
-            let (files, skipped) = files::walk(root);
+            let (files, skipped) = files::walk(root, ignored);
             events.extend(skipped.into_iter().map(|(path, reason)| {
                 CodeAnalysisEvent::ProjectFolderSkipped {
                     project: project.clone(),
@@ -74,7 +80,7 @@ pub fn load(
 
     let files: Vec<PathBuf> = files
         .into_iter()
-        .filter(|file| !files::in_hidden_folder(file))
+        .filter(|file| ignored || !files::in_hidden_folder(file))
         .collect();
     let map = ProjectMap::of(name, root, &files, &Directories { prefix });
     events.push(CodeAnalysisEvent::ProjectMapped { project, map });
@@ -89,11 +95,12 @@ pub fn start_load(
     name: String,
     prefix: &'static PrefixRule,
     git: Arc<dyn GitListing + Send + Sync>,
+    ignored: bool,
 ) -> mpsc::Receiver<CodeAnalysisEvent> {
     let (sender, receiver) = mpsc::channel();
 
     std::thread::spawn(move || {
-        for event in load(&root, &name, prefix, git.as_ref()) {
+        for event in load(&root, &name, prefix, git.as_ref(), ignored) {
             if sender.send(event).is_err() {
                 return;
             }
@@ -160,7 +167,23 @@ mod tests {
     }
 
     fn read(root: &Path, git: &dyn GitListing) -> Vec<CodeAnalysisEvent> {
-        load(root, "shop", default_prefix_rule(), git)
+        load(root, "shop", default_prefix_rule(), git, false)
+    }
+
+    #[test]
+    fn with_ignored_files_on_git_is_not_asked_and_only_dot_git_is_left_out() {
+        let tree = tree(&[
+            ".git/HEAD",
+            ".github/workflows/ci.yml",
+            "build/output.o",
+            "src/catalog/item.rs",
+        ]);
+        let git = Recorded::listing(&["src/catalog/item.rs"]);
+
+        let events = load(tree.path(), "shop", default_prefix_rule(), &git, true);
+
+        assert!(!git.asked.get());
+        assert_eq!(district_names(&events), [".github", "build", "src"]);
     }
 
     #[test]
@@ -282,6 +305,7 @@ mod tests {
             "shop".to_owned(),
             default_prefix_rule(),
             Arc::new(GitCli),
+            false,
         );
         let reported = events
             .recv_timeout(std::time::Duration::from_secs(30))

@@ -105,7 +105,7 @@ pub fn double_click(harness: &mut Harness<'_, CellworksApp>, name: &str) {
     harness.run();
 }
 
-/// Lets the read finish, then draws the frame that shows it.
+/// Lets the read, or the read again, finish, then draws the frame that shows it.
 pub fn await_read(harness: &mut Harness<'_, CellworksApp>) {
     let started = Instant::now();
     loop {
@@ -113,7 +113,7 @@ pub fn await_read(harness: &mut Harness<'_, CellworksApp>) {
         let reading = harness
             .state()
             .opened()
-            .is_some_and(|opened| opened.state() == &ProjectState::Reading);
+            .is_some_and(|opened| opened.is_reading());
         if !reading || started.elapsed() > Duration::from_secs(30) {
             break;
         }

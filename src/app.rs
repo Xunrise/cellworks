@@ -16,7 +16,7 @@
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
-use cellworks_code_analysis::{GitCli, GitListing, start_load};
+use cellworks_code_analysis::{CodeAnalysisEvent, GitCli, GitListing, start_load};
 use cellworks_map::{ProjectMap, default_prefix_rule, prefix_rule};
 use cellworks_navigation::{Moved, Navigation};
 use cellworks_workspace::ui::UniverseClick;
@@ -41,6 +41,9 @@ pub struct CellworksApp {
     opened: Option<OpenedProject>,
     navigation: Navigation,
     git: Arc<dyn GitListing + Send + Sync>,
+    /// Whether git-ignored files and hidden folders are on the map. Off at
+    /// every start, kept for every project opened in this session.
+    show_ignored: bool,
 }
 
 impl CellworksApp {
@@ -56,6 +59,7 @@ impl CellworksApp {
                 opened: None,
                 navigation: Navigation::default(),
                 git: Arc::new(GitCli),
+                show_ignored: false,
             },
             None => CellworksApp {
                 universe: Universe::without_home(),
@@ -63,6 +67,7 @@ impl CellworksApp {
                 opened: None,
                 navigation: Navigation::default(),
                 git: Arc::new(GitCli),
+                show_ignored: false,
             },
         }
     }
@@ -76,6 +81,7 @@ impl CellworksApp {
             opened: None,
             navigation: Navigation::default(),
             git: Arc::new(GitCli),
+            show_ignored: false,
         }
     }
 
@@ -92,6 +98,14 @@ impl CellworksApp {
         }
         if let Some(opened) = &mut self.opened {
             opened.drain();
+            match opened.state() {
+                ProjectState::Mapped(map) => self.navigation.remapped(map),
+                // Nothing left to frame or select: the project, whole.
+                ProjectState::Empty => self
+                    .navigation
+                    .opened(opened.project().id.path().to_owned()),
+                ProjectState::Reading | ProjectState::Failed => {}
+            }
         }
     }
 
@@ -124,23 +138,41 @@ impl CellworksApp {
         }
     }
 
-    /// Opens `project` and starts reading it with the district prefix rule its
-    /// settings name; an unknown name reads with the default and says so.
+    /// Opens `project` and starts reading it.
     pub fn open(&mut self, project: Project) {
-        let named = project.district_prefix.clone();
-        let rule = named.as_deref().and_then(prefix_rule);
-        let events = start_load(
+        let path = project.id.path().to_owned();
+        let events = self.read(&project);
+        let mut opened = OpenedProject::reading(project, events);
+        note_unknown_prefix(&mut opened);
+        self.opened = Some(opened);
+        self.navigation.opened(path);
+    }
+
+    /// Switches ignored files on or off and reads the open project again,
+    /// leaving the view where it is.
+    fn toggle_ignored(&mut self) {
+        let Some(project) = self.opened.as_ref().map(|opened| opened.project().clone()) else {
+            return;
+        };
+        self.show_ignored = !self.show_ignored;
+        let events = self.read(&project);
+        if let Some(opened) = &mut self.opened {
+            opened.reread(events);
+            note_unknown_prefix(opened);
+        }
+    }
+
+    /// Starts reading `project` with the district prefix rule its settings
+    /// name, or the default when the name is unknown.
+    fn read(&self, project: &Project) -> Receiver<CodeAnalysisEvent> {
+        let rule = project.district_prefix.as_deref().and_then(prefix_rule);
+        start_load(
             project.id.path().to_owned(),
             project.name.clone(),
             rule.unwrap_or_else(default_prefix_rule),
             Arc::clone(&self.git),
-        );
-        let mut opened = OpenedProject::reading(events);
-        if let (Some(name), None) = (named, rule) {
-            opened.note(OpenedNotice::UnknownDistrictPrefix { name });
-        }
-        self.opened = Some(opened);
-        self.navigation.opened(project.id.path().to_owned());
+            self.show_ignored,
+        )
     }
 
     /// The universe as it currently stands.
@@ -159,10 +191,7 @@ impl eframe::App for CellworksApp {
         // gets its result onto the screen without anyone touching the mouse.
         // Asked after `draw`, because the frame that opens a project is the
         // one `draw` opens it in.
-        let reading = self
-            .opened
-            .as_ref()
-            .is_some_and(|opened| opened.state() == &ProjectState::Reading);
+        let reading = self.opened.as_ref().is_some_and(OpenedProject::is_reading);
         if self.universe.scan() == &ScanState::Scanning || reading {
             ui.ctx().request_repaint();
         }
@@ -171,14 +200,19 @@ impl eframe::App for CellworksApp {
 
 /// Paints one frame: the universe, or the opened project. A click selects a
 /// project or an element of the map, a double-click opens a project; Enter
-/// moves one layer in and Esc one layer out.
+/// moves one layer in and Esc one layer out; I switches ignored files on and
+/// off while a project is open.
 pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
-    let (enter, esc) = ui.input(|input| {
+    let (enter, esc, ignored) = ui.input(|input| {
         (
             input.key_pressed(egui::Key::Enter),
             input.key_pressed(egui::Key::Escape),
+            input.modifiers.is_none() && input.key_pressed(egui::Key::I),
         )
     });
+    if ignored {
+        app.toggle_ignored();
+    }
     if esc {
         let map = app.map().cloned();
         if app.navigation.esc(map.as_ref()) == Some(Moved::Closed) {
@@ -240,6 +274,17 @@ fn project(
         ProjectState::Mapped(map) => {
             cellworks_map::ui::project(ui, map, navigation.framing(map), navigation.selection())
         }
+    }
+}
+
+/// Says so beside `opened` when its settings name a district prefix rule that
+/// does not exist; the read uses the default instead.
+fn note_unknown_prefix(opened: &mut OpenedProject) {
+    if let Some(name) = &opened.project().district_prefix
+        && prefix_rule(name).is_none()
+    {
+        let name = name.clone();
+        opened.note(OpenedNotice::UnknownDistrictPrefix { name });
     }
 }
 

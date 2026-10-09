@@ -96,6 +96,25 @@ impl Navigation {
         self.selection = None;
     }
 
+    /// The open project was read again into `map`: a framed or selected path
+    /// it no longer holds is let go, so the project is framed whole and
+    /// nothing in it is selected.
+    pub fn remapped(&mut self, map: &ProjectMap) {
+        if let Framed::Folder(path) | Framed::Node(path) = &self.framed
+            && map.find(path).is_none()
+        {
+            self.framed = Framed::Project;
+        }
+        if self.framed != Framed::Universe
+            && self
+                .selection
+                .as_ref()
+                .is_some_and(|path| map.find(path).is_none())
+        {
+            self.selection = None;
+        }
+    }
+
     /// One layer in: a selected project opens, a selected folder or node is
     /// framed. On a framed node nothing happens yet; the editor comes later.
     pub fn enter(&mut self, map: Option<&ProjectMap>) -> Option<Moved> {

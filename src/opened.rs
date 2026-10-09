@@ -3,13 +3,15 @@
 //!
 //! The same shape as the Workspace's `Universe`: Reading is a state of its own
 //! so a slow read never flashes an empty project, and a notice accumulates
-//! beside whichever state is current and never replaces the map.
+//! beside whichever state is current and never replaces the map. A project
+//! read again keeps its map on screen until the new one arrives.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 use cellworks_code_analysis::CodeAnalysisEvent;
 use cellworks_map::ProjectMap;
+use cellworks_workspace::Project;
 
 /// How far the read has got.
 #[derive(Clone, Debug, PartialEq)]
@@ -38,24 +40,46 @@ pub enum OpenedNotice {
 
 /// The project on screen, and the read that fills it in.
 pub struct OpenedProject {
+    project: Project,
     state: ProjectState,
     notices: Vec<OpenedNotice>,
     events: Receiver<CodeAnalysisEvent>,
+    rereading: bool,
 }
 
 impl OpenedProject {
-    /// A project whose read is under way and reports over `events`.
-    pub fn reading(events: Receiver<CodeAnalysisEvent>) -> OpenedProject {
+    /// `project`, whose read is under way and reports over `events`.
+    pub fn reading(project: Project, events: Receiver<CodeAnalysisEvent>) -> OpenedProject {
         OpenedProject {
+            project,
             state: ProjectState::Reading,
             notices: Vec::new(),
             events,
+            rereading: false,
         }
+    }
+
+    /// The project that is open.
+    pub fn project(&self) -> &Project {
+        &self.project
     }
 
     /// How far the read has got.
     pub fn state(&self) -> &ProjectState {
         &self.state
+    }
+
+    /// Whether a read, the first or a later one, has yet to send its map.
+    pub fn is_reading(&self) -> bool {
+        self.rereading || self.state == ProjectState::Reading
+    }
+
+    /// Reads the project again over `events`. The state stays as it is until
+    /// the new map arrives; the notices belonged to the read before.
+    pub fn reread(&mut self, events: Receiver<CodeAnalysisEvent>) {
+        self.events = events;
+        self.notices.clear();
+        self.rereading = true;
     }
 
     /// Everything the engineer should know about it, in the order it was said.
@@ -71,11 +95,13 @@ impl OpenedProject {
     /// Folds one event into the state.
     pub fn apply(&mut self, event: CodeAnalysisEvent) {
         match event {
-            CodeAnalysisEvent::ProjectMapped { map, .. } if map.is_empty() => {
-                self.state = ProjectState::Empty;
-            }
             CodeAnalysisEvent::ProjectMapped { map, .. } => {
-                self.state = ProjectState::Mapped(map);
+                self.rereading = false;
+                self.state = if map.is_empty() {
+                    ProjectState::Empty
+                } else {
+                    ProjectState::Mapped(map)
+                };
             }
             CodeAnalysisEvent::ProjectFolderSkipped { path, reason, .. } => {
                 self.note(OpenedNotice::FolderSkipped { path, reason });
@@ -88,12 +114,14 @@ impl OpenedProject {
 
     /// Takes everything the read has sent so far. Never waits. A read that
     /// goes away before its map arrives has failed; after it, it is just over.
+    /// A read again that goes away without a map leaves the old one on screen.
     pub fn drain(&mut self) {
         loop {
             match self.events.try_recv() {
                 Ok(event) => self.apply(event),
                 Err(TryRecvError::Empty) => return,
                 Err(TryRecvError::Disconnected) => {
+                    self.rereading = false;
                     if self.state == ProjectState::Reading {
                         self.state = ProjectState::Failed;
                     }
@@ -123,7 +151,8 @@ mod tests {
 
     fn opened() -> (OpenedProject, mpsc::Sender<CodeAnalysisEvent>) {
         let (sender, receiver) = mpsc::channel();
-        (OpenedProject::reading(receiver), sender)
+        let project = Project::at(PathBuf::from("/p/shop"));
+        (OpenedProject::reading(project, receiver), sender)
     }
 
     fn mapped(files: &[&str]) -> CodeAnalysisEvent {
@@ -183,6 +212,44 @@ mod tests {
         project.apply(skipped());
         assert!(matches!(project.state(), ProjectState::Mapped(_)));
         assert_eq!(project.notices().len(), 2);
+    }
+
+    #[test]
+    fn a_project_read_again_keeps_its_map_until_the_new_one_arrives() {
+        let (mut project, sender) = opened();
+        sender.send(mapped(&["src/a.rs"])).expect("listening");
+        sender.send(skipped()).expect("listening");
+        project.drain();
+        let before = project.state().clone();
+
+        let (sender, receiver) = mpsc::channel();
+        project.reread(receiver);
+        project.drain();
+        assert!(project.is_reading());
+        assert_eq!(project.state(), &before);
+        assert!(project.notices().is_empty());
+
+        sender
+            .send(mapped(&["src/a.rs", "src/b.rs"]))
+            .expect("listening");
+        project.drain();
+        assert!(!project.is_reading());
+        assert_ne!(project.state(), &before);
+    }
+
+    #[test]
+    fn a_read_again_that_goes_away_leaves_the_old_map() {
+        let (mut project, sender) = opened();
+        sender.send(mapped(&["src/a.rs"])).expect("listening");
+        project.drain();
+
+        let (sender, receiver) = mpsc::channel();
+        project.reread(receiver);
+        drop(sender);
+        project.drain();
+
+        assert!(!project.is_reading());
+        assert!(matches!(project.state(), ProjectState::Mapped(_)));
     }
 
     #[test]
