@@ -15,3 +15,6 @@ docs/node_modules
 # Business context as the stages see it; locally a symlink to context.
 # No trailing slash: a `dir/` pattern does not match a symlink to a directory.
 factory-context
+
+# Local output of Claude sessions; never part of the repository
+/Claude outputs/

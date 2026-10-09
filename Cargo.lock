@@ -622,6 +622,12 @@ dependencies = [
 [[package]]
 name = "cellworks-workspace"
 version = "0.0.0"
+dependencies = [
+ "egui",
+ "egui_kittest",
+ "tempfile",
+ "toml",
+]
 
 [[package]]
 name = "cfg-if"
