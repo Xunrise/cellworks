@@ -5,6 +5,7 @@
 //! stands for, never by its name: two districts may carry the same label, and
 //! nothing keys on a label.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use egui::Rect;
@@ -68,6 +69,35 @@ impl ProjectMap {
     /// Whether there is nothing to draw: the project has no included file.
     pub fn is_empty(&self) -> bool {
         self.districts.is_empty()
+    }
+
+    /// Marks the nodes standing for closed folders: `closed` maps each such
+    /// folder, relative to the root, to the number of files it holds, and the
+    /// node's name says that number.
+    pub fn close(&mut self, closed: &BTreeMap<PathBuf, usize>) {
+        if closed.is_empty() {
+            return;
+        }
+        let mark = |nodes: &mut [Node]| {
+            for node in nodes {
+                let relative = node.path.strip_prefix(&self.root).unwrap_or(&node.path);
+                if let Some(count) = closed.get(relative) {
+                    let files = if *count == 1 { "file" } else { "files" };
+                    node.name = format!("{} ({count} {files})", node.name);
+                }
+            }
+        };
+        for district in &mut self.districts {
+            mark(&mut district.nodes);
+            for sub in &mut district.sub_districts {
+                mark(&mut sub.nodes);
+                let mut pending: Vec<&mut Group> = sub.groups.iter_mut().collect();
+                while let Some(group) = pending.pop() {
+                    mark(&mut group.nodes);
+                    pending.extend(group.groups.iter_mut());
+                }
+            }
+        }
     }
 }
 

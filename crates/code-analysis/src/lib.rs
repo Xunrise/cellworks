@@ -5,10 +5,11 @@
 //! finds a project's included files and hands them to the Map: in a git
 //! repository git says which files it shows, elsewhere the folder is walked,
 //! and hidden folders are left out either way. With ignored files switched on,
-//! git is not asked: the folder is walked into hidden folders too, and only
-//! `.git` folders are left out. [`load`] is an ordinary blocking function and
+//! the folder is walked into hidden folders too, only `.git` folders are left
+//! out, and a large ignored folder stays closed: one node with its file count. [`load`] is an ordinary blocking function and
 //! [`start_load`] is the thread around it.
 
+mod closed;
 mod event;
 mod files;
 mod git;
@@ -49,40 +50,51 @@ pub fn load(
     // A repository exactly when `.git` is there, of either kind: a directory,
     // or the file a linked worktree has.
     let is_repository = root.join(".git").symlink_metadata().is_ok();
-    // ponytail: with ignored files on, a large ignored tree (`target/`,
-    // `node_modules/`) is walked and mapped in full; cap it if that is slow.
-    let listed = if is_repository && !ignored {
+    let listed = if is_repository {
         git.visible_files(root)
     } else {
         Err(GitUnavailable(String::new()))
     };
 
-    let files = match listed {
+    let mut skipped = Vec::new();
+    let visible = match listed {
         Ok(files) => files,
         Err(GitUnavailable(reason)) => {
-            if is_repository && !ignored {
+            if is_repository {
                 events.push(CodeAnalysisEvent::GitExcludesUnavailable {
                     project: project.clone(),
                     reason,
                 });
             }
-            let (files, skipped) = files::walk(root, ignored);
-            events.extend(skipped.into_iter().map(|(path, reason)| {
-                CodeAnalysisEvent::ProjectFolderSkipped {
-                    project: project.clone(),
-                    path,
-                    reason,
-                }
-            }));
+            let (files, unread) = files::walk(root, false);
+            skipped = unread;
             files
         }
     };
-
-    let files: Vec<PathBuf> = files
+    let visible: Vec<PathBuf> = visible
         .into_iter()
-        .filter(|file| ignored || !files::in_hidden_folder(file))
+        .filter(|file| !files::in_hidden_folder(file))
         .collect();
-    let map = ProjectMap::of(name, root, &files, &Directories { prefix });
+
+    // ponytail: a closed folder is still walked in full to count its files;
+    // stop counting at the limit if reading `node_modules` is slow.
+    let (files, closed) = if ignored {
+        let (all, unread) = files::walk(root, true);
+        skipped = unread;
+        closed::close(all, &visible.iter().cloned().collect())
+    } else {
+        (visible, Default::default())
+    };
+    events.extend(skipped.into_iter().map(|(path, reason)| {
+        CodeAnalysisEvent::ProjectFolderSkipped {
+            project: project.clone(),
+            path,
+            reason,
+        }
+    }));
+
+    let mut map = ProjectMap::of(name, root, &files, &Directories { prefix });
+    map.close(&closed);
     events.push(CodeAnalysisEvent::ProjectMapped { project, map });
     events
 }
@@ -171,19 +183,18 @@ mod tests {
     }
 
     #[test]
-    fn with_ignored_files_on_git_is_not_asked_and_only_dot_git_is_left_out() {
+    fn with_ignored_files_on_only_dot_git_is_left_out() {
         let tree = tree(&[
             ".git/HEAD",
             ".github/workflows/ci.yml",
-            "build/output.o",
+            "out/output.o",
             "src/catalog/item.rs",
         ]);
         let git = Recorded::listing(&["src/catalog/item.rs"]);
 
         let events = load(tree.path(), "shop", default_prefix_rule(), &git, true);
 
-        assert!(!git.asked.get());
-        assert_eq!(district_names(&events), [".github", "build", "src"]);
+        assert_eq!(district_names(&events), [".github", "out", "src"]);
     }
 
     #[test]

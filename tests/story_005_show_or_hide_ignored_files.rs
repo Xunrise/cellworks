@@ -1,7 +1,8 @@
 //! STORY-005, show or hide ignored files on the map: I switches git-ignored
 //! files and hidden folders on and off while a project is open.
 //!
-//! One test per scenario of issue #16, named after it. Each project is a real
+//! One test per scenario of issue #16, named after it. The ignored folder is
+//! "generated" rather than the story's "target", which STORY-009 keeps closed. Each project is a real
 //! folder tree in a temporary directory with a `.git` folder, and git is a
 //! recorded listing of the files it does not ignore. No test runs git, reads
 //! `$HOME` or opens a window.
@@ -79,12 +80,12 @@ fn showing_ignored_files_puts_them_where_they_belong() {
 /// An ignored folder comes back with its contents
 #[test]
 fn an_ignored_folder_comes_back_with_its_contents() {
-    let tree = Tree::repository("shop", &["src/catalog/item.rs", "target/build.rs"]);
+    let tree = Tree::repository("shop", &["src/catalog/item.rs", "generated/build.rs"]);
     let mut harness = open(&tree, None, Recorded::listing(&["src/catalog/item.rs"]));
 
     switch(&mut harness);
 
-    assert_eq!(held_by(&map(&harness), "target"), ["build.rs"]);
+    assert_eq!(held_by(&map(&harness), "generated"), ["build.rs"]);
 }
 
 /// Hiding them again clears them
@@ -95,7 +96,7 @@ fn hiding_them_again_clears_them() {
         &[
             "src/catalog/item.rs",
             "src/catalog/item.log",
-            "target/build.rs",
+            "generated/build.rs",
             ".cache/stale.bin",
         ],
     );
@@ -114,10 +115,10 @@ fn hiding_them_again_clears_them() {
 /// whole, nothing is selected, and Esc closes the project.
 #[test]
 fn hiding_them_again_while_one_is_framed_frames_the_project() {
-    let tree = Tree::repository("shop", &["src/catalog/item.rs", "target/build.rs"]);
+    let tree = Tree::repository("shop", &["src/catalog/item.rs", "generated/build.rs"]);
     let mut harness = open(&tree, None, Recorded::listing(&["src/catalog/item.rs"]));
     switch(&mut harness);
-    for name in ["target", "build.rs"] {
+    for name in ["generated", "build.rs"] {
         harness.get_by_label(name).click();
         harness.run();
         harness.key_press(Key::Enter);
