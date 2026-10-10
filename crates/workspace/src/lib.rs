@@ -10,6 +10,7 @@
 //! environment, which is what keeps every test away from the user's home
 //! directory.
 
+mod arrangement;
 mod discovery;
 mod event;
 mod project;
@@ -24,6 +25,7 @@ mod test_tree;
 use std::path::PathBuf;
 use std::sync::mpsc;
 
+pub use arrangement::{Arrangement, ArrangementStore};
 pub use event::WorkspaceEvent;
 pub use project::{Project, ProjectId};
 pub use universe::{Notice, NoticeKind, ScanState, Universe};
@@ -83,6 +85,7 @@ pub fn scan(sources: &Sources) -> Vec<WorkspaceEvent> {
     let added = settings::read(&sources.settings_file);
     let (mut projects, unidentified) = registry::merge(&discovered.folders, &added.folders);
     registry::attach_district_prefixes(&mut projects, &added.district_prefixes);
+    registry::attach_contexts(&mut projects, &added.contexts);
 
     let mut events = discovered.events;
     events.extend(added.events);

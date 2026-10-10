@@ -12,11 +12,18 @@ use std::path::{Path, PathBuf};
 
 use egui::{Color32, Pos2, Rect, RichText, Sense, Shape, Stroke, StrokeKind, Vec2, pos2, vec2};
 
+mod explain;
+mod lanes;
+
+pub use explain::{banner, caption, caption_text, lane_toggles, legend, legend_text, lens_bar};
+pub use lanes::{DrawnLane, colour_of};
+
 use crate::Framing;
 use crate::city::{self, iso, iso_bounds};
-use crate::graph::{Group, Item, ItemKind, Node, ProjectMap};
+use crate::graph::{DistrictKind, Group, Item, ItemKind, Node, ProjectMap};
 use crate::layout::TITLE;
 use crate::view::{Pivot, View, fit, turn_at};
+use crate::{LaneId, LaneKind, Lanes, Lens};
 
 /// One frame of the map as drawn.
 pub struct Drawn {
@@ -38,6 +45,55 @@ pub struct Drawn {
     /// The space the map was drawn in. Names placed past its edge make the
     /// `Ui` around it grow, so what comes after asks this instead.
     pub panel: Rect,
+    /// Every district drawn, with the outline it was drawn in.
+    pub districts: Vec<(PathBuf, Outline)>,
+    /// Every lane drawn.
+    pub lanes: Vec<DrawnLane>,
+    /// The lane clicked, if any.
+    pub lane_clicked: Option<LaneClick>,
+    /// The lane under the pointer, if any.
+    pub lane_hovered: Option<LaneId>,
+    /// In the custom lens: the district or block dragged, and how far this
+    /// frame, at the layout's scale; and whether the drag ended.
+    pub moved: Option<(PathBuf, Vec2)>,
+    pub move_ended: bool,
+}
+
+/// The outline a district is drawn in: each lens has its own, so the view
+/// says which lens is on before a name is read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outline {
+    /// A round plaza with a dashed edge: the folders lens, the tests and the
+    /// outskirts.
+    Plaza,
+    /// A square step: the imports lens.
+    Step,
+    /// A hexagon: the calls lens.
+    Hexagon,
+    /// A double ring: the co-change lens.
+    Orbit,
+    /// A cell's membrane, a thick ring with a thin one inside: the cells
+    /// lens.
+    Membrane,
+    /// A round plaza with a solid edge: the engineer's own, the custom lens.
+    Own,
+}
+
+impl Outline {
+    /// The outline of a district of `kind` in `lens`.
+    pub fn of(lens: Lens, kind: DistrictKind) -> Outline {
+        match (lens, kind) {
+            (Lens::Custom, _) => Outline::Own,
+            (_, DistrictKind::Context | DistrictKind::NoContext) => Outline::Membrane,
+            (_, DistrictKind::Folder | DistrictKind::Tests | DistrictKind::Outskirts) => {
+                Outline::Plaza
+            }
+            (Lens::Imports, _) => Outline::Step,
+            (Lens::Calls, _) => Outline::Hexagon,
+            (Lens::CoChange, _) => Outline::Orbit,
+            (Lens::Folders | Lens::Cells, _) => Outline::Plaza,
+        }
+    }
 }
 
 /// One tower as drawn this frame.
@@ -158,6 +214,12 @@ const DASHES_FROM: f32 = 1.2;
 /// From this font size on, the floors close up are written as their lines.
 const LETTERS_FROM: f32 = 7.0;
 
+/// The colour of a road between cells.
+const ROAD: Color32 = Color32::from_rgb(38, 46, 60);
+
+/// The colour of a warning: an import cycle.
+const WARNING: Color32 = Color32::from_rgb(255, 150, 60);
+
 /// The colour of whatever needs the engineer: selection, the pointer.
 const ATTENTION: Color32 = Color32::from_rgb(0xfc, 0xee, 0x0a);
 
@@ -250,17 +312,32 @@ struct Painter<'a> {
     plaza: Option<Pos2>,
     labels: Vec<Labelled<'a>>,
     towers: Vec<(&'a Item, Color32)>,
-    /// The ground of every block drawn, and the node it stands for.
-    blocks: Vec<(Rect, &'a Path)>,
+    /// The ground of every block drawn, the node it stands for, and how high
+    /// it is raised.
+    blocks: Vec<(Rect, &'a Path, f32)>,
     /// The facade a turned camera faces, and how far it has turned.
     facing: Option<(Pivot, f32)>,
     /// Whether the view is underground: the cellar within reach.
     underground: bool,
+    /// The outline of the district being drawn.
+    outline: Outline,
+    /// For every item, the district whose colour it keeps (its crate).
+    homes: &'a std::collections::BTreeMap<PathBuf, usize>,
+    /// How high the district being drawn is raised.
+    lift: f32,
+    /// The blocks holding the files of an import cycle.
+    cycles: &'a std::collections::BTreeSet<PathBuf>,
+    /// Whether the city is being arranged (the custom lens): a district's
+    /// name then moves the district when dragged.
+    arranging: bool,
+    /// The district whose name was dragged this frame, how far on screen,
+    /// and whether the drag ended.
+    name_dragged: Option<(PathBuf, Vec2, bool)>,
 }
 
 /// A name to put on the map: the ground it names, how it is written, the
-/// name and the path it stands for.
-type Labelled<'a> = (Rect, Naming, &'a str, &'a Path);
+/// name, the path it stands for, and how high that ground is raised.
+type Labelled<'a> = (Rect, Naming, &'a str, &'a Path, f32);
 
 /// How a name is written: a district's in its colour along its front,
 /// always; a block with code on it just below its front edge, quietly and
@@ -278,22 +355,46 @@ enum Naming {
 /// there for the accessibility tree, in no colour.
 const NAMES_FROM: f32 = 0.9;
 
-/// Draws `map` with `framing` fitted to the space left in `ui`, outlines the
-/// element at `selected`, and reports what was clicked this frame: a name, a
-/// tower by any line of it, a block, or empty ground. With a `folder_view`,
-/// only that folder and what it holds are drawn. Close enough, the camera
-/// turns towards the facade of `pivot` (see [`turn_at`]). The cellar is
-/// faint and out of reach unless the view is `underground`. Draws nothing
-/// for an empty map.
-pub fn project(
-    ui: &mut egui::Ui,
-    map: &ProjectMap,
-    framing: Framing,
-    selected: Option<&Path>,
-    folder_view: Option<&Path>,
-    pivot: Option<Pivot>,
-    underground: bool,
-) -> Drawn {
+/// What is drawn of a map and how: the view options of one frame.
+#[derive(Clone, Copy, Debug)]
+pub struct ViewOptions<'a> {
+    /// The part of the map to fit into the space left.
+    pub framing: Framing,
+    /// The element outlined as selected.
+    pub selected: Option<&'a Path>,
+    /// The folder whose folder view is drawn; everything outside it faded.
+    pub folder_view: Option<&'a Path>,
+    /// The facade the camera turns towards, close enough (see [`turn_at`]).
+    pub pivot: Option<Pivot>,
+    /// Whether the cellar is in reach rather than faint.
+    pub underground: bool,
+    /// The lanes shown.
+    pub lanes: Lanes,
+    /// The lane picked, kept lit with what it carries.
+    pub picked: Option<&'a LaneId>,
+}
+
+/// A click on a lane: the lane, and with Cmd held the tower at its far end
+/// from the click, to travel to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LaneClick {
+    pub lane: LaneId,
+    pub travel: Option<PathBuf>,
+}
+
+/// Draws `map` as `options` say, fitted to the space left in `ui`, and
+/// reports what was clicked this frame: a name, a tower by any line of it, a
+/// block, or empty ground. Draws nothing for an empty map.
+pub fn project(ui: &mut egui::Ui, map: &ProjectMap, options: ViewOptions<'_>) -> Drawn {
+    let ViewOptions {
+        framing,
+        selected,
+        folder_view,
+        pivot,
+        underground,
+        lanes: shown,
+        picked,
+    } = options;
     let panel = ui.available_rect_before_wrap();
     let view = fit(framing, panel);
     let turn = turn_at(view.scale());
@@ -314,10 +415,37 @@ pub fn project(
         blocks: Vec::new(),
         facing: pivot.filter(|_| turn > 0.0).map(|pivot| (pivot, turn)),
         underground,
+        outline: Outline::Plaza,
+        homes: &map.homes,
+        lift: 0.0,
+        cycles: &map.cycles,
+        arranging: map.lens == Lens::Custom,
+        name_dragged: None,
     };
-    for (index, district) in map.districts.iter().enumerate() {
+    orbits(ui, map, &view);
+    let mut outlines = Vec::new();
+    // Back to front, so a raised district hides what stands behind it.
+    let mut order: Vec<usize> = (0..map.districts.len()).collect();
+    order.sort_by(|a, b| {
+        let depth = |d: usize| view.to_screen(map.districts[d].area.center(), 0.0).y;
+        depth(*a).total_cmp(&depth(*b)).then(a.cmp(b))
+    });
+    for index in order {
+        let district = &map.districts[index];
+        if district.elevation > 0.0 {
+            platform(
+                ui,
+                &view,
+                district.area,
+                district.elevation,
+                district_colour(index),
+            );
+        }
+        painter.lift = district.elevation;
         painter.colour = district_colour(index);
         painter.plaza = None;
+        painter.outline = Outline::of(map.lens, district.kind);
+        outlines.push((district.path.clone(), painter.outline));
         let (area, name, path) = (district.area, &district.name, &district.path);
         let shown = painter.ground(ui, area, name, path, false, true);
         for sub in &district.sub_districts {
@@ -329,43 +457,142 @@ pub fn project(
         }
         painter.nodes(ui, &district.nodes, shown);
     }
+    roads(ui, map, &view);
     // The quiet names of folders and blocks lie under the ground's sense, so
     // a click on a tower standing over a name reaches the tower; a district's
     // name lies over it.
     let (districts, quiet): (Vec<_>, Vec<_>) = std::mem::take(&mut painter.labels)
         .into_iter()
-        .partition(|(_, naming, _, _)| matches!(naming, Naming::District(_)));
-    for (area, naming, name, path) in quiet {
-        painter.label(ui, area, naming, name, path);
+        .partition(|(_, naming, _, _, _)| matches!(naming, Naming::District(_)));
+    for (area, naming, name, path, lift) in quiet {
+        painter.label(ui, area, naming, name, path, lift);
     }
     let ground = ui.interact(panel, ui.id().with("ground"), Sense::click_and_drag());
-    let dragged = view.ground_delta(ground.drag_delta());
+    let mut dragged = view.ground_delta(ground.drag_delta());
+    // In the custom lens a drag that starts on a block moves the block, one
+    // that starts on a district's open ground the district; elsewhere it
+    // pans. What it moves is kept from frame to frame.
+    let mut moved = None;
+    let mut move_ended = false;
+    if map.lens == Lens::Custom {
+        let held = ui.id().with("custom move");
+        if ground.drag_started()
+            && let Some(at) = ui
+                .input(|input| input.pointer.press_origin())
+                .or(ground.interact_pointer_pos())
+        {
+            // Where the button went down: the drag only starts once the
+            // pointer has moved, by then perhaps off a small block.
+            let block = painter
+                .blocks
+                .iter()
+                .find(|(area, _, lift)| area.contains(view.to_ground_at(at, *lift)))
+                .map(|(_, path, _)| path.to_path_buf());
+            let district = || {
+                map.at(view.to_ground(at))
+                    .first()
+                    .map(|path| path.to_path_buf())
+            };
+            let target: Option<PathBuf> = block.or_else(district);
+            ui.data_mut(|data| data.insert_temp(held, target));
+            // The drag starts once the pointer has moved a little: the move
+            // counts from where the button went down.
+            if let Some(now) = ground.interact_pointer_pos() {
+                dragged = view.ground_delta(now - at);
+            }
+        }
+        if let Some(path) = ui
+            .data(|data| data.get_temp::<Option<PathBuf>>(held))
+            .flatten()
+        {
+            if dragged != Vec2::ZERO {
+                moved = Some((path, dragged));
+                dragged = Vec2::ZERO;
+            }
+            if ground.drag_stopped() {
+                ui.data_mut(|data| data.remove::<Option<PathBuf>>(held));
+                move_ended = true;
+            }
+        }
+    }
     let pointer = ui
         .input(|input| input.pointer.hover_pos())
         .filter(|pointer| panel.contains(*pointer));
+    let time = ui.input(|input| input.time) as f32;
+    let focus = lanes::Focus {
+        shown,
+        selected,
+        picked,
+        pointer,
+    };
+    let mut frame = lanes::frame(map, &view, &focus);
+    let mut shapes = Vec::new();
+    lanes::draw(&mut frame, LaneKind::Imports, &view, time, &mut shapes);
+    ui.painter().extend(shapes);
     let (towers, hovered) = painter.towers(ui, pointer);
+    let mut shapes = Vec::new();
+    lanes::draw(&mut frame, LaneKind::Calls, &view, time, &mut shapes);
+    ui.painter().extend(shapes);
+    lanes::card(ui, &frame, picked, pointer);
+    if shown.imports || shown.calls {
+        // Traffic keeps moving.
+        ui.ctx().request_repaint();
+    }
     let mut entered = None;
     let mut ground_clicked = false;
-    if (ground.clicked() || ground.double_clicked())
+    let mut lane_clicked = None;
+    // A click on a lane picks it; with Cmd it travels to the far end.
+    if ground.clicked()
+        && let (Some(at), Some(lane)) = (
+            ground.interact_pointer_pos(),
+            frame.hovered.map(|i| &frame.lanes[i]),
+        )
+    {
+        let command = ui.input(|input| {
+            input.modifiers.command
+                || input
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, egui::Event::PointerButton { modifiers, .. } if modifiers.command))
+        });
+        let (start, end) = (
+            lane.screen[0],
+            *lane.screen.last().unwrap_or(&lane.screen[0]),
+        );
+        let far = if (start - at).length() > (end - at).length() {
+            &lane.ends[0]
+        } else {
+            &lane.ends[1]
+        };
+        lane_clicked = Some(LaneClick {
+            lane: lane.id.clone(),
+            travel: command.then(|| far.clone()),
+        });
+    } else if (ground.clicked() || ground.double_clicked())
         && let Some(at) = ground.interact_pointer_pos()
     {
         let tower = pick(&towers, at, painter.underground);
         if ground.double_clicked() {
             entered = tower.clone();
         }
-        let ground_at = view.to_ground(at);
         let block = painter
             .blocks
             .iter()
-            .find(|(area, _)| area.contains(ground_at))
-            .map(|(_, path)| path.to_path_buf());
+            .find(|(area, _, lift)| area.contains(view.to_ground_at(at, *lift)))
+            .map(|(_, path, _)| path.to_path_buf());
         match tower.or(block) {
             Some(path) => painter.clicked = Some(path),
             None => ground_clicked = true,
         }
     }
-    for (area, naming, name, path) in districts {
-        painter.label(ui, area, naming, name, path);
+    for (area, naming, name, path, lift) in districts {
+        painter.label(ui, area, naming, name, path, lift);
+    }
+    if let Some((path, by, ended)) = painter.name_dragged.take() {
+        if by != Vec2::ZERO {
+            moved = Some((path, view.ground_delta(by)));
+        }
+        move_ended |= ended;
     }
     Drawn {
         clicked: painter.clicked,
@@ -376,6 +603,103 @@ pub fn project(
         towers,
         dragged,
         panel,
+        districts: outlines,
+        lane_hovered: frame.hovered.map(|i| frame.lanes[i].id.clone()),
+        lanes: frame.lanes,
+        lane_clicked,
+        moved,
+        move_ended,
+    }
+}
+
+/// A district raised by `e`: a solid box from its ground down to its
+/// footprint, the two sides facing the viewer dark and edged in `colour`,
+/// with an opaque top for what stands on it.
+fn platform(ui: &egui::Ui, view: &View, area: Rect, e: f32, colour: Color32) {
+    let corners = [
+        area.left_top(),
+        area.right_top(),
+        area.right_bottom(),
+        area.left_bottom(),
+    ];
+    let top = |p: Pos2| view.to_screen(p, e);
+    let foot = |p: Pos2| view.to_screen(p, 0.0);
+    let edge = Stroke::new(1.0, colour.gamma_multiply(0.45));
+    // The sides facing the viewer are the ones whose ground edge is nearest
+    // the bottom of the screen; drawn back to front.
+    let mut sides: Vec<(Pos2, Pos2)> = (0..4).map(|k| (corners[k], corners[(k + 1) % 4])).collect();
+    sides.sort_by(|a, b| {
+        let near = |(p, q): &(Pos2, Pos2)| foot(*p).y + foot(*q).y;
+        near(a).total_cmp(&near(b))
+    });
+    for (k, (a, b)) in sides.iter().enumerate().skip(2) {
+        let fill = if k == 2 { SIDE } else { GROUND };
+        let face = vec![top(*a), top(*b), foot(*b), foot(*a)];
+        ui.painter().add(Shape::convex_polygon(face, fill, edge));
+        for step in 1..6 {
+            let p = *a + (*b - *a) * (step as f32 / 6.0);
+            let pillar = Stroke::new(1.0, colour.gamma_multiply(0.12));
+            ui.painter().line_segment([top(p), foot(p)], pillar);
+        }
+    }
+    let roof: Vec<Pos2> = corners.iter().map(|p| top(*p)).collect();
+    ui.painter()
+        .add(Shape::convex_polygon(roof, NIGHT, Stroke::NONE));
+}
+
+/// The cells lens's roads: from the upstream cell's membrane to the
+/// downstream one's, named by the relationship's type, an arrow pointing
+/// downstream.
+fn roads(ui: &egui::Ui, map: &ProjectMap, view: &View) {
+    for (up, down, kind) in &map.roads {
+        let (a, b) = (map.districts[*up].area, map.districts[*down].area);
+        let dir = (b.center() - a.center()).normalized();
+        let start = a.center() + dir * a.width() / 2.0;
+        let end = b.center() - dir * b.width() / 2.0;
+        let line = [view.to_screen(start, 0.0), view.to_screen(end, 0.0)];
+        ui.painter().line_segment(line, Stroke::new(9.0, NIGHT));
+        ui.painter().line_segment(line, Stroke::new(6.0, ROAD));
+        ui.painter()
+            .extend(Shape::dashed_line(&line, Stroke::new(1.0, DIM), 6.0, 6.0));
+        let back = (line[0] - line[1]).normalized() * 12.0;
+        let side = vec2(-back.y, back.x) * 0.5;
+        let tip = line[1];
+        let arrow = vec![tip, tip + back + side, tip + back - side];
+        ui.painter()
+            .add(Shape::convex_polygon(arrow, DIM, Stroke::NONE));
+        let middle = line[0] + (line[1] - line[0]) * 0.5;
+        let galley =
+            ui.painter()
+                .layout_no_wrap(kind.clone(), egui::FontId::proportional(11.0), INK);
+        let label = Rect::from_center_size(middle, galley.size() + vec2(10.0, 4.0));
+        ui.painter().rect_filled(label, 3.0, PANEL);
+        ui.painter().galley(label.min + vec2(5.0, 2.0), galley, INK);
+    }
+}
+
+/// The co-change lens's orbits: a faint dashed circle round its hub through
+/// every other district it arranged.
+fn orbits(ui: &egui::Ui, map: &ProjectMap, view: &View) {
+    let Some(hub) = map.hub.and_then(|hub| map.districts.get(hub)) else {
+        return;
+    };
+    let centre = hub.area.center();
+    for district in &map.districts {
+        if district.path == hub.path || district.kind != DistrictKind::Cluster {
+            continue;
+        }
+        let distance = (district.area.center() - centre).length();
+        let mut orbit = view.ring(
+            Rect::from_center_size(centre, Vec2::splat(2.0 * distance)),
+            0.0,
+        );
+        orbit.push(orbit[0]);
+        ui.painter().extend(Shape::dashed_line(
+            &orbit,
+            Stroke::new(1.0, DIM.gamma_multiply(0.25)),
+            2.0,
+            8.0,
+        ));
     }
 }
 
@@ -425,18 +749,50 @@ impl<'a> Painter<'a> {
         let shown = inside || self.folder_view.is_none_or(|folder| folder == path);
         let fade = if shown { 1.0 } else { OUTSIDE };
         if district {
-            let ring = self.view.ring(area);
+            let ring = match self.outline {
+                Outline::Plaza | Outline::Orbit | Outline::Membrane | Outline::Own => {
+                    self.view.ring(area, self.lift)
+                }
+                Outline::Step => self.view.corners(area, self.lift),
+                Outline::Hexagon => self.view.polygon(area, 6, self.lift),
+            };
             let fill = self.colour.gamma_multiply(0.03 * fade);
             ui.painter()
                 .add(Shape::convex_polygon(ring.clone(), fill, Stroke::NONE));
             let mut closed = ring;
             closed.push(closed[0]);
             let edge = Stroke::new(1.0, self.colour.gamma_multiply(0.25 * fade));
-            ui.painter()
-                .extend(Shape::dashed_line(&closed, edge, 6.0, 6.0));
+            let solid = Stroke::new(1.5, self.colour.gamma_multiply(0.4 * fade));
+            match self.outline {
+                Outline::Plaza => ui
+                    .painter()
+                    .extend(Shape::dashed_line(&closed, edge, 6.0, 6.0)),
+                Outline::Step | Outline::Hexagon | Outline::Own => {
+                    ui.painter().add(Shape::line(closed, solid));
+                }
+                Outline::Membrane => {
+                    let membrane = Stroke::new(6.0, self.colour.gamma_multiply(0.12 * fade));
+                    ui.painter().add(Shape::line(closed.clone(), membrane));
+                    let ring = Stroke::new(1.8, self.colour.gamma_multiply(0.5 * fade));
+                    ui.painter().add(Shape::line(closed, ring));
+                    let inner = Rect::from_center_size(area.center(), area.size() * 0.94);
+                    let mut inner = self.view.ring(inner, self.lift);
+                    inner.push(inner[0]);
+                    let thin = Stroke::new(1.0, self.colour.gamma_multiply(0.25 * fade));
+                    ui.painter().add(Shape::line(inner, thin));
+                }
+                Outline::Orbit => {
+                    ui.painter().add(Shape::line(closed, solid));
+                    let inner = Rect::from_center_size(area.center(), area.size() * 0.88);
+                    let mut inner = self.view.ring(inner, self.lift);
+                    inner.push(inner[0]);
+                    ui.painter()
+                        .extend(Shape::dashed_line(&inner, edge, 3.0, 5.0));
+                }
+            }
             self.plaza = Some(area.center());
             if !shown {
-                let front = Rect::from_points(&self.view.ring(area)).center_bottom();
+                let front = Rect::from_points(&self.view.ring(area, self.lift)).center_bottom();
                 ui.painter().text(
                     front,
                     egui::Align2::CENTER_BOTTOM,
@@ -454,7 +810,7 @@ impl<'a> Painter<'a> {
         } else {
             Naming::Folder
         };
-        self.labels.push((area, naming, name, path));
+        self.labels.push((area, naming, name, path, self.lift));
         true
     }
 
@@ -465,8 +821,8 @@ impl<'a> Painter<'a> {
         for node in nodes {
             if let Some(plaza) = self.plaza {
                 let avenue = [
-                    self.view.to_screen(plaza, 0.0),
-                    self.view.to_screen(node.area.center(), 0.0),
+                    self.view.to_screen(plaza, self.lift),
+                    self.view.to_screen(node.area.center(), self.lift),
                 ];
                 let stroke = Stroke::new(1.0, self.colour.gamma_multiply(0.2 * fade));
                 ui.painter().line_segment(avenue, stroke);
@@ -482,25 +838,51 @@ impl<'a> Painter<'a> {
                 (GROUND.gamma_multiply(0.85), self.colour.gamma_multiply(0.3))
             };
             ui.painter().add(Shape::convex_polygon(
-                self.view.corners(node.area),
+                self.view.corners(node.area, self.lift),
                 fill.gamma_multiply(fade),
                 Stroke::new(1.0, edge.gamma_multiply(fade)),
             ));
+            if self.cycles.contains(&node.path) {
+                // An import cycle: a warning, dashed and glowing, and said.
+                let mut edge = self.view.corners(node.area.expand(2.0), self.lift);
+                edge.push(edge[0]);
+                ui.painter().add(Shape::line(
+                    edge.clone(),
+                    Stroke::new(4.0, WARNING.gamma_multiply(0.15 * fade)),
+                ));
+                ui.painter().extend(Shape::dashed_line(
+                    &edge,
+                    Stroke::new(1.5, WARNING.gamma_multiply(0.9 * fade)),
+                    5.0,
+                    3.0,
+                ));
+                ui.painter().text(
+                    self.view.to_screen(node.area.left_bottom(), self.lift),
+                    egui::Align2::RIGHT_TOP,
+                    "import cycle",
+                    egui::FontId::proportional(11.0),
+                    WARNING.gamma_multiply(fade),
+                );
+            }
             if shown {
                 self.labels.push((
                     node.area,
                     Naming::Block(!node.items.is_empty()),
                     &node.name,
                     &node.path,
+                    self.lift,
                 ));
                 if !cellar || self.underground {
-                    self.blocks.push((node.area, &node.path));
+                    self.blocks.push((node.area, &node.path, self.lift));
                 }
             }
             for item in &node.items {
                 let colour = match item.kind {
                     ItemKind::Test => TEST_COLOUR,
-                    _ => self.colour,
+                    _ => self
+                        .homes
+                        .get(&item.path)
+                        .map_or(self.colour, |home| district_colour(*home)),
                 };
                 self.towers.push((item, colour.gamma_multiply(fade)));
             }
@@ -656,9 +1038,9 @@ impl<'a> Painter<'a> {
     /// the cellar hangs from the ground, its "roof" at its bottom.
     fn solid(&self, item: &Item) -> [Vec<Pos2>; 3] {
         let length = item.area.width().max(item.area.height());
-        let ground = 0.0;
+        let ground = item.base;
         let height = if city::in_cellar(item) {
-            -city::reach(item)
+            item.base - city::reach(item)
         } else {
             city::height(item)
         };
@@ -752,10 +1134,18 @@ impl<'a> Painter<'a> {
 
     /// Writes `name` on the ground `area` as `naming` says, outlines that
     /// ground when `path` is selected, and notes a click on the name.
-    fn label(&mut self, ui: &mut egui::Ui, area: Rect, naming: Naming, name: &str, path: &Path) {
+    fn label(
+        &mut self,
+        ui: &mut egui::Ui,
+        area: Rect,
+        naming: Naming,
+        name: &str,
+        path: &Path,
+        lift: f32,
+    ) {
         let bounds = match naming {
-            Naming::District(_) => Rect::from_points(&self.view.ring(area)),
-            Naming::Folder | Naming::Block(_) => self.view.bounds(area),
+            Naming::District(_) => Rect::from_points(&self.view.ring(area, lift)),
+            Naming::Folder | Naming::Block(_) => Rect::from_points(&self.view.corners(area, lift)),
         };
         let strip = TITLE.min(bounds.height());
         let front = Rect::from_min_max(pos2(bounds.min.x, bounds.max.y - strip), bounds.max);
@@ -784,7 +1174,7 @@ impl<'a> Painter<'a> {
                     .color(Color32::TRANSPARENT),
             ),
             Naming::Block(true) => {
-                let front = self.view.to_screen(pos2(area.center().x, area.max.y), 0.0);
+                let front = self.view.to_screen(pos2(area.center().x, area.max.y), lift);
                 let below = Rect::from_min_size(
                     pos2(front.x - bounds.width() / 2.0, front.y + 4.0),
                     vec2(bounds.width(), 16.0),
@@ -804,11 +1194,29 @@ impl<'a> Painter<'a> {
                     .truncate()
                     .show_tooltip_when_elided(false),
             )
-            .interact(Sense::click());
+            .interact(if self.arranging && matches!(naming, Naming::District(_)) {
+                Sense::click_and_drag()
+            } else {
+                Sense::click()
+            });
+        if response.dragged() || response.drag_stopped() {
+            let mut by = response.drag_delta();
+            // The drag starts once the pointer has moved a little: the move
+            // counts from where the button went down.
+            if response.drag_started()
+                && let (Some(down), Some(now)) = (
+                    ui.input(|i| i.pointer.press_origin()),
+                    response.interact_pointer_pos(),
+                )
+            {
+                by = now - down;
+            }
+            self.name_dragged = Some((path.to_path_buf(), by, response.drag_stopped()));
+        }
         if self.selected == Some(path) {
             let stroke = ui.visuals().selection.stroke;
             ui.painter()
-                .add(Shape::closed_line(self.view.corners(area), stroke));
+                .add(Shape::closed_line(self.view.corners(area, lift), stroke));
             ui.ctx()
                 .accesskit_node_builder(response.id, |node| node.set_selected(true));
         }
@@ -861,7 +1269,10 @@ pub fn minimap(ui: &mut egui::Ui, map: &ProjectMap, view: &View, panel: Rect) ->
         for item in crate::graph::items(district) {
             let fill = match item.kind {
                 ItemKind::Test => TEST_COLOUR,
-                _ => colour,
+                _ => map
+                    .homes
+                    .get(&item.path)
+                    .map_or(colour, |home| district_colour(*home)),
             };
             let point = to_minimap(item.area.center());
             painter.rect_filled(
@@ -1054,6 +1465,9 @@ pub fn inside(
 /// The colour of the district the element at `path` lies in: the innermost
 /// district whose path holds it.
 fn district_colour_of(map: &ProjectMap, path: &Path) -> Color32 {
+    if let Some(home) = map.homes.get(path) {
+        return district_colour(*home);
+    }
     map.districts
         .iter()
         .enumerate()
@@ -1087,8 +1501,10 @@ mod tests {
                 width: 9,
                 tokens: Vec::new(),
                 calls: Vec::new(),
+                imports: Vec::new(),
             }],
             area: Rect::NOTHING,
+            base: 0.0,
         };
         let files = ["catalog/a.rs", "orders/b.rs"].map(PathBuf::from);
         let items = BTreeMap::from(files.clone().map(|file| {
@@ -1110,7 +1526,20 @@ mod tests {
         let ctx = egui::Context::default();
         let mut towers = Vec::new();
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            towers = project(ui, &map, framing, None, Some(catalog), None, false).towers;
+            towers = project(
+                ui,
+                &map,
+                ViewOptions {
+                    framing,
+                    selected: None,
+                    folder_view: Some(catalog),
+                    pivot: None,
+                    underground: false,
+                    lanes: Lanes::default(),
+                    picked: None,
+                },
+            )
+            .towers;
         });
         output.textures_delta.clear();
 

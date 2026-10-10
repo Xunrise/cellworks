@@ -79,12 +79,13 @@ pub fn floor_height(item: &Item) -> f32 {
     }
 }
 
-/// How high `item` stands.
+/// How high the top of `item` stands: above its base, or at its base for a
+/// tower hanging in the cellar.
 pub fn height(item: &Item) -> f32 {
     if in_cellar(item) {
-        return 0.0;
+        return item.base;
     }
-    reach(item)
+    item.base + reach(item)
 }
 
 /// How far `item` reaches from the ground: up for a tower, down for a tower
@@ -138,9 +139,9 @@ pub fn back(item: &Item, along: f32) -> Pos2 {
 pub fn floor_z(item: &Item, index: usize) -> f32 {
     if in_cellar(item) {
         // Hanging down, the first line just under the ground.
-        return -((index + 1) as f32) * floor_height(item);
+        return item.base - ((index + 1) as f32) * floor_height(item);
     }
-    (item.floors.len() - index) as f32 * floor_height(item)
+    item.base + (item.floors.len() - index) as f32 * floor_height(item)
 }
 
 /// Where floor `index` of `item` starts and ends on the ground: from its
@@ -318,9 +319,11 @@ mod tests {
                         len: width - indent,
                     }],
                     calls: Vec::new(),
+                    imports: Vec::new(),
                 })
                 .collect(),
             area: Rect::from_min_size(pos2(10.0, 100.0), vec2(30.0, WALL)),
+            base: 0.0,
         }
     }
 

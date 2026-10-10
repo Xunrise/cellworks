@@ -167,8 +167,19 @@ fn an_empty_layer_shows_an_empty_tree_not_the_previous_one() {
             sub_districts: Vec::new(),
             nodes: Vec::new(),
             area,
+            kind: Default::default(),
+            elevation: 0.0,
         }],
         extent: area,
+        co_changes: Vec::new(),
+        lens: Default::default(),
+        homes: Default::default(),
+        hub: None,
+        stair: Vec::new(),
+        cycles: Default::default(),
+        contexts: None,
+        roads: Vec::new(),
+        arrangement: Default::default(),
     };
     let mut navigation = Navigation::default();
     navigation.opened(root);

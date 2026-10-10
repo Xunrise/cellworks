@@ -18,11 +18,13 @@ use std::sync::mpsc::Receiver;
 
 use cellworks_code_analysis::{CodeAnalysisEvent, GitCli, GitListing, start_load};
 use cellworks_map::View;
-use cellworks_map::ui::{Drawn, DrawnTower};
-use cellworks_map::{ProjectMap, default_prefix_rule, prefix_rule};
+use cellworks_map::ui::{Drawn, DrawnLane, DrawnTower, Outline};
+use cellworks_map::{Lens, ProjectMap, default_prefix_rule, prefix_rule};
 use cellworks_navigation::{Moved, Navigation};
 use cellworks_workspace::ui::UniverseClick;
-use cellworks_workspace::{Project, ScanState, Sources, Universe, WorkspaceEvent, start_scan};
+use cellworks_workspace::{
+    ArrangementStore, Project, ScanState, Sources, Universe, WorkspaceEvent, start_scan,
+};
 
 use crate::opened::{OpenedNotice, OpenedProject, ProjectState};
 
@@ -64,6 +66,13 @@ pub struct CellworksApp {
     view: Option<View>,
     /// Whether this frame's view is underground: turned so, or Shift held.
     underground: bool,
+    /// The districts the last frame drew, with their outlines.
+    districts: Vec<(std::path::PathBuf, Outline)>,
+    /// The lanes the last frame drew, and the one under the pointer.
+    lanes: Vec<DrawnLane>,
+    lane_hovered: Option<cellworks_map::LaneId>,
+    /// Where custom arrangements are kept; none, none are kept.
+    arrangements: Option<ArrangementStore>,
 }
 
 /// What the keyboard and the pointer asked for in one frame.
@@ -86,6 +95,11 @@ struct Keys {
     held_underground: bool,
     /// Inside a tower: j less k, a floor down or up.
     lines: isize,
+    /// L: the next lens.
+    lens: bool,
+    /// G and A: show or hide the import lanes and the call lanes.
+    import_lanes: bool,
+    call_lanes: bool,
     zoom: f32,
     pointer: Option<egui::Pos2>,
 }
@@ -98,6 +112,7 @@ impl CellworksApp {
     pub fn start() -> CellworksApp {
         match Sources::for_this_user() {
             Some(sources) => CellworksApp {
+                arrangements: Some(ArrangementStore::beside(&sources.settings_file)),
                 universe: Universe::scanning(&sources),
                 events: Some(start_scan(sources)),
                 opened: None,
@@ -108,8 +123,12 @@ impl CellworksApp {
                 towers: Vec::new(),
                 view: None,
                 underground: false,
+                districts: Vec::new(),
+                lanes: Vec::new(),
+                lane_hovered: None,
             },
             None => CellworksApp {
+                arrangements: None,
                 universe: Universe::without_home(),
                 events: None,
                 opened: None,
@@ -120,6 +139,9 @@ impl CellworksApp {
                 towers: Vec::new(),
                 view: None,
                 underground: false,
+                districts: Vec::new(),
+                lanes: Vec::new(),
+                lane_hovered: None,
             },
         }
     }
@@ -128,6 +150,7 @@ impl CellworksApp {
     /// loop without a scan thread.
     pub fn over(universe: Universe, events: Receiver<WorkspaceEvent>) -> CellworksApp {
         CellworksApp {
+            arrangements: None,
             universe,
             events: Some(events),
             opened: None,
@@ -138,6 +161,9 @@ impl CellworksApp {
             towers: Vec::new(),
             view: None,
             underground: false,
+            districts: Vec::new(),
+            lanes: Vec::new(),
+            lane_hovered: None,
         }
     }
 
@@ -145,6 +171,14 @@ impl CellworksApp {
     /// so a test never runs it.
     pub fn with_git(self, git: Arc<dyn GitListing + Send + Sync>) -> CellworksApp {
         CellworksApp { git, ..self }
+    }
+
+    /// The same app, keeping custom arrangements in `store`.
+    pub fn with_arrangements(self, store: ArrangementStore) -> CellworksApp {
+        CellworksApp {
+            arrangements: Some(store),
+            ..self
+        }
     }
 
     /// Takes whatever the scan and the read have sent so far. Never waits.
@@ -178,6 +212,21 @@ impl CellworksApp {
     /// The towers the last frame drew, back to front.
     pub fn towers(&self) -> &[DrawnTower] {
         &self.towers
+    }
+
+    /// The lanes the last frame drew.
+    pub fn lanes(&self) -> &[DrawnLane] {
+        &self.lanes
+    }
+
+    /// The lane under the pointer in the last frame.
+    pub fn hovered_lane(&self) -> Option<&cellworks_map::LaneId> {
+        self.lane_hovered.as_ref()
+    }
+
+    /// The districts the last frame drew, with the outline of each.
+    pub fn districts(&self) -> &[(std::path::PathBuf, Outline)] {
+        &self.districts
     }
 
     /// Where the last frame saw the open project's map from.
@@ -221,7 +270,20 @@ impl CellworksApp {
     pub fn open(&mut self, project: Project) {
         let path = project.id.path().to_owned();
         let events = self.read(&project);
+        let knowledge =
+            cellworks_domain_knowledge::start_read(path.clone(), project.contexts.clone());
+        let arranged = self.arrangements.clone().map(|store| {
+            // Read off the frame loop, like the code.
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let id = project.id.clone();
+            std::thread::spawn(move || sender.send(store.load(&id)));
+            receiver
+        });
         let mut opened = OpenedProject::reading(project, events);
+        opened.know(knowledge);
+        if let Some(arranged) = arranged {
+            opened.arrange(arranged);
+        }
         note_unknown_prefix(&mut opened);
         self.opened = Some(opened);
         self.navigation.opened(path);
@@ -306,6 +368,9 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         lines,
         underground,
         held_underground,
+        lens,
+        import_lanes,
+        call_lanes,
         zoom,
         pointer,
     } = ui.input(|input| {
@@ -328,6 +393,9 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             fit: plain && pressed(egui::Key::F),
             cycle: plain && pressed(egui::Key::Tab),
             underground: plain && pressed(egui::Key::U),
+            lens: plain && pressed(egui::Key::L),
+            import_lanes: plain && pressed(egui::Key::G),
+            call_lanes: plain && pressed(egui::Key::A),
             held_underground: input.modifiers.shift_only(),
             lines: if plain {
                 towards(egui::Key::K, egui::Key::J)
@@ -343,6 +411,24 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         && let Some(centre) = opened.turn(turn)
     {
         app.navigation.turned(centre, turn);
+    }
+    let now = ui.input(|input| input.time);
+    if lens && let Some(opened) = &mut app.opened {
+        let next = opened.next_lens();
+        opened.set_lens(next, now);
+    }
+    if let Some(opened) = &mut app.opened {
+        if import_lanes {
+            opened.toggle_import_lanes();
+        }
+        if call_lanes {
+            opened.toggle_call_lanes();
+        }
+    }
+    if let Some(opened) = &mut app.opened
+        && opened.flying(now)
+    {
+        ui.ctx().request_repaint();
     }
     if fit && app.opened.is_some() {
         app.navigation.fit();
@@ -414,6 +500,9 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         }
     }
 
+    // What the lens bar and the lane toggles asked for: applied once the
+    // frame no longer borrows the opened project.
+    let mut bar: (Option<Lens>, (bool, bool)) = (None, (false, false));
     match &app.opened {
         None => {
             match cellworks_workspace::ui::universe(ui, &app.universe, app.navigation.selection()) {
@@ -431,12 +520,20 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             } else {
                 FOLLOWS_ZOOM
             };
-            let switched = egui::Panel::top("breadcrumb")
+            let offered: Vec<Lens> = Lens::ALL
+                .into_iter()
+                .filter(|lens| opened.offers(*lens))
+                .collect();
+            let (switched, picked, toggled) = egui::Panel::top("breadcrumb")
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(crumbs);
                         ui.separator();
-                        ui.button(mode).clicked()
+                        let picked = cellworks_map::ui::lens_bar(ui, opened.lens(), &offered);
+                        ui.separator();
+                        let toggled = cellworks_map::ui::lane_toggles(ui, opened.lanes());
+                        ui.separator();
+                        (ui.button(mode).clicked(), picked, toggled)
                     })
                     .inner
                 })
@@ -444,6 +541,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             if switched {
                 app.navigation.toggle_lock();
             }
+            bar = (picked, toggled);
             if app.tree_open
                 && let Some(map) = app.map()
             {
@@ -467,6 +565,11 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                     if let Some(hints) = app.navigation.hints(map) {
                         cellworks_navigation::ui::hints(ui, shown.panel, &hints);
                     }
+                    cellworks_map::ui::caption(ui, shown.panel, opened.lens());
+                    if let Some(age) = opened.switched_at().map(|at| ui.input(|i| i.time) - at) {
+                        cellworks_map::ui::banner(ui, shown.panel, opened.lens(), age);
+                    }
+                    cellworks_map::ui::legend(ui, shown.panel, opened.lanes());
                     let floor = app.navigation.inside().and_then(|(item, floor)| {
                         cellworks_map::ui::inside(ui, map, item, floor, shown.panel)
                     });
@@ -479,6 +582,9 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 return;
             };
             app.towers = drawn.towers;
+            app.districts = drawn.districts;
+            app.lanes = drawn.lanes;
+            app.lane_hovered = drawn.lane_hovered;
             if let Some(floor) = floor {
                 app.navigation.pick_floor(floor);
             }
@@ -508,16 +614,34 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             if drawn.dragged != egui::Vec2::ZERO {
                 app.navigation.pan(visible, -drawn.dragged);
             }
+            if let (Some((path, by)), Some(opened)) = (&drawn.moved, &mut app.opened) {
+                opened.move_by(path, *by);
+            }
+            if drawn.move_ended
+                && let (Some(store), Some(opened)) = (app.arrangements.clone(), &app.opened)
+                && let Some(arrangement) = opened.arrangement()
+            {
+                // Kept off the frame loop; a failed write only loses the move.
+                let id = opened.project().id.clone();
+                std::thread::spawn(move || store.save(&id, &arrangement));
+            }
             if let Some(district) = minimap
                 && let Some(found) = app.map().and_then(|map| map.find(&district))
             {
                 let centre = found.area.center();
                 app.navigation.centre_on(visible, centre);
             }
-            if let Some(path) = drawn.clicked {
+            if let Some(click) = drawn.lane_clicked {
+                match (click.travel, app.map().cloned()) {
+                    // Travelling along a lane: the view frames its far end.
+                    (Some(far), Some(map)) => app.navigation.jump(&map, far),
+                    _ => app.navigation.pick_lane(click.lane),
+                }
+            } else if let Some(path) = drawn.clicked {
                 app.navigation.select(path);
             } else if drawn.ground_clicked {
                 app.navigation.deselect();
+                app.navigation.drop_lane();
             }
             if let Some(tower) = drawn.entered
                 && let Some(map) = app.map().cloned()
@@ -538,6 +662,18 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                     .zoomed(&map, zoomed(visible, around, zoom), around);
                 ui.ctx().request_repaint();
             }
+        }
+    }
+    let (picked, (import_lanes, call_lanes)) = bar;
+    if let Some(opened) = &mut app.opened {
+        if let Some(lens) = picked {
+            opened.set_lens(lens, ui.input(|input| input.time));
+        }
+        if import_lanes {
+            opened.toggle_import_lanes();
+        }
+        if call_lanes {
+            opened.toggle_call_lanes();
         }
     }
 }
@@ -576,12 +712,18 @@ fn project(
         }
         ProjectState::Mapped(map) => Some(cellworks_map::ui::project(
             ui,
-            map,
-            navigation.framing(map),
-            navigation.selection(),
-            navigation.folder_view(map),
-            navigation.pivot(map),
-            underground,
+            &opened
+                .shown(ui.input(|input| input.time))
+                .unwrap_or_else(|| (**map).clone()),
+            cellworks_map::ui::ViewOptions {
+                framing: navigation.framing(map),
+                selected: navigation.selection(),
+                folder_view: navigation.folder_view(map),
+                pivot: navigation.pivot(map),
+                underground,
+                lanes: opened.lanes(),
+                picked: navigation.picked_lane(),
+            },
         )),
     }
 }

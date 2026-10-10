@@ -22,3 +22,9 @@ Terms specific to this context. Shared terms and cross-context collisions are in
 | Tower | An item drawn as a solid building, one floor per line, its silhouette the shape of its code. | living-city discovery 2026-10-10; STORY-047 | theme: crate |
 | Universe | All projects together on one map. | prototype-findings L41 | The Universe layer in Navigation is the same thing seen as a layer |
 | View options | What is drawn and how it is laid out. | prototype-findings L57, L83-89 |  |
+| Lens | The definition of a connection that decides which blocks and districts exist and where they stand: folders, imports, calls, co-change, cells or custom. | lenses prototype 2026-10-12; EPIC-010 | Extends View options; towers keep their shape in every lens |
+| Outskirts | The district at the edge where code the lens connects to nothing stands. | lenses prototype 2026-10-12; EPIC-010; STORY-015 |  |
+| Highway | The import lanes between two districts, running side by side, one lane per pair of files. | lenses prototype 2026-10-12; EPIC-010; STORY-052 |  |
+| Import cycle | Files that import each other in a loop; in the imports lens they share one block, marked. | lenses prototype 2026-10-12; EPIC-010; STORY-054 |  |
+| Step | A district of the imports lens raised as a solid box, one level above what it imports. | lenses prototype 2026-10-12; EPIC-010; STORY-054 |  |
+| Custom arrangement | Where the engineer moved the blocks and districts of a project in the custom lens; kept outside the project. | lenses prototype 2026-10-12; EPIC-010; STORY-017 |  |

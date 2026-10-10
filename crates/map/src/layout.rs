@@ -173,7 +173,7 @@ fn spiral(radii: &[f32], hole: f32, gap: f32) -> Vec<Pos2> {
 }
 
 /// Moves `district` and everything on it by `offset`.
-fn translate(district: &mut District, offset: Vec2) {
+pub(crate) fn translate(district: &mut District, offset: Vec2) {
     fn nodes(inside: &mut [Node], offset: Vec2) {
         for node in inside {
             node.area = node.area.translate(offset);

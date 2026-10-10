@@ -17,6 +17,8 @@ pub(crate) struct FileCode {
     /// Per module inside the file (empty for the file's own module): what its
     /// `use` statements bring in.
     pub uses: BTreeMap<Vec<String>, Uses>,
+    /// Each name a `use` statement brings in, where it is written.
+    pub imports: Vec<Import>,
     /// Per line, from 0: the tokens on it.
     pub tokens: Vec<Vec<Token>>,
     /// The file's lines.
@@ -30,6 +32,15 @@ pub(crate) struct Uses {
     pub names: BTreeMap<String, Vec<String>>,
     /// Paths imported with `::*`.
     pub globs: Vec<Vec<String>>,
+}
+
+/// One name a `use` statement brings in: the module inside the file it is
+/// written in, its line, from 0, and the path it stands for.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Import {
+    pub module: Vec<String>,
+    pub row: usize,
+    pub path: Vec<String>,
 }
 
 /// A function, type or `use` block, as written.
@@ -323,6 +334,14 @@ impl Reader<'_, '_> {
         }
     }
 
+    fn import(&mut self, node: Node<'_>, module: &[String], path: &[String]) {
+        self.code.imports.push(Import {
+            module: module.to_vec(),
+            row: node.start_position().row,
+            path: path.to_vec(),
+        });
+    }
+
     /// Records the names one `use` tree brings into `module`.
     fn use_tree(&mut self, node: Node<'_>, prefix: Vec<String>, module: &[String]) {
         match node.kind() {
@@ -352,6 +371,7 @@ impl Reader<'_, '_> {
                 let mut full = prefix;
                 full.extend(segments(self.text(path)));
                 let alias = self.text(alias).to_owned();
+                self.import(node, module, &full);
                 self.code
                     .uses
                     .entry(module.to_vec())
@@ -379,6 +399,7 @@ impl Reader<'_, '_> {
                     full.pop();
                 }
                 if let Some(name) = full.last().cloned() {
+                    self.import(node, module, &full);
                     self.code
                         .uses
                         .entry(module.to_vec())

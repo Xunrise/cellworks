@@ -76,6 +76,11 @@ impl View {
         (self.project(ground, z) * self.scale + self.offset).to_pos2()
     }
 
+    /// The point at height `z` seen at the screen point `screen`.
+    pub fn to_ground_at(&self, screen: Pos2, z: f32) -> Pos2 {
+        self.unproject((screen.to_vec2() - self.offset) / self.scale + vec2(0.0, z))
+    }
+
     /// The ground point under the screen point `screen`.
     pub fn to_ground(&self, screen: Pos2) -> Pos2 {
         self.unproject((screen.to_vec2() - self.offset) / self.scale)
@@ -109,7 +114,7 @@ impl View {
     }
 
     /// The corners of the ground rectangle `rect` on screen.
-    pub(crate) fn corners(&self, rect: Rect) -> Vec<Pos2> {
+    pub(crate) fn corners(&self, rect: Rect, z: f32) -> Vec<Pos2> {
         [
             rect.left_top(),
             rect.right_top(),
@@ -117,25 +122,33 @@ impl View {
             rect.left_bottom(),
         ]
         .into_iter()
-        .map(|corner| self.to_screen(corner, 0.0))
+        .map(|corner| self.to_screen(corner, z))
         .collect()
     }
 
+    /// The regular polygon of `sides` inscribed in the ground square
+    /// `square`, a corner pointing towards the viewer, on screen.
+    pub(crate) fn polygon(&self, square: Rect, sides: usize, z: f32) -> Vec<Pos2> {
+        let (centre, radius) = (square.center(), square.width() / 2.0);
+        (0..sides)
+            .map(|step| {
+                let angle = std::f32::consts::FRAC_PI_4
+                    + step as f32 / sides as f32 * std::f32::consts::TAU;
+                self.to_screen(centre + radius * vec2(angle.cos(), angle.sin()), z)
+            })
+            .collect()
+    }
+
     /// The circle inscribed in the ground square `square`, on screen.
-    pub(crate) fn ring(&self, square: Rect) -> Vec<Pos2> {
+    pub(crate) fn ring(&self, square: Rect, z: f32) -> Vec<Pos2> {
         let (centre, radius) = (square.center(), square.width() / 2.0);
         (0..48)
             .map(|step| {
                 let angle = step as f32 / 48.0 * std::f32::consts::TAU;
                 let ground = centre + radius * vec2(angle.cos(), angle.sin());
-                self.to_screen(ground, 0.0)
+                self.to_screen(ground, z)
             })
             .collect()
-    }
-
-    /// The screen rectangle the ground rectangle `rect` is seen in.
-    pub(crate) fn bounds(&self, rect: Rect) -> Rect {
-        Rect::from_points(&self.corners(rect))
     }
 }
 
@@ -191,7 +204,7 @@ mod tests {
         );
 
         for district in &map.districts {
-            let drawn = view.bounds(district.area);
+            let drawn = Rect::from_points(&view.corners(district.area, 0.0));
             assert!(
                 panel.expand(0.01).contains_rect(drawn),
                 "{drawn:?} is outside {panel:?}"
@@ -210,8 +223,8 @@ mod tests {
             headroom: 0.0,
         };
 
-        let close = fit(framing(f32::MAX), panel).bounds(area);
-        let capped = fit(framing(1.0), panel).bounds(area);
+        let close = Rect::from_points(&fit(framing(f32::MAX), panel).corners(area, 0.0));
+        let capped = Rect::from_points(&fit(framing(1.0), panel).corners(area, 0.0));
 
         assert!((close.height() - 250.0).abs() < 0.01, "{close:?}");
         assert!((close.center() - panel.center()).length() < 0.01);

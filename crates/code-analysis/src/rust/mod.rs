@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use cellworks_map::{Floor, Item};
 
-use parse::{FileCode, column};
+use parse::{Call, FileCode, column};
 use resolve::{Index, Module, module_of, package_name};
 
 /// Files larger than this are left unread: generated code, not code to walk.
@@ -52,7 +52,7 @@ pub(crate) fn read(root: &Path, files: &[PathBuf]) -> BTreeMap<PathBuf, Vec<Item
         .iter()
         .map(|(file, _, code)| item_paths(&root.join(file), code))
         .collect();
-    let index = Index::new(
+    let mut index = Index::new(
         read.iter()
             .zip(&paths)
             .flat_map(|((_, module, code), paths)| {
@@ -63,6 +63,10 @@ pub(crate) fn read(root: &Path, files: &[PathBuf]) -> BTreeMap<PathBuf, Vec<Item
             }),
         crates,
     );
+
+    for (_, module, code) in &read {
+        index.add_uses(module, code);
+    }
 
     read.iter()
         .zip(&paths)
@@ -75,6 +79,22 @@ pub(crate) fn read(root: &Path, files: &[PathBuf]) -> BTreeMap<PathBuf, Vec<Item
                     let mut floors: Vec<Floor> = (item.start..=item.end)
                         .filter_map(|row| floor(code, row))
                         .collect();
+                    if item.kind == cellworks_map::ItemKind::Uses {
+                        let lines = item.start..=item.end;
+                        for import in code
+                            .imports
+                            .iter()
+                            .filter(|i| i.module == item.module && lines.contains(&i.row))
+                        {
+                            let named = Call::Path(import.path.clone());
+                            if let Some(target) = index.resolve(module, code, item, &named)
+                                && let Some(floor) = floors.get_mut(import.row - item.start)
+                                && !floor.imports.contains(target)
+                            {
+                                floor.imports.push(target.clone());
+                            }
+                        }
+                    }
                     for (row, call) in &item.calls {
                         if let Some(target) = index.resolve(module, code, item, call)
                             && let Some(floor) = floors.get_mut(row - item.start)
@@ -90,6 +110,7 @@ pub(crate) fn read(root: &Path, files: &[PathBuf]) -> BTreeMap<PathBuf, Vec<Item
                         tests: item.tests,
                         floors,
                         area: egui::Rect::NOTHING,
+                        base: 0.0,
                     }
                 })
                 .collect();
@@ -129,6 +150,7 @@ fn floor(code: &FileCode, row: usize) -> Option<Floor> {
         width: column(trimmed, trimmed.len()),
         tokens: code.tokens.get(row).cloned().unwrap_or_default(),
         calls: Vec::new(),
+        imports: Vec::new(),
     })
 }
 
@@ -185,6 +207,36 @@ mod tests {
             discount.floors[1].calls,
             [tree.path().join("src/money.rs/round")]
         );
+    }
+
+    #[test]
+    fn each_use_line_imports_the_items_it_names() {
+        let tree = project(&[
+            ("Cargo.toml", "[package]\nname = \"shop\"\n"),
+            (
+                "src/pricing.rs",
+                "use crate::money::round;\nuse crate::money::{Money, unknown};\n\nfn f() {}\n",
+            ),
+            ("src/money.rs", "pub fn round() {}\npub struct Money;\n"),
+        ]);
+        let files: Vec<PathBuf> = ["Cargo.toml", "src/pricing.rs", "src/money.rs"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+
+        let items = read(tree.path(), &files);
+
+        let uses = &items[Path::new("src/pricing.rs")][0];
+        assert_eq!(uses.kind, ItemKind::Uses);
+        assert_eq!(
+            uses.floors[0].imports,
+            [tree.path().join("src/money.rs/round")]
+        );
+        assert_eq!(
+            uses.floors[1].imports,
+            [tree.path().join("src/money.rs/Money")]
+        );
+        assert!(uses.floors.iter().all(|floor| floor.calls.is_empty()));
     }
 
     #[test]

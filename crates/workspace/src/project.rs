@@ -35,6 +35,9 @@ pub struct Project {
     /// The district prefix rule its settings name, as written there. Only the
     /// Map knows what the name means.
     pub district_prefix: Option<String>,
+    /// The folders, relative to the project, its settings say implement each
+    /// bounded context; empty where the settings say nothing.
+    pub contexts: std::collections::BTreeMap<String, Vec<PathBuf>>,
 }
 
 impl Project {
@@ -53,6 +56,7 @@ impl Project {
             id: ProjectId(canonical_path),
             name,
             district_prefix: None,
+            contexts: Default::default(),
         }
     }
 }

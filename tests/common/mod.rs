@@ -166,12 +166,21 @@ pub fn labels(harness: &Harness<'_, CellworksApp>) -> Vec<String> {
             }
         })
         .filter(|text| !text.starts_with(BREADCRUMB))
+        // The lens caption, the lane legend and the switch banner explain
+        // the view; they are not elements of it.
+        .filter(|text| !text.starts_with("Lens: ") && !text.starts_with("Lanes: "))
+        .filter(|text| {
+            !text
+                .lines()
+                .next()
+                .is_some_and(|first| first.ends_with(" LENS"))
+        })
         .collect()
 }
 
 pub fn map(harness: &Harness<'_, CellworksApp>) -> ProjectMap {
     match harness.state().opened().map(|opened| opened.state()) {
-        Some(ProjectState::Mapped(map)) => map.clone(),
+        Some(ProjectState::Mapped(map)) => (**map).clone(),
         other => panic!("expected a mapped project, got {other:?}"),
     }
 }

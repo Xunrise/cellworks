@@ -7,3 +7,6 @@ publish = false
 [dependencies]
 cellworks-code-analysis = { path = "../code-analysis" }
 cellworks-map = { path = "../map" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

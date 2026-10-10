@@ -11,6 +11,7 @@
 //! treating it as "no added folders" would look to the engineer exactly like
 //! their projects had been deleted.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -25,6 +26,10 @@ const PROJECTS: &str = "projects";
 
 /// A project's district prefix rule, inside its table.
 const DISTRICT_PREFIX: &str = "district_prefix";
+
+/// Which folders of a project implement which bounded context, inside its
+/// table: `contexts.Pricing = ["crates/catalog"]`.
+const CONTEXTS: &str = "contexts";
 
 /// Which convention names the settings file's directory.
 ///
@@ -70,6 +75,9 @@ pub(crate) struct AddedFolders {
     /// The canonical path of every `[projects."<path>"]` table that resolved,
     /// and the district prefix rule it names.
     pub(crate) district_prefixes: Vec<(PathBuf, String)>,
+    /// The same, and the folders, relative to the project, it says implement
+    /// each bounded context.
+    pub(crate) contexts: Vec<(PathBuf, BTreeMap<String, Vec<PathBuf>>)>,
 }
 
 /// Reads the folders `settings_file` adds.
@@ -119,9 +127,37 @@ pub(crate) fn read(settings_file: &Path) -> AddedFolders {
     // that is not there.
     let projects = table.get(PROJECTS).and_then(toml::Value::as_table);
     for (path, settings) in projects.into_iter().flatten() {
-        let prefix = settings.get(DISTRICT_PREFIX).and_then(toml::Value::as_str);
-        if let (Some(prefix), Ok(canonical)) = (prefix, resolve(Path::new(path))) {
-            added.district_prefixes.push((canonical, prefix.to_owned()));
+        let Ok(canonical) = resolve(Path::new(path)) else {
+            continue;
+        };
+        if let Some(prefix) = settings.get(DISTRICT_PREFIX).and_then(toml::Value::as_str) {
+            added
+                .district_prefixes
+                .push((canonical.clone(), prefix.to_owned()));
+        }
+        // A context names one folder or a list of them; anything else is
+        // not a folder and is left out.
+        let contexts: BTreeMap<String, Vec<PathBuf>> = settings
+            .get(CONTEXTS)
+            .and_then(toml::Value::as_table)
+            .into_iter()
+            .flatten()
+            .map(|(context, folders)| {
+                let folders = match folders {
+                    toml::Value::String(one) => vec![PathBuf::from(one)],
+                    toml::Value::Array(many) => many
+                        .iter()
+                        .filter_map(toml::Value::as_str)
+                        .map(PathBuf::from)
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                (context.clone(), folders)
+            })
+            .filter(|(_, folders)| !folders.is_empty())
+            .collect();
+        if !contexts.is_empty() {
+            added.contexts.push((canonical, contexts));
         }
     }
 
@@ -294,6 +330,35 @@ mod tests {
             "the table that resolves is read, the one that does not is ignored"
         );
         assert!(added.events.is_empty(), "{:?}", added.events);
+    }
+
+    #[test]
+    fn a_project_table_names_the_folders_of_each_bounded_context() {
+        let tree = TestTree::new();
+        let shop = tree.plain_folder("work/shop");
+        let settings = tree.file(
+            "settings.toml",
+            &format!(
+                "[projects.\"{}\".contexts]\nPricing = [\"crates/catalog\", \"crates/discounts\"]\n\
+                 Ordering = \"crates/orders\"\nBroken = 3\n",
+                shop.display()
+            ),
+        );
+
+        let added = read(&settings);
+
+        let contexts = BTreeMap::from([
+            ("Ordering".to_owned(), vec![PathBuf::from("crates/orders")]),
+            (
+                "Pricing".to_owned(),
+                vec![
+                    PathBuf::from("crates/catalog"),
+                    PathBuf::from("crates/discounts"),
+                ],
+            ),
+        ]);
+        assert_eq!(added.contexts, vec![(canonical(&shop), contexts)]);
+        assert!(added.district_prefixes.is_empty());
     }
 
     #[test]

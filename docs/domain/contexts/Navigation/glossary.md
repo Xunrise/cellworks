@@ -16,3 +16,4 @@ Terms specific to this context. Shared terms and cross-context collisions are in
 | Turned camera | The camera turned, as the zoom closes in, from looking from the corner to facing one facade; zooming out turns it back. | facade-camera prototype 2026-10-11; STORY-045 |  |
 | Underground view | The view in which the cellar is within reach and the city above steps back; toggled with U, or held with Shift. | facade-camera prototype 2026-10-11; STORY-048 |  |
 | Walk | Stepping from a faced facade to the next tower of its block with the arrows, scrolling a tall facade first. | facade-camera prototype 2026-10-11; STORY-046 |  |
+| Lens bar | The row of lenses above the map: the current one marked, each explained on hover. | lenses prototype 2026-10-12; EPIC-010; STORY-055 | Not to be confused with Layer (level of detail) |

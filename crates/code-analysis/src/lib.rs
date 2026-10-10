@@ -12,6 +12,7 @@
 //! [`start_load`] is the thread around it.
 
 mod closed;
+mod co_change;
 mod event;
 mod files;
 mod git;
@@ -25,7 +26,8 @@ use cellworks_map::{Directories, PrefixRule, ProjectMap};
 pub use event::CodeAnalysisEvent;
 pub use git::{GitCli, GitListing, GitUnavailable};
 
-/// Reads the project at `root` and maps it, and says what it met on the way.
+/// Reads the project at `root` and maps it, with what its git history says
+/// changed together, and says what it met on the way.
 ///
 /// Blocking: called on the background thread [`start_load`] spawns, and
 /// directly from a test. [`CodeAnalysisEvent::ProjectMapped`] comes last, and
@@ -99,7 +101,15 @@ pub fn load(
     let items = rust::read(root, &files);
     let mut map = ProjectMap::of_code(name, root, &files, &Directories { prefix }, items);
     map.close(&closed);
-    events.push(CodeAnalysisEvent::ProjectMapped { project, map });
+    // Without history the co-change lens is empty; git saying why has been
+    // reported with the listing already.
+    if is_repository && let Ok(commits) = git.history(root) {
+        map.co_changes = co_change::co_changes(root, &files, &commits);
+    }
+    events.push(CodeAnalysisEvent::ProjectMapped {
+        project,
+        map: Box::new(map),
+    });
     events
 }
 

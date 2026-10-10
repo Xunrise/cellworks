@@ -12,3 +12,4 @@ Terms specific to this context. Shared terms and cross-context collisions are in
 | Function | A function in a source file, with its complexity. | prototype-findings L47, L95 | shown on the map as an Item |
 | Git overlay | Changed files highlighted on the map. | prototype-findings L89, L102 |  |
 | Worktree | A git worktree of a code project; opens as its own project. | prototype-findings L103 |  |
+| Co-change | Files changed in the same commits, weighted by how many files each commit changed. | lenses prototype 2026-10-12; EPIC-010; STORY-015 |  |

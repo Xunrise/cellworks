@@ -8,9 +8,12 @@
 //! ([`city`]). Lanes arrive with the stories that need them.
 
 pub mod city;
+mod contexts;
 mod districts;
 mod graph;
+mod lanes;
 mod layout;
+mod lens;
 mod rules;
 pub mod ui;
 mod view;
@@ -20,10 +23,14 @@ use std::path::{Path, PathBuf};
 
 use egui::{Pos2, Rect, vec2};
 
+pub use contexts::{BoundedContext, BoundedContexts, Road};
 pub use districts::{Directories, DistrictStrategy};
 pub use graph::{
-    District, Element, Floor, Found, Group, Item, ItemKind, Node, ProjectMap, SubDistrict, Token,
+    CoChange, District, DistrictKind, Element, Floor, Found, Group, Item, ItemKind, Node,
+    ProjectMap, SubDistrict, Token,
 };
+pub use lanes::{LaneId, LaneKind, Lanes};
+pub use lens::{Flight, Lens, relens};
 pub use rules::{PREFIX_RULES, PrefixRule, default_prefix_rule, prefix_rule};
 pub use view::{Pivot, View, turn_at};
 
@@ -61,6 +68,15 @@ impl ProjectMap {
             root: root.to_path_buf(),
             districts,
             extent: Rect::NOTHING,
+            co_changes: Vec::new(),
+            lens: Lens::Folders,
+            homes: BTreeMap::new(),
+            hub: None,
+            stair: Vec::new(),
+            cycles: Default::default(),
+            contexts: None,
+            roads: Vec::new(),
+            arrangement: Default::default(),
         };
         map.extent = map.ground();
         map

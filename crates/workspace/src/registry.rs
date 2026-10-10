@@ -82,6 +82,23 @@ pub(crate) fn attach_district_prefixes(projects: &mut [Project], prefixes: &[(Pa
     }
 }
 
+/// Gives each project the bounded contexts its settings map to folders.
+pub(crate) fn attach_contexts(
+    projects: &mut [Project],
+    contexts: &[(PathBuf, std::collections::BTreeMap<String, Vec<PathBuf>>)],
+) {
+    for (path, folders) in contexts {
+        let Ok(folder) = FolderIdentity::of(path) else {
+            continue;
+        };
+        for project in projects.iter_mut() {
+            if FolderIdentity::of(project.id.path()).is_ok_and(|other| other == folder) {
+                project.contexts = folders.clone();
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use egui::Rect;
 
-use crate::graph::{District, Group, Node, SubDistrict};
+use crate::graph::{District, DistrictKind, Group, Node, SubDistrict};
 use crate::rules::PrefixRule;
 
 /// Decides how a project is cut into districts.
@@ -123,6 +123,8 @@ impl DistrictStrategy for Directories {
                 sub_districts: shape.sub_districts(folder),
                 nodes: nodes(root, folder),
                 area: Rect::NOTHING,
+                kind: DistrictKind::Folder,
+                elevation: 0.0,
             })
             .filter(|district| !district.sub_districts.is_empty() || !district.nodes.is_empty())
             .collect();
@@ -132,6 +134,8 @@ impl DistrictStrategy for Directories {
             sub_districts: shape.sub_districts(cut.rest),
             nodes: nodes(root, cut.rest),
             area: Rect::NOTHING,
+            kind: DistrictKind::Folder,
+            elevation: 0.0,
         };
         if !rest.sub_districts.is_empty() || !rest.nodes.is_empty() {
             districts.push(rest);

@@ -13,7 +13,7 @@ pub mod ui;
 use std::path::{Path, PathBuf};
 
 use cellworks_map::city::Toward;
-use cellworks_map::{Element, Framing, Item, Pivot, ProjectMap};
+use cellworks_map::{Element, Framing, Item, LaneId, Pivot, ProjectMap};
 use egui::{Pos2, Rect, Vec2};
 
 /// A level of detail.
@@ -90,6 +90,8 @@ pub struct Navigation {
     facing: Option<Facing>,
     /// Whether the view is turned underground, the cellar within reach.
     underground: bool,
+    /// The lane picked, kept lit until another click.
+    lane: Option<LaneId>,
 }
 
 /// The tower whose facade a turned camera faces, and where its pivot is: a
@@ -140,6 +142,7 @@ impl Default for Navigation {
             inside: None,
             facing: None,
             underground: false,
+            lane: None,
         }
     }
 }
@@ -171,6 +174,26 @@ impl Navigation {
     /// Lets go of the selection: empty ground was picked.
     pub fn deselect(&mut self) {
         self.selection = None;
+    }
+
+    /// Picks `lane`, which stays lit with what it carries; picking it again
+    /// lets it go.
+    pub fn pick_lane(&mut self, lane: LaneId) {
+        self.lane = if self.lane.as_ref() == Some(&lane) {
+            None
+        } else {
+            Some(lane)
+        };
+    }
+
+    /// Lets the picked lane go.
+    pub fn drop_lane(&mut self) {
+        self.lane = None;
+    }
+
+    /// The lane picked, if any.
+    pub fn picked_lane(&self) -> Option<&LaneId> {
+        self.lane.as_ref()
     }
 
     /// Moves the selection to the next tower on the same block, from the last
@@ -369,9 +392,9 @@ impl Navigation {
         // The facade's height, from the ground up or, in the cellar, down.
         let reach = cellworks_map::city::reach(tower);
         let (bottom, top) = if cellworks_map::city::in_cellar(tower) {
-            (-reach, 0.0)
+            (tower.base - reach, tower.base)
         } else {
-            (0.0, reach)
+            (tower.base, tower.base + reach)
         };
         let (low, high) = if top - bottom > 2.0 * half {
             (bottom + half, top - half)

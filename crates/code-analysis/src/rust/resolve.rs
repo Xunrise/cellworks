@@ -24,6 +24,9 @@ pub(crate) struct Module {
 pub(crate) struct Index {
     items: HashMap<(PathBuf, Vec<String>), PathBuf>,
     crates: HashMap<String, PathBuf>,
+    /// Per crate and module, the names its `use` statements bring in, so a
+    /// `pub use` can be followed to the item it re-exports.
+    uses: HashMap<(PathBuf, Vec<String>), BTreeMap<String, Vec<String>>>,
 }
 
 impl Index {
@@ -45,6 +48,20 @@ impl Index {
         Index {
             items: index,
             crates,
+            uses: HashMap::new(),
+        }
+    }
+
+    /// Records what the `use` statements of the file at `module` bring into
+    /// each of its modules, for following re-exports.
+    pub fn add_uses(&mut self, module: &Module, code: &FileCode) {
+        for (inner, uses) in &code.uses {
+            let mut path = module.path.clone();
+            path.extend(inner.iter().cloned());
+            self.uses
+                .entry((module.krate.clone(), path))
+                .or_default()
+                .extend(uses.names.clone());
         }
     }
 
@@ -75,7 +92,45 @@ impl Index {
         let inner = &item.module;
         self.candidates(&module.krate, &scope, code, inner, &written, 0)
             .into_iter()
-            .find_map(|key| self.items.get(&key))
+            .find_map(|key| self.follow(key, 0))
+    }
+
+    /// The item at `key`, or the one a re-export on the way names:
+    /// `cellworks_map::ProjectMap` is `graph::ProjectMap` when the crate's
+    /// root says `pub use graph::ProjectMap`.
+    fn follow(&self, key: (PathBuf, Vec<String>), depth: usize) -> Option<&PathBuf> {
+        if let Some(found) = self.items.get(&key) {
+            return Some(found);
+        }
+        // A re-export that names itself in a loop leads nowhere.
+        if depth > 8 {
+            return None;
+        }
+        let (krate, path) = key;
+        (0..path.len()).find_map(|at| {
+            let (module, rest) = path.split_at(at);
+            let target = self
+                .uses
+                .get(&(krate.clone(), module.to_vec()))?
+                .get(&rest[0])?;
+            let mut written = target.clone();
+            written.extend(rest[1..].iter().cloned());
+            let (first, after) = written.split_first()?;
+            let next = match first.as_str() {
+                "crate" => (krate.clone(), after.to_vec()),
+                "self" => (krate.clone(), [module, after].concat()),
+                "super" => {
+                    let up = &module[..module.len().saturating_sub(1)];
+                    (krate.clone(), [up, after].concat())
+                }
+                name => match self.crates.get(name) {
+                    Some(other) => (other.clone(), after.to_vec()),
+                    // Edition 2018 paths: a sibling module of the re-exporting one.
+                    None => (krate.clone(), [module, &written[..]].concat()),
+                },
+            };
+            self.follow(next, depth + 1)
+        })
     }
 
     /// The full paths `written`, in the module `scope`, may stand for, most
@@ -248,12 +303,15 @@ mod tests {
                     .map(move |(i, item)| (f, i, file.join(item.qualified().join("::"))))
             })
             .collect();
-        let index = Index::new(
+        let mut index = Index::new(
             paths
                 .iter()
                 .map(|(f, i, path)| (&files[*f].0, &files[*f].1.items[*i], path.as_path())),
             HashMap::new(),
         );
+        for (module, code, _) in &files {
+            index.add_uses(module, code);
+        }
         Shop { files, index }
     }
 
@@ -325,6 +383,26 @@ mod tests {
                 Some(PathBuf::from("src/lib.rs/discount")),
                 Some(PathBuf::from("src/lib.rs/discount"))
             ]
+        );
+    }
+
+    #[test]
+    fn a_call_through_a_re_export_reaches_the_item_re_exported() {
+        let shop = shop(&[
+            (
+                "src/cart.rs",
+                "use crate::Money;\nfn total() { Money::round(); }\n",
+            ),
+            ("src/lib.rs", "mod money;\npub use money::Money;\n"),
+            (
+                "src/money.rs",
+                "pub struct Money;\nimpl Money { pub fn round() {} }\n",
+            ),
+        ]);
+
+        assert_eq!(
+            shop.calls_of(0, "total"),
+            [Some(PathBuf::from("src/money.rs/Money::round"))]
         );
     }
 

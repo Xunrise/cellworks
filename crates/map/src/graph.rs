@@ -5,10 +5,13 @@
 //! stands for, never by its name: two districts may carry the same label, and
 //! nothing keys on a label.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use egui::{Pos2, Rect};
+
+use crate::Lens;
+use crate::contexts::BoundedContexts;
 
 /// One project laid out as a map. Built only by [`ProjectMap::of`].
 ///
@@ -25,6 +28,39 @@ pub struct ProjectMap {
     /// The rectangle every district and every tower lies inside, at the
     /// layout's own scale.
     pub extent: Rect,
+    /// Pairs of files changed in the same commits; empty where git has no
+    /// history to tell.
+    pub co_changes: Vec<CoChange>,
+    /// The lens the districts were made by.
+    pub lens: Lens,
+    /// For every item, the index of the district it stands in under the
+    /// folders lens: its crate, whose colour it keeps in every lens. Empty
+    /// for a map made by the folders lens, where that is its own district.
+    pub homes: BTreeMap<PathBuf, usize>,
+    /// The district a lens put in the middle of the others, if it did.
+    pub hub: Option<usize>,
+    /// The districts of a staircase, the foundation first: each step stands
+    /// edge to edge beside the one before.
+    pub stair: Vec<usize>,
+    /// The blocks holding the files of an import cycle.
+    pub cycles: BTreeSet<PathBuf>,
+    /// The bounded contexts the project documents, once read; the cells
+    /// lens needs them.
+    pub contexts: Option<BoundedContexts>,
+    /// The cells lens's roads between districts: upstream, downstream, and
+    /// the relationship's type.
+    pub roads: Vec<(usize, usize, String)>,
+    /// Where the engineer moved districts and blocks in the custom lens.
+    pub arrangement: cellworks_workspace::Arrangement,
+}
+
+/// Two files changed in the same commits, and how strongly: each commit adds
+/// one over the number of files it changed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CoChange {
+    /// The canonical paths of the two files, the smaller first.
+    pub files: (PathBuf, PathBuf),
+    pub weight: f32,
 }
 
 /// The top level of a project: a folder at the district level, or the
@@ -36,6 +72,27 @@ pub struct District {
     pub sub_districts: Vec<SubDistrict>,
     pub nodes: Vec<Node>,
     pub area: Rect,
+    pub kind: DistrictKind,
+    /// How high its ground is raised; everything on it stands that high.
+    pub elevation: f32,
+}
+
+/// What made a district.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DistrictKind {
+    /// A folder the district rule names.
+    #[default]
+    Folder,
+    /// A cluster a relationship lens found.
+    Cluster,
+    /// The tests that test no code a lens placed.
+    Tests,
+    /// The code a lens connects to nothing.
+    Outskirts,
+    /// A bounded context of the domain model.
+    Context,
+    /// The code of no bounded context.
+    NoContext,
 }
 
 /// A folder directly inside a district.
@@ -85,6 +142,8 @@ pub struct Item {
     pub floors: Vec<Floor>,
     /// The ground the item stands on, at the layout's own scale.
     pub area: Rect,
+    /// The height of that ground: 0, or how high its district is raised.
+    pub base: f32,
 }
 
 /// What an item is in its source.
@@ -110,6 +169,9 @@ pub struct Floor {
     pub tokens: Vec<Token>,
     /// The paths of the items this line calls.
     pub calls: Vec<PathBuf>,
+    /// The paths of the items this line imports: the names a `use` line
+    /// brings in, resolved to the item each stands for.
+    pub imports: Vec<PathBuf>,
 }
 
 /// The columns one token occupies on its line.
@@ -201,6 +263,22 @@ pub(crate) fn items(district: &District) -> Vec<&Item> {
     all
 }
 
+/// Every node of `district`, however deep.
+pub(crate) fn nodes(district: &District) -> Vec<&Node> {
+    fn in_groups<'a>(groups: &'a [Group], into: &mut Vec<&'a Node>) {
+        for group in groups {
+            into.extend(&group.nodes);
+            in_groups(&group.groups, into);
+        }
+    }
+    let mut all: Vec<&Node> = district.nodes.iter().collect();
+    for sub in &district.sub_districts {
+        all.extend(&sub.nodes);
+        in_groups(&sub.groups, &mut all);
+    }
+    all
+}
+
 /// Every node of `districts`, however deep.
 pub(crate) fn nodes_mut(districts: &mut [District]) -> Vec<&mut Node> {
     fn in_groups<'a>(groups: &'a mut [Group], into: &mut Vec<&'a mut Node>) {
@@ -221,6 +299,38 @@ pub(crate) fn nodes_mut(districts: &mut [District]) -> Vec<&mut Node> {
 }
 
 impl ProjectMap {
+    /// The items the element at `path` holds: an item itself, or every item
+    /// on a block, or in a folder or district, however deep. Empty when the
+    /// map holds no such element.
+    pub fn items_under(&self, path: &Path) -> Vec<&Item> {
+        if let Some(item) = self.item(path) {
+            return vec![item];
+        }
+        fn in_groups<'a>(groups: &'a [Group], path: &Path, all: bool, into: &mut Vec<&'a Item>) {
+            for group in groups {
+                let all = all || group.path == path;
+                in_nodes(&group.nodes, path, all, into);
+                in_groups(&group.groups, path, all, into);
+            }
+        }
+        fn in_nodes<'a>(nodes: &'a [Node], path: &Path, all: bool, into: &mut Vec<&'a Item>) {
+            for node in nodes.iter().filter(|node| all || node.path == path) {
+                into.extend(&node.items);
+            }
+        }
+        let mut under = Vec::new();
+        for district in &self.districts {
+            let all = district.path == path;
+            in_nodes(&district.nodes, path, all, &mut under);
+            for sub in &district.sub_districts {
+                let all = all || sub.path == path;
+                in_nodes(&sub.nodes, path, all, &mut under);
+                in_groups(&sub.groups, path, all, &mut under);
+            }
+        }
+        under
+    }
+
     /// The item standing nearest the ground point `point`; one in the cellar
     /// only with `cellar`.
     pub fn item_nearest(&self, point: Pos2, cellar: bool) -> Option<&Item> {
@@ -430,8 +540,18 @@ fn folder<'a>(name: &'a str, area: Rect, parent: Option<&'a Path>) -> Found<'a> 
 }
 
 fn in_nodes<'a>(nodes: &'a [Node], path: &Path, parent: Option<&'a Path>) -> Option<Found<'a>> {
-    // An item's path is its node's path and more.
-    let node = nodes.iter().find(|node| path.starts_with(&node.path))?;
+    // An item's path is its file's path and more; a block a lens made holds
+    // items of other paths.
+    let node = nodes.iter().find(|node| {
+        node.path == path
+            || (path.starts_with(&node.path) && node.items.iter().any(|i| i.path == path))
+    });
+    let node = match node {
+        Some(node) => node,
+        None => nodes
+            .iter()
+            .find(|node| node.items.iter().any(|i| i.path == path))?,
+    };
     if node.path == path {
         return Some(Found {
             name: &node.name,

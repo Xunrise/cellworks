@@ -23,6 +23,13 @@ pub trait GitListing {
     /// Paths relative to the repository root that git does not ignore and
     /// that exist in the worktree.
     fn visible_files(&self, repository: &Path) -> Result<Vec<PathBuf>, GitUnavailable>;
+
+    /// The files each of the last commits changed, relative to the
+    /// repository root, newest first. None by default: a listing that only
+    /// knows files knows no history.
+    fn history(&self, _repository: &Path) -> Result<Vec<Vec<PathBuf>>, GitUnavailable> {
+        Ok(Vec::new())
+    }
 }
 
 /// [`GitListing`] by running `git ls-files` as a child process.
@@ -40,12 +47,45 @@ const LISTED: &[&str] = &[
 /// Files still in the index but gone from the worktree.
 const DELETED: &[&str] = &["ls-files", "-z", "--deleted"];
 
+/// The files of the last 500 commits, each commit opened by a line holding
+/// only the record separator.
+const HISTORY: &[&str] = &["log", "-n", "500", "--name-only", "--format=%x1e"];
+
 impl GitListing for GitCli {
     fn visible_files(&self, repository: &Path) -> Result<Vec<PathBuf>, GitUnavailable> {
         let listed = run(command(repository, LISTED))?;
         let deleted = run(command(repository, DELETED))?;
         Ok(visible(listed, deleted))
     }
+
+    fn history(&self, repository: &Path) -> Result<Vec<Vec<PathBuf>>, GitUnavailable> {
+        let mut command = command(repository, HISTORY);
+        let output = command
+            .output()
+            .map_err(|error| GitUnavailable(format!("git could not be started: {error}")))?;
+        if !output.status.success() {
+            let message = String::from_utf8_lossy(&output.stderr);
+            return Err(GitUnavailable(message.trim().chars().take(200).collect()));
+        }
+        Ok(commits(&output.stdout))
+    }
+}
+
+/// The files of each commit in `git log --name-only --format=%x1e` output.
+/// ponytail: a path holding a newline is split; quote paths with -z if one
+/// ever matters.
+fn commits(output: &[u8]) -> Vec<Vec<PathBuf>> {
+    output
+        .split(|byte| *byte == 0x1e)
+        .map(|commit| {
+            commit
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+                .map(|line| PathBuf::from(OsStr::from_bytes(line)))
+                .collect::<Vec<_>>()
+        })
+        .filter(|files| !files.is_empty())
+        .collect()
 }
 
 /// What git listed, without the files gone from the worktree, sorted and
@@ -106,6 +146,19 @@ mod tests {
         );
 
         assert_eq!(files, paths(&["src/a.rs", "src/b.rs"]));
+    }
+
+    #[test]
+    fn the_history_lists_the_files_of_each_commit() {
+        let output = b"\x1e\n\nsrc/a.rs\nsrc/b.rs\n\x1e\n\nREADME.md\n\x1e\n\n";
+
+        assert_eq!(
+            commits(output),
+            [
+                vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")],
+                vec![PathBuf::from("README.md")],
+            ]
+        );
     }
 
     #[test]
