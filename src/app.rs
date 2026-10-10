@@ -53,6 +53,8 @@ pub struct CellworksApp {
     /// Whether git-ignored files and hidden folders are on the map. Off at
     /// every start, kept for every project opened in this session.
     show_ignored: bool,
+    /// Whether the tree is open beside the map.
+    tree_open: bool,
 }
 
 impl CellworksApp {
@@ -69,6 +71,7 @@ impl CellworksApp {
                 navigation: Navigation::default(),
                 git: Arc::new(GitCli),
                 show_ignored: false,
+                tree_open: false,
             },
             None => CellworksApp {
                 universe: Universe::without_home(),
@@ -77,6 +80,7 @@ impl CellworksApp {
                 navigation: Navigation::default(),
                 git: Arc::new(GitCli),
                 show_ignored: false,
+                tree_open: false,
             },
         }
     }
@@ -91,6 +95,7 @@ impl CellworksApp {
             navigation: Navigation::default(),
             git: Arc::new(GitCli),
             show_ignored: false,
+            tree_open: false,
         }
     }
 
@@ -121,6 +126,11 @@ impl CellworksApp {
     /// The project that is open, if any.
     pub fn opened(&self) -> Option<&OpenedProject> {
         self.opened.as_ref()
+    }
+
+    /// Whether the tree is open beside the map.
+    pub fn tree_open(&self) -> bool {
+        self.tree_open
     }
 
     /// The layer the view is on, what is framed and what is selected.
@@ -221,20 +231,34 @@ impl eframe::App for CellworksApp {
 /// out; I switches ignored files on and off while a project is open. Pinching
 /// or scrolling zooms the map around the pointer, and Z, or the button beside
 /// the breadcrumb, locks the layer against the zoom or lets it follow again.
+/// E opens and closes the tree, where the up and down arrows move the
+/// selection one row.
 pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
-    let (enter, esc, ignored, lock, zoom, pointer) = ui.input(|input| {
+    let (enter, esc, ignored, lock, tree, rows, zoom, pointer) = ui.input(|input| {
         let plain = input.modifiers.is_none();
+        let pressed = |key| input.key_pressed(key);
         (
-            input.key_pressed(egui::Key::Enter),
-            input.key_pressed(egui::Key::Escape),
-            plain && input.key_pressed(egui::Key::I),
-            plain && input.key_pressed(egui::Key::Z),
+            pressed(egui::Key::Enter),
+            pressed(egui::Key::Escape),
+            plain && pressed(egui::Key::I),
+            plain && pressed(egui::Key::Z),
+            plain && pressed(egui::Key::E),
+            isize::from(pressed(egui::Key::ArrowDown)) - isize::from(pressed(egui::Key::ArrowUp)),
             input.zoom_delta() * (input.smooth_scroll_delta.y / SCROLL_PER_E).exp(),
             input.pointer.hover_pos(),
         )
     });
     if ignored {
         app.toggle_ignored();
+    }
+    if tree && app.opened.is_some() {
+        app.tree_open = !app.tree_open;
+    }
+    if app.tree_open
+        && rows != 0
+        && let Some(map) = app.map().cloned()
+    {
+        app.navigation.move_in_tree(&map, rows);
     }
     if lock {
         app.navigation.toggle_lock();
@@ -283,6 +307,18 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 .inner;
             if switched {
                 app.navigation.toggle_lock();
+            }
+            if app.tree_open
+                && let Some(map) = app.map()
+            {
+                let row = egui::Panel::left("tree")
+                    .show(ui, |ui| {
+                        cellworks_navigation::ui::tree(ui, map, &app.navigation)
+                    })
+                    .inner;
+                if let Some(path) = row {
+                    app.navigation.select(path);
+                }
             }
             let drawn = egui::CentralPanel::default()
                 .show(ui, |ui| project(ui, opened, &app.navigation))

@@ -173,6 +173,49 @@ impl ProjectMap {
     }
 }
 
+impl ProjectMap {
+    /// What the folder at `folder` holds, folders first, as names and paths;
+    /// the districts when `folder` is `None`. `None` when the map holds no
+    /// such folder.
+    pub fn held_by(&self, folder: Option<&Path>) -> Option<Vec<(&str, &Path)>> {
+        fn entries<'a>(
+            folders: impl Iterator<Item = (&'a String, &'a PathBuf)>,
+            nodes: &'a [Node],
+        ) -> Vec<(&'a str, &'a Path)> {
+            folders
+                .chain(nodes.iter().map(|node| (&node.name, &node.path)))
+                .map(|(name, path)| (name.as_str(), path.as_path()))
+                .collect()
+        }
+        fn in_groups<'a>(groups: &'a [Group], folder: &Path) -> Option<Vec<(&'a str, &'a Path)>> {
+            groups.iter().find_map(|group| {
+                if group.path == folder {
+                    let inner = group.groups.iter().map(|g| (&g.name, &g.path));
+                    return Some(entries(inner, &group.nodes));
+                }
+                in_groups(&group.groups, folder)
+            })
+        }
+        let Some(folder) = folder else {
+            let districts = self.districts.iter().map(|d| (&d.name, &d.path));
+            return Some(entries(districts, &[]));
+        };
+        self.districts.iter().find_map(|district| {
+            if district.path == folder {
+                let subs = district.sub_districts.iter().map(|s| (&s.name, &s.path));
+                return Some(entries(subs, &district.nodes));
+            }
+            district.sub_districts.iter().find_map(|sub| {
+                if sub.path == folder {
+                    let groups = sub.groups.iter().map(|g| (&g.name, &g.path));
+                    return Some(entries(groups, &sub.nodes));
+                }
+                in_groups(&sub.groups, folder)
+            })
+        })
+    }
+}
+
 fn folder<'a>(name: &'a str, area: Rect, parent: Option<&'a Path>) -> Found<'a> {
     Found {
         name,
@@ -235,6 +278,38 @@ mod tests {
         assert_eq!(found(&district.join("a.rs")), Some((true, Some(district))));
         assert_eq!(found(Path::new("/p/src")), None);
         assert_eq!(map.find(&sub).map(|f| f.name), Some("pricing"));
+    }
+
+    #[test]
+    fn held_by_lists_what_each_folder_holds_folders_first() {
+        let files: Vec<PathBuf> = [
+            "src/catalog/pricing/rules/discount.rs",
+            "src/catalog/pricing/base.rs",
+            "src/catalog/a.rs",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+        let strategy = Directories {
+            prefix: default_prefix_rule(),
+        };
+        let map = ProjectMap::of("shop", Path::new("/p"), &files, &strategy);
+        let names = |folder: Option<&str>| {
+            map.held_by(folder.map(Path::new))
+                .map(|held| held.into_iter().map(|(name, _)| name).collect::<Vec<_>>())
+        };
+
+        assert_eq!(names(None), Some(vec!["catalog"]));
+        assert_eq!(names(Some("/p/src/catalog")), Some(vec!["pricing", "a.rs"]));
+        assert_eq!(
+            names(Some("/p/src/catalog/pricing")),
+            Some(vec!["rules", "base.rs"])
+        );
+        assert_eq!(
+            names(Some("/p/src/catalog/pricing/rules")),
+            Some(vec!["discount.rs"])
+        );
+        assert_eq!(names(Some("/p/src/catalog/a.rs")), None);
     }
 
     #[test]

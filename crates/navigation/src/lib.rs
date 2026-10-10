@@ -3,8 +3,12 @@
 //!
 //! Defined by docs/domain/contexts/Navigation/Navigation.md. So far it holds
 //! the layer the view is on, what is framed and the selection, moves one
-//! layer in on Enter and one layer out on Esc, and jumps to an element. It draws nothing: the binary
+//! layer in on Enter and one layer out on Esc, jumps to an element, follows
+//! the zoom and lists the current layer for the tree, which [`ui::tree`]
+//! draws. It draws nothing: the binary
 //! reads the keys, hands the opened project's map in, and acts on [`Moved`].
+
+pub mod ui;
 
 use std::path::{Path, PathBuf};
 
@@ -286,6 +290,46 @@ impl Navigation {
                 })
             })
             .map(Path::to_path_buf)
+    }
+
+    /// What the current layer holds, as the tree lists it: the districts on
+    /// the Project layer, what the folder view holds on the Directory and File
+    /// layers, and nothing in the Universe.
+    pub fn rows<'a>(&self, map: &'a ProjectMap) -> Vec<(&'a str, &'a Path)> {
+        match &self.framed {
+            Framed::Universe => Vec::new(),
+            Framed::Project => map.held_by(None).unwrap_or_default(),
+            Framed::Folder(_) | Framed::Node(_) => {
+                map.held_by(self.folder_view(map)).unwrap_or_default()
+            }
+        }
+    }
+
+    /// Moves the selection `by` rows down the tree, or up when negative,
+    /// stopping at the first and the last row. A selection not in the tree
+    /// moves to the first row going down and the last going up.
+    pub fn move_in_tree(&mut self, map: &ProjectMap, by: isize) {
+        let rows = self.rows(map);
+        let Some(last) = rows.len().checked_sub(1) else {
+            return;
+        };
+        let current = rows
+            .iter()
+            .position(|(_, path)| Some(*path) == self.selection.as_deref());
+        let row = match current {
+            Some(row) => row.saturating_add_signed(by).min(last),
+            None if by < 0 => last,
+            None => 0,
+        };
+        self.selection = Some(rows[row].1.to_path_buf());
+    }
+
+    /// The name of what the tree lists: the open project, or the folder of
+    /// the folder view.
+    pub fn listed<'a>(&self, map: &'a ProjectMap) -> &'a str {
+        self.folder_view(map)
+            .and_then(|folder| map.find(folder))
+            .map_or(&map.project, |found| found.name)
     }
 
     /// Where the view is, as the user reads it: "Universe", then the open
@@ -622,6 +666,38 @@ mod tests {
         assert_eq!(
             navigation.framing(&map).area,
             map.find(&at("catalog")).unwrap().area
+        );
+    }
+
+    #[test]
+    fn the_tree_lists_the_current_layer_and_moves_the_selection() {
+        let map = shop();
+        let mut navigation = in_project();
+        let names = |navigation: &Navigation| {
+            navigation
+                .rows(&map)
+                .into_iter()
+                .map(|(name, _)| name.to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&navigation), ["catalog", "orders", "shop"]);
+        assert_eq!(navigation.listed(&map), "shop");
+
+        navigation.move_in_tree(&map, 1);
+        assert_eq!(navigation.selection(), Some(at("catalog").as_path()));
+        navigation.move_in_tree(&map, 1);
+        assert_eq!(navigation.selection(), Some(at("orders").as_path()));
+        navigation.move_in_tree(&map, 5);
+        assert_eq!(navigation.selection(), Some(Path::new(ROOT)));
+
+        navigation.select(at("catalog"));
+        navigation.enter(Some(&map));
+        assert_eq!(names(&navigation), ["pricing", "item.rs"]);
+        assert_eq!(navigation.listed(&map), "catalog");
+        navigation.move_in_tree(&map, -1);
+        assert_eq!(
+            navigation.selection(),
+            Some(at("catalog/item.rs").as_path())
         );
     }
 

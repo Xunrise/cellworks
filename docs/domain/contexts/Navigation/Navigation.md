@@ -42,7 +42,9 @@ Source refs are line numbers of [the prototype findings](../../../discovery/2026
   whole project in view is the Project layer with the selection's district selected, and the innermost shown element
   under the zoom point that spans at least half the view is framed, a node also selected. Enter, Esc and a jump drop
   the zoom and frame what they move to; locking or unlocking changes neither the layer, the selection nor the view.
-  (STORY-004, STORY-007, STORY-006)
+  The tree lists what the current layer holds (the districts on the Project layer, the folder view's contents below
+  it), and its highlighted row is the selection, so the tree and the map never disagree.
+  (STORY-004, STORY-007, STORY-006, STORY-008)
 
 ### Entities (non-aggregate roots)
 _No entries yet._
