@@ -27,23 +27,37 @@ struct Painter<'a> {
     clicked: Option<PathBuf>,
 }
 
+/// One frame of the map as drawn.
+pub struct Drawn {
+    /// The path of the element whose name was clicked, if any.
+    pub clicked: Option<PathBuf>,
+    /// From the part of the map in view, at the layout's scale, to the space
+    /// it was drawn in on screen.
+    pub view: RectTransform,
+}
+
 /// Draws `map` with `framing` fitted to the space left in `ui`, outlines the
-/// element at `selected`, and returns the path of the element whose name was
-/// clicked this frame. With a `folder_view`, only that folder and what it
-/// holds are drawn. Draws nothing for an empty map.
+/// element at `selected`, and reports the element whose name was clicked this
+/// frame. With a `folder_view`, only that folder and what it holds are drawn.
+/// Draws nothing for an empty map.
 pub fn project(
     ui: &mut egui::Ui,
     map: &ProjectMap,
     framing: Framing,
     selected: Option<&Path>,
     folder_view: Option<&Path>,
-) -> Option<PathBuf> {
-    if map.is_empty() {
-        return None;
-    }
+) -> Drawn {
     let panel = ui.available_rect_before_wrap();
+    let to_screen = fit(framing, panel);
+    let view = RectTransform::from_to(to_screen.inverse().transform_rect(panel), panel);
+    if map.is_empty() {
+        return Drawn {
+            clicked: None,
+            view,
+        };
+    }
     let mut painter = Painter {
-        to_screen: fit(framing, panel),
+        to_screen,
         stroke: ui.visuals().widgets.noninteractive.fg_stroke,
         selected,
         folder_view,
@@ -61,7 +75,10 @@ pub fn project(
         }
         painter.nodes(ui, &district.nodes, shown);
     }
-    painter.clicked
+    Drawn {
+        clicked: painter.clicked,
+        view,
+    }
 }
 
 /// The transform that scales `framing.area` uniformly to fill `framing.fill`

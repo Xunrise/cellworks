@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use egui::Rect;
+use egui::{Pos2, Rect};
 
 /// One project laid out as a map. Built only by [`ProjectMap::of`].
 ///
@@ -104,6 +104,8 @@ impl ProjectMap {
 /// Where one element of the map is, as [`ProjectMap::find`] reports it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Found<'a> {
+    /// Its display name.
+    pub name: &'a str,
     /// The rectangle it occupies, at the layout's own scale.
     pub area: Rect,
     /// Whether it is a node rather than a folder.
@@ -117,13 +119,13 @@ impl ProjectMap {
     pub fn find(&self, path: &Path) -> Option<Found<'_>> {
         self.districts.iter().find_map(|district| {
             if district.path == path {
-                return Some(folder(district.area, None));
+                return Some(folder(&district.name, district.area, None));
             }
             let parent = Some(district.path.as_path());
             in_nodes(&district.nodes, path, parent).or_else(|| {
                 district.sub_districts.iter().find_map(|sub| {
                     if sub.path == path {
-                        return Some(folder(sub.area, parent));
+                        return Some(folder(&sub.name, sub.area, parent));
                     }
                     let inside = Some(sub.path.as_path());
                     in_nodes(&sub.nodes, path, inside)
@@ -134,19 +136,58 @@ impl ProjectMap {
     }
 }
 
-fn folder(area: Rect, parent: Option<&Path>) -> Found<'_> {
+impl ProjectMap {
+    /// The paths of the elements whose rectangle holds `point`, the district
+    /// first and the innermost last. Empty when `point` lies between districts.
+    pub fn at(&self, point: Pos2) -> Vec<&Path> {
+        fn nodes<'a>(nodes: &'a [Node], point: Pos2, chain: &mut Vec<&'a Path>) {
+            chain.extend(
+                nodes
+                    .iter()
+                    .filter(|n| n.area.contains(point))
+                    .map(|n| n.path.as_path()),
+            );
+        }
+        fn groups<'a>(inside: &'a [Group], point: Pos2, chain: &mut Vec<&'a Path>) {
+            for group in inside.iter().filter(|g| g.area.contains(point)) {
+                chain.push(&group.path);
+                groups(&group.groups, point, chain);
+                nodes(&group.nodes, point, chain);
+            }
+        }
+        let mut chain = Vec::new();
+        for district in self.districts.iter().filter(|d| d.area.contains(point)) {
+            chain.push(district.path.as_path());
+            for sub in district
+                .sub_districts
+                .iter()
+                .filter(|s| s.area.contains(point))
+            {
+                chain.push(&sub.path);
+                groups(&sub.groups, point, &mut chain);
+                nodes(&sub.nodes, point, &mut chain);
+            }
+            nodes(&district.nodes, point, &mut chain);
+        }
+        chain
+    }
+}
+
+fn folder<'a>(name: &'a str, area: Rect, parent: Option<&'a Path>) -> Found<'a> {
     Found {
+        name,
         area,
         is_node: false,
         parent,
     }
 }
 
-fn in_nodes<'a>(nodes: &[Node], path: &Path, parent: Option<&'a Path>) -> Option<Found<'a>> {
+fn in_nodes<'a>(nodes: &'a [Node], path: &Path, parent: Option<&'a Path>) -> Option<Found<'a>> {
     nodes
         .iter()
         .find(|node| node.path == path)
         .map(|node| Found {
+            name: &node.name,
             area: node.area,
             is_node: true,
             parent,
@@ -156,7 +197,7 @@ fn in_nodes<'a>(nodes: &[Node], path: &Path, parent: Option<&'a Path>) -> Option
 fn in_groups<'a>(groups: &'a [Group], path: &Path, parent: Option<&'a Path>) -> Option<Found<'a>> {
     groups.iter().find_map(|group| {
         if group.path == path {
-            return Some(folder(group.area, parent));
+            return Some(folder(&group.name, group.area, parent));
         }
         let inside = Some(group.path.as_path());
         in_nodes(&group.nodes, path, inside).or_else(|| in_groups(&group.groups, path, inside))
@@ -193,5 +234,32 @@ mod tests {
         );
         assert_eq!(found(&district.join("a.rs")), Some((true, Some(district))));
         assert_eq!(found(Path::new("/p/src")), None);
+        assert_eq!(map.find(&sub).map(|f| f.name), Some("pricing"));
+    }
+
+    #[test]
+    fn at_reports_the_elements_under_a_point_outermost_first() {
+        let files: Vec<PathBuf> = ["src/catalog/pricing/rules/discount.rs", "src/orders/a.rs"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        let strategy = Directories {
+            prefix: default_prefix_rule(),
+        };
+        let map = ProjectMap::of("shop", Path::new("/p"), &files, &strategy);
+        let node = Path::new("/p/src/catalog/pricing/rules/discount.rs");
+
+        let chain = map.at(map.find(node).unwrap().area.center());
+
+        assert_eq!(
+            chain,
+            [
+                Path::new("/p/src/catalog"),
+                Path::new("/p/src/catalog/pricing"),
+                Path::new("/p/src/catalog/pricing/rules"),
+                node,
+            ]
+        );
+        assert!(map.at(map.extent.max + egui::vec2(1.0, 1.0)).is_empty());
     }
 }

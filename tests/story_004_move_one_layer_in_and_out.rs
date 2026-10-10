@@ -140,8 +140,10 @@ impl Universe {
     fn assert_framed(&self, name: &str) {
         let framed = self.rect_of(name);
         assert!(in_window(framed), "{name} at {framed:?}");
+        // A folder fills 70% of the tighter side of the map's panel, which is
+        // the height for a wide window under the breadcrumb.
         assert!(
-            framed.width() > WIDTH * 0.4,
+            framed.width() > WIDTH * 0.35,
             "{name} at {framed:?} is not framed"
         );
         for held in self.held_by(name) {

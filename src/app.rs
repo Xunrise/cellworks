@@ -17,10 +17,12 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
 use cellworks_code_analysis::{CodeAnalysisEvent, GitCli, GitListing, start_load};
+use cellworks_map::ui::Drawn;
 use cellworks_map::{ProjectMap, default_prefix_rule, prefix_rule};
 use cellworks_navigation::{Moved, Navigation};
 use cellworks_workspace::ui::UniverseClick;
 use cellworks_workspace::{Project, ScanState, Sources, Universe, WorkspaceEvent, start_scan};
+use egui::emath::RectTransform;
 
 use crate::opened::{OpenedNotice, OpenedProject, ProjectState};
 
@@ -32,6 +34,13 @@ const EMPTY: &str = "This project has no files to show.";
 
 /// Shown when the read ended without a map.
 const FAILED: &str = "Could not read this project.";
+
+/// Beside the breadcrumb: whether zooming moves the layer.
+const FOLLOWS_ZOOM: &str = "Layer follows the zoom (Z to lock)";
+const LOCKED: &str = "Layer locked (Z to follow the zoom)";
+
+/// Points of scrolling that zoom in by a factor of e.
+const SCROLL_PER_E: f32 = 200.0;
 
 /// The Cellworks application: the universe it shows, the scan that fills it
 /// in, the project opened from it, if any, and where the view is.
@@ -206,20 +215,29 @@ impl eframe::App for CellworksApp {
     }
 }
 
-/// Paints one frame: the universe, or the opened project. A click selects a
-/// project or an element of the map, a double-click opens a project; Enter
-/// moves one layer in and Esc one layer out; I switches ignored files on and
-/// off while a project is open.
+/// Paints one frame: the universe, or the opened project under its
+/// breadcrumb. A click selects a project or an element of the map, a
+/// double-click opens a project; Enter moves one layer in and Esc one layer
+/// out; I switches ignored files on and off while a project is open. Pinching
+/// or scrolling zooms the map around the pointer, and Z, or the button beside
+/// the breadcrumb, locks the layer against the zoom or lets it follow again.
 pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
-    let (enter, esc, ignored) = ui.input(|input| {
+    let (enter, esc, ignored, lock, zoom, pointer) = ui.input(|input| {
+        let plain = input.modifiers.is_none();
         (
             input.key_pressed(egui::Key::Enter),
             input.key_pressed(egui::Key::Escape),
-            input.modifiers.is_none() && input.key_pressed(egui::Key::I),
+            plain && input.key_pressed(egui::Key::I),
+            plain && input.key_pressed(egui::Key::Z),
+            input.zoom_delta() * (input.smooth_scroll_delta.y / SCROLL_PER_E).exp(),
+            input.pointer.hover_pos(),
         )
     });
     if ignored {
         app.toggle_ignored();
+    }
+    if lock {
+        app.navigation.toggle_lock();
     }
     if esc {
         let map = app.map().cloned();
@@ -247,22 +265,60 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             }
         }
         Some(opened) => {
-            let clicked = egui::CentralPanel::default()
+            let crumbs = app.navigation.breadcrumb(&opened.project().name, app.map());
+            let mode = if app.navigation.is_locked() {
+                LOCKED
+            } else {
+                FOLLOWS_ZOOM
+            };
+            let switched = egui::Panel::top("breadcrumb")
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(crumbs);
+                        ui.separator();
+                        ui.button(mode).clicked()
+                    })
+                    .inner
+                })
+                .inner;
+            if switched {
+                app.navigation.toggle_lock();
+            }
+            let drawn = egui::CentralPanel::default()
                 .show(ui, |ui| project(ui, opened, &app.navigation))
                 .inner;
-            if let Some(path) = clicked {
+            let Some(drawn) = drawn else {
+                return;
+            };
+            if let Some(path) = drawn.clicked {
                 app.navigation.select(path);
+            }
+            if zoom != 1.0
+                && let Some(map) = app.map().cloned()
+            {
+                let pointer = pointer.unwrap_or(drawn.view.to().center());
+                let around = drawn.view.inverse().transform_pos(pointer);
+                app.navigation
+                    .zoomed(&map, zoomed(drawn.view, pointer, zoom), around);
+                ui.ctx().request_repaint();
             }
         }
     }
 }
 
-/// Draws the opened project, and returns the element clicked, if any.
-fn project(
-    ui: &mut egui::Ui,
-    opened: &OpenedProject,
-    navigation: &Navigation,
-) -> Option<std::path::PathBuf> {
+/// The part of the map in view after zooming by `factor` around the screen
+/// point `around`, which stays over the same spot of the map.
+fn zoomed(view: RectTransform, around: egui::Pos2, factor: f32) -> egui::Rect {
+    let fixed = view.inverse().transform_pos(around);
+    let area = view.from();
+    egui::Rect::from_min_max(
+        fixed + (area.min - fixed) / factor,
+        fixed + (area.max - fixed) / factor,
+    )
+}
+
+/// Draws the opened project, and reports the map as drawn once there is one.
+fn project(ui: &mut egui::Ui, opened: &OpenedProject, navigation: &Navigation) -> Option<Drawn> {
     for notice in opened.notices() {
         ui.label(notice_text(notice));
     }
@@ -279,13 +335,13 @@ fn project(
             ui.label(FAILED);
             None
         }
-        ProjectState::Mapped(map) => cellworks_map::ui::project(
+        ProjectState::Mapped(map) => Some(cellworks_map::ui::project(
             ui,
             map,
             navigation.framing(map),
             navigation.selection(),
             navigation.folder_view(map),
-        ),
+        )),
     }
 }
 
@@ -351,6 +407,21 @@ mod tests {
 
         assert_eq!(options.viewport.title.as_deref(), Some("Cellworks"));
         assert_eq!(options.viewport.app_id.as_deref(), Some("cellworks"));
+    }
+
+    #[test]
+    fn zooming_keeps_the_point_under_the_pointer_in_place() {
+        let panel = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        let area = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(400.0, 300.0));
+        let view = RectTransform::from_to(area, panel);
+        let pointer = egui::pos2(200.0, 150.0);
+
+        let after = zoomed(view, pointer, 2.0);
+
+        assert_eq!(after.size(), area.size() / 2.0);
+        let spot = view.inverse().transform_pos(pointer);
+        let again = RectTransform::from_to(after, panel).transform_pos(spot);
+        assert!((again - pointer).length() < 0.01, "{again:?}");
     }
 
     #[test]

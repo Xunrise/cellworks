@@ -136,7 +136,11 @@ pub fn open(
     harness
 }
 
-/// The text of every label in the frame, in tree order.
+/// The breadcrumb above an open project starts with this.
+pub const BREADCRUMB: &str = "Universe";
+
+/// The text of every label in the frame, in tree order, except the
+/// breadcrumb.
 pub fn labels(harness: &Harness<'_, CellworksApp>) -> Vec<String> {
     let root = harness.root();
     std::iter::once(root)
@@ -148,6 +152,7 @@ pub fn labels(harness: &Harness<'_, CellworksApp>) -> Vec<String> {
                 _ => None,
             }
         })
+        .filter(|text| !text.starts_with(BREADCRUMB))
         .collect()
 }
 

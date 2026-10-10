@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use cellworks_map::{Framing, ProjectMap};
+use egui::{Pos2, Rect};
 
 /// A level of detail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +45,14 @@ const FOLDER_FILL: f32 = 0.7;
 /// enough to read its name.
 const NODE_FILL: f32 = 0.55;
 
+/// Share of the view, across its width or its height, an element must span
+/// for zooming to put the user on it. Below both fills above, so an element
+/// framed with Enter counts as filling the view.
+const FILLS: f32 = 0.5;
+
+/// Between the parts of the breadcrumb.
+const CRUMB: &str = " › ";
+
 /// The layer the view is on, what is framed and what is selected.
 ///
 /// The layer follows from what is framed. The selection is a path read on the
@@ -55,6 +64,11 @@ pub struct Navigation {
     framed: Framed,
     project: Option<PathBuf>,
     selection: Option<PathBuf>,
+    /// The part of the map the user zoomed to, filling the view; `None` while
+    /// the view frames what is framed.
+    camera: Option<Rect>,
+    /// Whether zooming leaves the layer and the selection alone.
+    locked: bool,
 }
 
 impl Default for Navigation {
@@ -63,6 +77,8 @@ impl Default for Navigation {
             framed: Framed::Universe,
             project: None,
             selection: None,
+            camera: None,
+            locked: false,
         }
     }
 }
@@ -91,6 +107,7 @@ impl Navigation {
     /// The project at `path` was opened: it is framed whole, nothing in it
     /// selected yet.
     pub fn opened(&mut self, path: PathBuf) {
+        self.camera = None;
         self.framed = Framed::Project;
         self.project = Some(path);
         self.selection = None;
@@ -120,6 +137,7 @@ impl Navigation {
     /// happens yet; the editor comes later.
     pub fn enter(&mut self, map: Option<&ProjectMap>) -> Option<Moved> {
         let selection = self.selection.clone()?;
+        self.camera = None;
         match &self.framed {
             Framed::Universe => {
                 self.opened(selection.clone());
@@ -143,6 +161,7 @@ impl Navigation {
     /// selecting the district the folder lies in; from the project to the
     /// Universe, selecting the project. In the Universe it stays there.
     pub fn esc(&mut self, map: Option<&ProjectMap>) -> Option<Moved> {
+        self.camera = None;
         match &self.framed {
             Framed::Universe => None,
             Framed::Project => {
@@ -177,6 +196,7 @@ impl Navigation {
         let Some(found) = map.find(&path) else {
             return;
         };
+        self.camera = None;
         self.framed = match found.parent {
             Some(parent) => Framed::Folder(parent.to_path_buf()),
             None => Framed::Project,
@@ -194,9 +214,113 @@ impl Navigation {
         }
     }
 
+    /// Whether zooming leaves the layer and the selection alone.
+    pub fn is_locked(&self) -> bool {
+        self.locked
+    }
+
+    /// Switches between the layer following the zoom and the layer locked.
+    /// Neither the layer, the selection nor the view changes.
+    pub fn toggle_lock(&mut self) {
+        self.locked = !self.locked;
+    }
+
+    /// The user zoomed around the point `around` so that `view` fills the
+    /// view, both at the layout's scale.
+    ///
+    /// Unless the layer is locked, the layer follows: with the whole project
+    /// in view it is Project, with the district of the selection selected;
+    /// otherwise the innermost shown element under `around` that spans most of
+    /// the view is framed, and selected when it is a node or when the
+    /// selection lies outside it. Over empty space nothing changes.
+    pub fn zoomed(&mut self, map: &ProjectMap, view: Rect, around: Pos2) {
+        if self.framed == Framed::Universe {
+            return;
+        }
+        self.camera = Some(view);
+        if self.locked {
+            return;
+        }
+        if view.contains_rect(map.extent) {
+            self.framed = Framed::Project;
+            self.selection = self.selection.as_deref().map(|path| district_of(map, path));
+            return;
+        }
+        let Some(path) = self.filling(map, view, around) else {
+            return;
+        };
+        let Some(found) = map.find(&path) else {
+            return;
+        };
+        if found.is_node {
+            self.selection = Some(path.clone());
+            self.framed = Framed::Node(path);
+        } else {
+            let selection_inside = self
+                .selection
+                .as_deref()
+                .is_some_and(|selected| holds(map, &path, selected));
+            if !selection_inside {
+                self.selection = Some(path.clone());
+            }
+            self.framed = Framed::Folder(path);
+        }
+    }
+
+    /// The innermost element under `around` that spans most of `view`, among
+    /// those shown: inside the folder view or around it.
+    fn filling(&self, map: &ProjectMap, view: Rect, around: Pos2) -> Option<PathBuf> {
+        let folder_view = self.folder_view(map).map(Path::to_path_buf);
+        let chain = map.at(around);
+        let shown = |path: &Path| match &folder_view {
+            None => true,
+            Some(folder) => holds(map, folder, path) || holds(map, path, folder),
+        };
+        chain
+            .into_iter()
+            .filter(|path| shown(path))
+            .rfind(|path| {
+                map.find(path).is_some_and(|found| {
+                    (found.area.width() / view.width()).max(found.area.height() / view.height())
+                        >= FILLS
+                })
+            })
+            .map(Path::to_path_buf)
+    }
+
+    /// Where the view is, as the user reads it: "Universe", then the open
+    /// project's name and the names in its `map` down to what is framed.
+    pub fn breadcrumb(&self, project: &str, map: Option<&ProjectMap>) -> String {
+        let mut crumbs = vec!["Universe".to_owned()];
+        if self.framed == Framed::Universe {
+            return crumbs.join(CRUMB);
+        }
+        crumbs.push(project.to_owned());
+        if let Some(map) = map {
+            let mut names = Vec::new();
+            let mut at = match &self.framed {
+                Framed::Folder(path) | Framed::Node(path) => map.find(path),
+                Framed::Universe | Framed::Project => None,
+            };
+            while let Some(found) = at {
+                names.push(found.name.to_owned());
+                at = found.parent.and_then(|parent| map.find(parent));
+            }
+            crumbs.extend(names.into_iter().rev());
+        }
+        crumbs.join(CRUMB)
+    }
+
     /// The part of `map` the view shows: the whole project, a folder with a
     /// margin, or a node at inspection distance.
     pub fn framing(&self, map: &ProjectMap) -> Framing {
+        if let Some(area) = self.camera {
+            return Framing {
+                area,
+                fill: 1.0,
+                scale_up: true,
+            };
+        }
         let whole = Framing {
             area: map.extent,
             fill: 1.0,
@@ -216,6 +340,18 @@ impl Navigation {
             None => whole,
         }
     }
+}
+
+/// Whether the folder at `folder` is `path` or holds it, however deep.
+fn holds(map: &ProjectMap, folder: &Path, path: &Path) -> bool {
+    let mut at = Some(path);
+    while let Some(path) = at {
+        if path == folder {
+            return true;
+        }
+        at = map.find(path).and_then(|found| found.parent);
+    }
+    false
 }
 
 /// The district `path` lies in: the folder above it that the project holds.
@@ -407,5 +543,103 @@ mod tests {
 
         assert!(folder.scale_up && node.scale_up);
         assert!(node.fill < folder.fill);
+    }
+
+    /// Zooms so that `path`'s rectangle spans `share` of the view across,
+    /// around its middle for a node and its name for a folder, where nothing
+    /// inside it lies.
+    fn zoom_onto(navigation: &mut Navigation, map: &ProjectMap, path: &str, share: f32) {
+        let found = map.find(&at(path)).unwrap();
+        let area = found.area;
+        let view = Rect::from_center_size(area.center(), area.size() / share);
+        let around = if found.is_node {
+            area.center()
+        } else {
+            area.min + egui::vec2(4.0, 4.0)
+        };
+        navigation.zoomed(map, view, around);
+    }
+
+    #[test]
+    fn zooming_steps_through_the_folders_down_to_the_node_and_back_out() {
+        let map = shop();
+        let mut navigation = in_project();
+
+        zoom_onto(&mut navigation, &map, "catalog/pricing", 0.8);
+        assert_eq!(navigation.layer(), Layer::Directory);
+        assert_eq!(
+            navigation.selection(),
+            Some(at("catalog/pricing").as_path())
+        );
+
+        zoom_onto(
+            &mut navigation,
+            &map,
+            "catalog/pricing/rules/discount.rs",
+            0.8,
+        );
+        assert_eq!(navigation.layer(), Layer::File);
+
+        zoom_onto(&mut navigation, &map, "catalog", 0.8);
+        assert_eq!(navigation.layer(), Layer::Directory);
+        assert_eq!(navigation.folder_view(&map), Some(at("catalog").as_path()));
+        assert_eq!(
+            navigation.selection(),
+            Some(at("catalog/pricing/rules/discount.rs").as_path()),
+            "the selection stays when the folder holds it"
+        );
+
+        navigation.zoomed(&map, map.extent.expand(10.0), map.extent.center());
+        assert_eq!(navigation.layer(), Layer::Project);
+        assert_eq!(navigation.selection(), Some(at("catalog").as_path()));
+    }
+
+    #[test]
+    fn a_locked_layer_only_moves_the_view() {
+        let map = shop();
+        let mut navigation = in_project();
+        navigation.toggle_lock();
+
+        zoom_onto(&mut navigation, &map, "catalog/item.rs", 0.8);
+
+        assert_eq!(navigation.layer(), Layer::Project);
+        assert_eq!(navigation.selection(), None);
+        assert_eq!(
+            navigation.framing(&map).area.center(),
+            map.find(&at("catalog/item.rs")).unwrap().area.center()
+        );
+    }
+
+    #[test]
+    fn enter_and_esc_drop_the_zoom() {
+        let map = shop();
+        let mut navigation = in_project();
+        zoom_onto(&mut navigation, &map, "orders", 0.2);
+        navigation.select(at("catalog"));
+
+        navigation.enter(Some(&map));
+
+        assert_eq!(
+            navigation.framing(&map).area,
+            map.find(&at("catalog")).unwrap().area
+        );
+    }
+
+    #[test]
+    fn the_breadcrumb_names_every_folder_down_to_what_is_framed() {
+        let map = shop();
+        let mut navigation = Navigation::default();
+        assert_eq!(navigation.breadcrumb("shop", None), "Universe");
+
+        navigation.opened(PathBuf::from(ROOT));
+        assert_eq!(navigation.breadcrumb("shop", None), "Universe › shop");
+
+        navigation.jump(&map, at("README.md"));
+        navigation.select(at("README.md"));
+        navigation.enter(Some(&map));
+        assert_eq!(
+            navigation.breadcrumb("shop", Some(&map)),
+            "Universe › shop › shop › README.md"
+        );
     }
 }
