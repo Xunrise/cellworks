@@ -22,17 +22,21 @@ struct Painter<'a> {
     to_screen: RectTransform,
     stroke: Stroke,
     selected: Option<&'a Path>,
+    /// The folder whose folder view is drawn; everything outside it is not.
+    folder_view: Option<&'a Path>,
     clicked: Option<PathBuf>,
 }
 
 /// Draws `map` with `framing` fitted to the space left in `ui`, outlines the
 /// element at `selected`, and returns the path of the element whose name was
-/// clicked this frame. Draws nothing for an empty map.
+/// clicked this frame. With a `folder_view`, only that folder and what it
+/// holds are drawn. Draws nothing for an empty map.
 pub fn project(
     ui: &mut egui::Ui,
     map: &ProjectMap,
     framing: Framing,
     selected: Option<&Path>,
+    folder_view: Option<&Path>,
 ) -> Option<PathBuf> {
     if map.is_empty() {
         return None;
@@ -42,19 +46,20 @@ pub fn project(
         to_screen: fit(framing, panel),
         stroke: ui.visuals().widgets.noninteractive.fg_stroke,
         selected,
+        folder_view,
         clicked: None,
     };
 
     for district in &map.districts {
-        painter.boxed(ui, district.area, &district.name, &district.path);
+        let shown = painter.boxed(ui, district.area, &district.name, &district.path, false);
         for sub in &district.sub_districts {
-            painter.boxed(ui, sub.area, &sub.name, &sub.path);
+            let shown = painter.boxed(ui, sub.area, &sub.name, &sub.path, shown);
             for group in &sub.groups {
-                painter.group_with_children(ui, group);
+                painter.group_with_children(ui, group, shown);
             }
-            painter.nodes(ui, &sub.nodes);
+            painter.nodes(ui, &sub.nodes, shown);
         }
-        painter.nodes(ui, &district.nodes);
+        painter.nodes(ui, &district.nodes, shown);
     }
     painter.clicked
 }
@@ -74,15 +79,29 @@ pub(crate) fn fit(framing: Framing, panel: Rect) -> RectTransform {
 }
 
 impl Painter<'_> {
-    fn group_with_children(&mut self, ui: &mut egui::Ui, group: &Group) {
-        self.boxed(ui, group.area, &group.name, &group.path);
+    fn group_with_children(&mut self, ui: &mut egui::Ui, group: &Group, inside: bool) {
+        let shown = self.boxed(ui, group.area, &group.name, &group.path, inside);
         for inner in &group.groups {
-            self.group_with_children(ui, inner);
+            self.group_with_children(ui, inner, shown);
         }
-        self.nodes(ui, &group.nodes);
+        self.nodes(ui, &group.nodes, shown);
     }
 
-    fn boxed(&mut self, ui: &mut egui::Ui, area: Rect, name: &str, path: &Path) {
+    /// Draws the folder at `path` if it is shown: when its parent is shown
+    /// (`inside`), it is the folder view, or there is no folder view. Returns
+    /// whether it was, which is whether what it holds is shown.
+    fn boxed(
+        &mut self,
+        ui: &mut egui::Ui,
+        area: Rect,
+        name: &str,
+        path: &Path,
+        inside: bool,
+    ) -> bool {
+        let shown = inside || self.folder_view.is_none_or(|folder| folder == path);
+        if !shown {
+            return false;
+        }
         let rect = self.to_screen.transform_rect(area);
         ui.painter()
             .rect_stroke(rect, 4.0, self.stroke, StrokeKind::Inside);
@@ -91,9 +110,13 @@ impl Painter<'_> {
             egui::vec2(rect.width(), TITLE * self.to_screen.scale().y),
         );
         self.label(ui, rect, title, name, path);
+        true
     }
 
-    fn nodes(&mut self, ui: &mut egui::Ui, nodes: &[Node]) {
+    fn nodes(&mut self, ui: &mut egui::Ui, nodes: &[Node], shown: bool) {
+        if !shown {
+            return;
+        }
         let fill = ui.visuals().faint_bg_color;
         for node in nodes {
             let rect = self.to_screen.transform_rect(node.area);

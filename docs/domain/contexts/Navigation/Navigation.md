@@ -33,10 +33,12 @@ Source refs are line numbers of [the prototype findings](../../../discovery/2026
 ### Aggregates
 - **Navigation** (`cellworks_navigation::Navigation`): what is framed (the Universe, the open project, a folder or a
   node) and the selection. Invariants: the layer follows from what is framed (a folder is the Directory layer, a node
-  the File layer); Enter moves the frame to the selection, Esc moves it to the folder holding what is framed and
-  selects that folder, and leaving a district frames the whole project with the district still selected. The
-  selection is a path read on the current layer, so the district of a project's top-level files, which has the
-  project's own path, is never mistaken for the project. (STORY-004)
+  the File layer); Enter moves the frame to the selection. A framed folder is its folder view: only the folder and
+  what it holds are shown, and a framed node shows the folder view of the folder holding it. Esc has one step per
+  layer: from a node to its folder view with the node still selected, from a folder view to the whole project with the
+  folder's district selected. A jump frames the folder holding its target and selects the target. The selection is a
+  path read on the current layer, so the district of a project's top-level files, which has the project's own path,
+  is never mistaken for the project. (STORY-004, STORY-007)
 
 ### Entities (non-aggregate roots)
 _No entries yet._

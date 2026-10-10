@@ -6,6 +6,10 @@
 //! "shop" and "billing", raised as real folder trees in temporary
 //! directories. A click selects, as the story leaves choosing the selection
 //! by keyboard to EPIC-003. No test runs git, reads `$HOME` or opens a window.
+//!
+//! STORY-007 replaced the folder-by-folder walk out: Esc leaves a folder view
+//! for the whole project in one step, and Esc from a node keeps it selected.
+//! The Esc scenarios below assert that.
 
 mod common;
 
@@ -242,15 +246,15 @@ fn esc_moves_one_level_out() {
             "discount.rs",
             &["catalog", "pricing", "rules", "discount.rs"][..],
             "rules",
-            "rules",
+            "discount.rs",
         ),
         (
             "rules",
             &["catalog", "pricing", "rules"][..],
-            "pricing",
-            "pricing",
+            "shop",
+            "catalog",
         ),
-        ("pricing", &["catalog", "pricing"][..], "catalog", "catalog"),
+        ("pricing", &["catalog", "pricing"][..], "shop", "catalog"),
         ("catalog", &["catalog"][..], "shop", "catalog"),
         ("shop", &[][..], "the universe", "shop"),
     ] {
@@ -298,7 +302,7 @@ fn the_selection_is_visible_on_every_layer() {
     universe.frame(&["catalog", "pricing", "rules", "discount.rs"]);
     assert_eq!(universe.outlined(), ["discount.rs"]);
 
-    for selected in ["rules", "pricing", "catalog", "catalog", "shop"] {
+    for selected in ["discount.rs", "catalog", "shop"] {
         universe.press(Key::Escape);
         assert_eq!(universe.outlined(), [selected]);
     }

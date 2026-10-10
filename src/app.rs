@@ -119,6 +119,14 @@ impl CellworksApp {
         &self.navigation
     }
 
+    /// Moves straight to the element of the open project at `path`, showing
+    /// the folder holding it in its folder view.
+    pub fn jump(&mut self, path: std::path::PathBuf) {
+        if let Some(map) = self.map().cloned() {
+            self.navigation.jump(&map, path);
+        }
+    }
+
     /// The opened project's map, once it has arrived.
     fn map(&self) -> Option<&ProjectMap> {
         match self.opened.as_ref()?.state() {
@@ -271,9 +279,13 @@ fn project(
             ui.label(FAILED);
             None
         }
-        ProjectState::Mapped(map) => {
-            cellworks_map::ui::project(ui, map, navigation.framing(map), navigation.selection())
-        }
+        ProjectState::Mapped(map) => cellworks_map::ui::project(
+            ui,
+            map,
+            navigation.framing(map),
+            navigation.selection(),
+            navigation.folder_view(map),
+        ),
     }
 }
 

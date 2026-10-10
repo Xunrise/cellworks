@@ -2,8 +2,8 @@
 //! views, the item menu, the palette, the tree, the history and keyboard focus.
 //!
 //! Defined by docs/domain/contexts/Navigation/Navigation.md. So far it holds
-//! the layer the view is on, what is framed and the selection, and moves one
-//! layer in on Enter and one layer out on Esc. It draws nothing: the binary
+//! the layer the view is on, what is framed and the selection, moves one
+//! layer in on Enter and one layer out on Esc, and jumps to an element. It draws nothing: the binary
 //! reads the keys, hands the opened project's map in, and acts on [`Moved`].
 
 use std::path::{Path, PathBuf};
@@ -115,8 +115,9 @@ impl Navigation {
         }
     }
 
-    /// One layer in: a selected project opens, a selected folder or node is
-    /// framed. On a framed node nothing happens yet; the editor comes later.
+    /// One layer in: a selected project opens, a selected folder is shown in
+    /// its folder view, a selected node is framed. On a framed node nothing
+    /// happens yet; the editor comes later.
     pub fn enter(&mut self, map: Option<&ProjectMap>) -> Option<Moved> {
         let selection = self.selection.clone()?;
         match &self.framed {
@@ -137,10 +138,10 @@ impl Navigation {
         }
     }
 
-    /// One layer out: from a node or folder to the folder holding it, which
-    /// becomes the selection; from a district to the whole project, keeping the
-    /// district selected; from the project to the Universe, selecting the
-    /// project. In the Universe it stays there.
+    /// One layer out: from a node to the folder view of the folder holding it,
+    /// keeping the node selected; from a folder view to the whole project,
+    /// selecting the district the folder lies in; from the project to the
+    /// Universe, selecting the project. In the Universe it stays there.
     pub fn esc(&mut self, map: Option<&ProjectMap>) -> Option<Moved> {
         match &self.framed {
             Framed::Universe => None,
@@ -149,19 +150,47 @@ impl Navigation {
                 self.selection = self.project.take();
                 Some(Moved::Closed)
             }
-            Framed::Folder(path) | Framed::Node(path) => {
-                match map.and_then(|map| map.find(path)).and_then(|f| f.parent) {
-                    Some(parent) => {
-                        self.selection = Some(parent.to_path_buf());
-                        self.framed = Framed::Folder(parent.to_path_buf());
-                    }
-                    None => {
-                        self.selection = Some(path.clone());
-                        self.framed = Framed::Project;
-                    }
-                }
+            Framed::Node(path) => {
+                let parent = map.and_then(|map| map.find(path)).and_then(|f| f.parent);
+                self.selection = Some(path.clone());
+                self.framed = match parent {
+                    Some(parent) => Framed::Folder(parent.to_path_buf()),
+                    None => Framed::Project,
+                };
                 None
             }
+            Framed::Folder(path) => {
+                self.selection = Some(match map {
+                    Some(map) => district_of(map, path),
+                    None => path.clone(),
+                });
+                self.framed = Framed::Project;
+                None
+            }
+        }
+    }
+
+    /// Moves straight to the element at `path`: the folder holding it is shown
+    /// in its folder view and it is selected. A district is selected on the
+    /// whole project. A path the map does not hold changes nothing.
+    pub fn jump(&mut self, map: &ProjectMap, path: PathBuf) {
+        let Some(found) = map.find(&path) else {
+            return;
+        };
+        self.framed = match found.parent {
+            Some(parent) => Framed::Folder(parent.to_path_buf()),
+            None => Framed::Project,
+        };
+        self.selection = Some(path);
+    }
+
+    /// The folder whose folder view is shown: the framed folder, or the folder
+    /// holding the framed node. `None` on the whole project and the Universe.
+    pub fn folder_view<'a>(&'a self, map: &'a ProjectMap) -> Option<&'a Path> {
+        match &self.framed {
+            Framed::Folder(path) => Some(path),
+            Framed::Node(path) => map.find(path).and_then(|found| found.parent),
+            Framed::Universe | Framed::Project => None,
         }
     }
 
@@ -187,6 +216,15 @@ impl Navigation {
             None => whole,
         }
     }
+}
+
+/// The district `path` lies in: the folder above it that the project holds.
+fn district_of(map: &ProjectMap, path: &Path) -> PathBuf {
+    let mut district = path;
+    while let Some(parent) = map.find(district).and_then(|found| found.parent) {
+        district = parent;
+    }
+    district.to_path_buf()
 }
 
 #[cfg(test)]
@@ -281,22 +319,29 @@ mod tests {
     }
 
     #[test]
-    fn esc_walks_out_to_the_universe_one_level_at_a_time() {
+    fn esc_has_one_step_per_layer() {
         let map = shop();
         let mut navigation = in_project();
+        navigation.select(at("catalog/pricing/rules"));
+        navigation.enter(Some(&map));
         navigation.select(at("catalog/pricing/rules/discount.rs"));
         navigation.enter(Some(&map));
 
-        for (layer, selected) in [
-            (Layer::Directory, at("catalog/pricing/rules")),
-            (Layer::Directory, at("catalog/pricing")),
-            (Layer::Directory, at("catalog")),
-            (Layer::Project, at("catalog")),
-        ] {
-            assert_eq!(navigation.esc(Some(&map)), None);
-            assert_eq!(navigation.layer(), layer);
-            assert_eq!(navigation.selection(), Some(selected.as_path()));
-        }
+        assert_eq!(navigation.esc(Some(&map)), None);
+        assert_eq!(navigation.layer(), Layer::Directory);
+        assert_eq!(
+            navigation.folder_view(&map),
+            Some(at("catalog/pricing/rules").as_path())
+        );
+        assert_eq!(
+            navigation.selection(),
+            Some(at("catalog/pricing/rules/discount.rs").as_path())
+        );
+
+        assert_eq!(navigation.esc(Some(&map)), None);
+        assert_eq!(navigation.layer(), Layer::Project);
+        assert_eq!(navigation.folder_view(&map), None);
+        assert_eq!(navigation.selection(), Some(at("catalog").as_path()));
 
         assert_eq!(navigation.esc(Some(&map)), Some(Moved::Closed));
         assert_eq!(navigation.layer(), Layer::Universe);
@@ -315,11 +360,36 @@ mod tests {
 
         navigation.esc(Some(&map));
         assert_eq!(navigation.layer(), Layer::Directory);
-        assert_eq!(navigation.selection(), Some(Path::new(ROOT)));
+        assert_eq!(navigation.folder_view(&map), Some(Path::new(ROOT)));
 
         navigation.esc(Some(&map));
         assert_eq!(navigation.layer(), Layer::Project);
+        assert_eq!(navigation.selection(), Some(Path::new(ROOT)));
         assert_eq!(navigation.esc(Some(&map)), Some(Moved::Closed));
+    }
+
+    #[test]
+    fn a_jump_opens_the_folder_view_holding_the_element() {
+        let map = shop();
+        let mut navigation = in_project();
+        navigation.select(at("catalog/pricing/rules"));
+        navigation.enter(Some(&map));
+
+        navigation.jump(&map, at("orders/order.rs"));
+        assert_eq!(navigation.layer(), Layer::Directory);
+        assert_eq!(navigation.folder_view(&map), Some(at("orders").as_path()));
+        assert_eq!(
+            navigation.selection(),
+            Some(at("orders/order.rs").as_path())
+        );
+
+        navigation.jump(&map, at("catalog"));
+        assert_eq!(navigation.layer(), Layer::Project);
+        assert_eq!(navigation.selection(), Some(at("catalog").as_path()));
+
+        let before = navigation.clone();
+        navigation.jump(&map, at("nowhere.rs"));
+        assert_eq!(navigation, before);
     }
 
     #[test]
