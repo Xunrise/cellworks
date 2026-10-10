@@ -12,8 +12,9 @@ pub mod ui;
 
 use std::path::{Path, PathBuf};
 
-use cellworks_map::{Framing, ProjectMap};
-use egui::{Pos2, Rect};
+use cellworks_map::city::Toward;
+use cellworks_map::{Element, Framing, Item, Pivot, ProjectMap};
+use egui::{Pos2, Rect, Vec2};
 
 /// A level of detail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +23,8 @@ pub enum Layer {
     Project,
     Directory,
     File,
+    /// Inside a tower, floor by floor.
+    Item,
 }
 
 /// A move that reaches past the map: a project to open or to close.
@@ -54,6 +57,11 @@ const NODE_FILL: f32 = 0.55;
 /// framed with Enter counts as filling the view.
 const FILLS: f32 = 0.5;
 
+/// The closest Enter frames a folder or a node with towers on it: close
+/// enough to read a tower token by token, not so close that its floors drift
+/// apart.
+const FRAMED_CLOSEST: f32 = 2.4;
+
 /// Between the parts of the breadcrumb.
 const CRUMB: &str = " › ";
 
@@ -63,7 +71,7 @@ const CRUMB: &str = " › ";
 /// current layer: a project's folder in the Universe, an element of the open
 /// project's map inside it. The district of a project's top-level files has
 /// the project's own path, so the layer is what tells the two apart.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Navigation {
     framed: Framed,
     project: Option<PathBuf>,
@@ -71,9 +79,55 @@ pub struct Navigation {
     /// The part of the map the user zoomed to, filling the view; `None` while
     /// the view frames what is framed.
     camera: Option<Rect>,
-    /// Whether zooming leaves the layer and the selection alone.
+    /// Whether zooming leaves the layer and the selection alone. Locked from
+    /// the start: zooming only moves the camera until asked to do more.
     locked: bool,
+    /// The tower stepped inside, and the floor selected in it, from 0. The
+    /// city stays framed as it was beneath it.
+    inside: Option<(PathBuf, usize)>,
+    /// The facade the camera turns to while it is turned, and the point it
+    /// pivots on, gliding towards that facade.
+    facing: Option<Facing>,
+    /// Whether the view is turned underground, the cellar within reach.
+    underground: bool,
 }
+
+/// The tower whose facade a turned camera faces, and where its pivot is: a
+/// ground point and a height, on their way to the facade's.
+#[derive(Clone, Debug, PartialEq)]
+struct Facing {
+    tower: PathBuf,
+    ground: Pos2,
+    z: f32,
+    /// The height the view is scrolled to on a facade taller than the view,
+    /// and how far it can scroll: from `low` to `high`.
+    aim: f32,
+    low: f32,
+    high: f32,
+    /// How far the camera has turned.
+    turn: f32,
+}
+
+/// Where each step from a faced facade leads, by the towers' names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hints {
+    pub here: String,
+    pub left: Option<String>,
+    pub right: Option<String>,
+    pub behind: Option<String>,
+    pub front: Option<String>,
+}
+
+/// How many floors one scroll step moves a tall facade.
+const SCROLL_FLOORS: f32 = 5.0;
+
+/// How far the camera must have turned before the arrows walk between
+/// facades.
+const WALKING_FROM: f32 = 0.5;
+
+/// How quickly the pivot glides to a new facade: the share of the way left
+/// it covers in a second is `1 - e^-GLIDE`.
+const GLIDE: f32 = 10.0;
 
 impl Default for Navigation {
     fn default() -> Navigation {
@@ -82,7 +136,10 @@ impl Default for Navigation {
             project: None,
             selection: None,
             camera: None,
-            locked: false,
+            locked: true,
+            inside: None,
+            facing: None,
+            underground: false,
         }
     }
 }
@@ -90,6 +147,9 @@ impl Default for Navigation {
 impl Navigation {
     /// The layer the view is on.
     pub fn layer(&self) -> Layer {
+        if self.inside.is_some() {
+            return Layer::Item;
+        }
         match self.framed {
             Framed::Universe => Layer::Universe,
             Framed::Project => Layer::Project,
@@ -108,10 +168,43 @@ impl Navigation {
         self.selection = Some(path);
     }
 
+    /// Lets go of the selection: empty ground was picked.
+    pub fn deselect(&mut self) {
+        self.selection = None;
+    }
+
+    /// Moves the selection to the next tower on the same block, from the last
+    /// back to the first; from a selected block, to its first tower.
+    pub fn next_in_block(&mut self, map: &ProjectMap) {
+        let Some(selected) = self.selection.as_deref() else {
+            return;
+        };
+        let Some(found) = map.find(selected) else {
+            return;
+        };
+        let (block, current) = match found.kind {
+            Element::Item => (found.parent, Some(selected)),
+            Element::Node => (Some(selected), None),
+            Element::Folder => return,
+        };
+        let Some(items) = block.and_then(|block| map.items_of(block)) else {
+            return;
+        };
+        let next = match current.and_then(|c| items.iter().position(|item| item.path == c)) {
+            Some(index) => (index + 1) % items.len(),
+            None => 0,
+        };
+        if let Some(item) = items.get(next) {
+            self.selection = Some(item.path.clone());
+        }
+    }
+
     /// The project at `path` was opened: it is framed whole, nothing in it
     /// selected yet.
     pub fn opened(&mut self, path: PathBuf) {
         self.camera = None;
+        self.inside = None;
+        self.facing = None;
         self.framed = Framed::Project;
         self.project = Some(path);
         self.selection = None;
@@ -121,6 +214,15 @@ impl Navigation {
     /// it no longer holds is let go, so the project is framed whole and
     /// nothing in it is selected.
     pub fn remapped(&mut self, map: &ProjectMap) {
+        if let Some((item, floor)) = &mut self.inside {
+            match map.find(item).map(|found| found.kind) {
+                Some(Element::Item) => {
+                    let floors = item_floors(map, item);
+                    *floor = (*floor).min(floors.saturating_sub(1));
+                }
+                _ => self.inside = None,
+            }
+        }
         if let Framed::Folder(path) | Framed::Node(path) = &self.framed
             && map.find(path).is_none()
         {
@@ -137,10 +239,21 @@ impl Navigation {
     }
 
     /// One layer in: a selected project opens, a selected folder is shown in
-    /// its folder view, a selected node is framed. On a framed node nothing
-    /// happens yet; the editor comes later.
+    /// its folder view, a selected node is framed, and a selected tower is
+    /// stepped inside, on its first floor. Inside a tower, or on a framed node
+    /// with nothing on it selected, nothing happens yet; the editor comes
+    /// later.
     pub fn enter(&mut self, map: Option<&ProjectMap>) -> Option<Moved> {
         let selection = self.selection.clone()?;
+        if self.inside.is_some() {
+            return None;
+        }
+        if let Some(map) = map
+            && map.find(&selection).map(|found| found.kind) == Some(Element::Item)
+        {
+            self.inside = Some((selection, 0));
+            return None;
+        }
         self.camera = None;
         match &self.framed {
             Framed::Universe => {
@@ -150,7 +263,7 @@ impl Navigation {
             Framed::Node(_) => None,
             Framed::Project | Framed::Folder(_) => {
                 let found = map?.find(&selection)?;
-                self.framed = if found.is_node {
+                self.framed = if found.kind == Element::Node {
                     Framed::Node(selection)
                 } else {
                     Framed::Folder(selection)
@@ -160,11 +273,15 @@ impl Navigation {
         }
     }
 
-    /// One layer out: from a node to the folder view of the folder holding it,
+    /// One layer out: from inside a tower back to the city as it was, the
+    /// tower still selected; from a node to the folder view of the folder holding it,
     /// keeping the node selected; from a folder view to the whole project,
     /// selecting the district the folder lies in; from the project to the
     /// Universe, selecting the project. In the Universe it stays there.
     pub fn esc(&mut self, map: Option<&ProjectMap>) -> Option<Moved> {
+        if self.inside.take().is_some() {
+            return None;
+        }
         self.camera = None;
         match &self.framed {
             Framed::Universe => None,
@@ -194,18 +311,231 @@ impl Navigation {
     }
 
     /// Moves straight to the element at `path`: the folder holding it is shown
-    /// in its folder view and it is selected. A district is selected on the
+    /// in its folder view, or for a tower the node it stands on is framed, and
+    /// it is selected. A district is selected on the
     /// whole project. A path the map does not hold changes nothing.
     pub fn jump(&mut self, map: &ProjectMap, path: PathBuf) {
         let Some(found) = map.find(&path) else {
             return;
         };
         self.camera = None;
-        self.framed = match found.parent {
-            Some(parent) => Framed::Folder(parent.to_path_buf()),
-            None => Framed::Project,
+        self.inside = None;
+        self.framed = match (found.kind, found.parent) {
+            (Element::Item, Some(node)) => Framed::Node(node.to_path_buf()),
+            (_, Some(parent)) => Framed::Folder(parent.to_path_buf()),
+            (_, None) => Framed::Project,
         };
         self.selection = Some(path);
+    }
+
+    /// The camera has turned `turn` of the way from the corner towards a
+    /// facade, `visible` at the layout's scale in view. Decides the facade
+    /// it pivots on, keeping the one it turned to while it stays turned: the
+    /// selected tower, else the facade kept, else the tower `pointed` at,
+    /// else the one `nearest` the middle of the view. A facade taller than
+    /// the view, `half` its height at the layout's scale, is seen from its top
+    /// down, where its first line is, and scrolls. Glides the pivot `dt`
+    /// seconds further towards that facade and keeps the camera centred on
+    /// it. Returns whether it is still gliding.
+    #[allow(clippy::too_many_arguments)]
+    pub fn face(
+        &mut self,
+        map: &ProjectMap,
+        turn: f32,
+        pointed: Option<&Path>,
+        nearest: Option<&Path>,
+        visible: Rect,
+        half: f32,
+        dt: f32,
+    ) -> bool {
+        if turn <= 0.0 || self.framed == Framed::Universe {
+            self.facing = None;
+            return false;
+        }
+        let is_tower = |path: &&Path| map.item(path).is_some();
+        let kept = self.facing.as_ref().map(|facing| facing.tower.as_path());
+        let Some(tower) = self
+            .selection
+            .as_deref()
+            .filter(is_tower)
+            .or(kept.filter(is_tower))
+            .or(pointed.filter(is_tower))
+            .or(nearest.filter(is_tower))
+            .and_then(|path| map.item(path))
+        else {
+            self.facing = None;
+            return false;
+        };
+        // The facade's height, from the ground up or, in the cellar, down.
+        let reach = cellworks_map::city::reach(tower);
+        let (bottom, top) = if cellworks_map::city::in_cellar(tower) {
+            (-reach, 0.0)
+        } else {
+            (0.0, reach)
+        };
+        let (low, high) = if top - bottom > 2.0 * half {
+            (bottom + half, top - half)
+        } else {
+            let middle = (bottom + top) / 2.0;
+            (middle, middle)
+        };
+        let aim = match &self.facing {
+            Some(facing) if facing.tower == tower.path => facing.aim,
+            _ => high,
+        }
+        .clamp(low, high);
+        let target = (tower.area.center(), aim);
+        let (ground, z) = self
+            .facing
+            .as_ref()
+            .map_or(target, |facing| (facing.ground, facing.z));
+        let k = 1.0 - (-dt * GLIDE).exp();
+        let ground = ground + (target.0 - ground) * k;
+        let z = z + (target.1 - z) * k;
+        let gliding = (target.0 - ground).length() > 0.01 || (target.1 - z).abs() > 0.01;
+        self.facing = Some(Facing {
+            tower: tower.path.clone(),
+            ground,
+            z,
+            aim,
+            low,
+            high,
+            turn,
+        });
+        if let Some(camera) = &mut self.camera {
+            let off = ground - camera.center();
+            *camera = camera.translate(off * k);
+        } else {
+            self.camera = Some(visible.translate((ground - visible.center()) * k));
+        }
+        gliding || (ground - visible.center()).length() > 0.01
+    }
+
+    /// Whether the camera has turned far enough towards a facade for the
+    /// arrows to walk between facades.
+    pub fn is_walking(&self) -> bool {
+        self.facing
+            .as_ref()
+            .is_some_and(|facing| facing.turn >= WALKING_FROM)
+    }
+
+    /// One step from the faced facade `toward` a neighbour on its block:
+    /// left and right face the next tower along the rows; behind and in
+    /// front first scroll a facade taller than the view up or down, and once
+    /// it is scrolled to its end face the nearest tower on the row behind or
+    /// in front. Nothing past the block's ends.
+    pub fn walk(&mut self, map: &ProjectMap, toward: Toward) {
+        if !self.is_walking() {
+            return;
+        }
+        let Some(facing) = &mut self.facing else {
+            return;
+        };
+        let Some(tower) = map.item(&facing.tower) else {
+            return;
+        };
+        let step = SCROLL_FLOORS * cellworks_map::city::floor_height(tower);
+        match toward {
+            Toward::Behind if facing.aim < facing.high - 0.01 => {
+                facing.aim = (facing.aim + step).min(facing.high);
+                return;
+            }
+            Toward::Front if facing.aim > facing.low + 0.01 => {
+                facing.aim = (facing.aim - step).max(facing.low);
+                return;
+            }
+            _ => {}
+        }
+        let block = map
+            .find(&facing.tower)
+            .and_then(|found| found.parent)
+            .and_then(|node| map.items_of(node))
+            .unwrap_or_default();
+        let block: Vec<&Item> = block.iter().collect();
+        if let Some(next) = cellworks_map::city::neighbour(&block, tower, toward) {
+            self.selection = Some(next.path.clone());
+        }
+    }
+
+    /// Where each step from the faced facade leads, while the arrows walk.
+    pub fn hints(&self, map: &ProjectMap) -> Option<Hints> {
+        let facing = self.facing.as_ref().filter(|_| self.is_walking())?;
+        let tower = map.item(&facing.tower)?;
+        let block = map
+            .find(&facing.tower)
+            .and_then(|found| found.parent)
+            .and_then(|node| map.items_of(node))
+            .unwrap_or_default();
+        let block: Vec<&Item> = block.iter().collect();
+        let name = |toward| {
+            cellworks_map::city::neighbour(&block, tower, toward).map(|item| item.name.clone())
+        };
+        Some(Hints {
+            here: tower.name.clone(),
+            left: name(Toward::Left),
+            right: name(Toward::Right),
+            behind: name(Toward::Behind),
+            front: name(Toward::Front),
+        })
+    }
+
+    /// The facade the camera pivots on while it is turned.
+    pub fn pivot(&self, map: &ProjectMap) -> Option<Pivot> {
+        let facing = self.facing.as_ref()?;
+        let tower = map.item(&facing.tower)?;
+        Some(Pivot {
+            ground: facing.ground,
+            z: facing.z,
+            along_x: tower.area.width() >= tower.area.height(),
+        })
+    }
+
+    /// Whether the view is turned underground.
+    pub fn is_underground(&self) -> bool {
+        self.underground
+    }
+
+    /// Turns the view underground, the cellar within reach and the city
+    /// above stepped back, or back above the ground.
+    pub fn toggle_underground(&mut self) {
+        self.underground = !self.underground;
+    }
+
+    /// The tower whose facade the camera turns to, while it is turned.
+    pub fn facing(&self) -> Option<&Path> {
+        self.facing.as_ref().map(|facing| facing.tower.as_path())
+    }
+
+    /// The tower stepped inside and its selected floor, from 0.
+    pub fn inside(&self) -> Option<(&Path, usize)> {
+        self.inside
+            .as_ref()
+            .map(|(item, floor)| (item.as_path(), *floor))
+    }
+
+    /// Steps inside the tower at `path`, selecting it, on its first floor. A
+    /// path that is not a tower of `map` changes nothing.
+    pub fn step_inside(&mut self, map: &ProjectMap, path: PathBuf) {
+        if map.find(&path).map(|found| found.kind) == Some(Element::Item) {
+            self.selection = Some(path.clone());
+            self.inside = Some((path, 0));
+        }
+    }
+
+    /// Inside a tower, moves the selected floor `by` floors up the source,
+    /// or down when negative, stopping at the first and the last.
+    pub fn move_floor(&mut self, map: &ProjectMap, by: isize) {
+        if let Some((item, floor)) = &mut self.inside {
+            let last = item_floors(map, item).saturating_sub(1);
+            *floor = floor.saturating_add_signed(by).min(last);
+        }
+    }
+
+    /// Inside a tower, selects floor `floor`, from 0.
+    pub fn pick_floor(&mut self, floor: usize) {
+        if let Some((_, selected)) = &mut self.inside {
+            *selected = floor;
+        }
     }
 
     /// The folder whose folder view is shown: the framed folder, or the folder
@@ -256,7 +586,7 @@ impl Navigation {
         let Some(found) = map.find(&path) else {
             return;
         };
-        if found.is_node {
+        if found.kind == Element::Node {
             self.selection = Some(path.clone());
             self.framed = Framed::Node(path);
         } else {
@@ -268,6 +598,49 @@ impl Navigation {
                 self.selection = Some(path.clone());
             }
             self.framed = Framed::Folder(path);
+        }
+    }
+
+    /// The map was turned `quarters` quarters about `centre`: the part of it
+    /// in view turns with it, so the same spot stays in view. The layer and
+    /// the selection stay as they are.
+    pub fn turned(&mut self, centre: Pos2, quarters: u8) {
+        // The pivot's ground point turned with the map; the next frame finds it again.
+        self.facing = None;
+        if let Some(camera) = &mut self.camera {
+            for _ in 0..quarters % 4 {
+                *camera = cellworks_map::turn_rect(*camera, centre);
+            }
+        }
+    }
+
+    /// Moves the view, `visible` at the layout's scale, by `by`. Neither the
+    /// layer nor the selection changes.
+    pub fn pan(&mut self, visible: Rect, by: Vec2) {
+        if self.framed != Framed::Universe {
+            self.camera = Some(visible.translate(by));
+            // A turned camera lets go of the facade it faced and finds the
+            // one nearest where it moved to.
+            self.facing = None;
+        }
+    }
+
+    /// Moves the view, `visible` at the layout's scale, so that `at` is in its
+    /// centre, on the Project layer so that whatever lies there is shown. The
+    /// selection stays.
+    pub fn centre_on(&mut self, visible: Rect, at: Pos2) {
+        if self.framed != Framed::Universe {
+            self.framed = Framed::Project;
+        }
+        self.pan(visible, at - visible.center());
+    }
+
+    /// Brings the whole project into view, on the Project layer, keeping the
+    /// selection.
+    pub fn fit(&mut self) {
+        if self.framed != Framed::Universe {
+            self.camera = None;
+            self.framed = Framed::Project;
         }
     }
 
@@ -351,6 +724,9 @@ impl Navigation {
                 at = found.parent.and_then(|parent| map.find(parent));
             }
             crumbs.extend(names.into_iter().rev());
+            if let Some(found) = self.inside.as_ref().and_then(|(item, _)| map.find(item)) {
+                crumbs.push(found.name.to_owned());
+            }
         }
         crumbs.join(CRUMB)
     }
@@ -362,13 +738,15 @@ impl Navigation {
             return Framing {
                 area,
                 fill: 1.0,
-                scale_up: true,
+                closest: f32::INFINITY,
+                headroom: 0.0,
             };
         }
         let whole = Framing {
             area: map.extent,
             fill: 1.0,
-            scale_up: false,
+            closest: 1.0,
+            headroom: map.headroom(map.extent),
         };
         let (path, fill) = match &self.framed {
             Framed::Folder(path) => (path, FOLDER_FILL),
@@ -376,14 +754,29 @@ impl Navigation {
             Framed::Universe | Framed::Project => return whole,
         };
         match map.find(path) {
-            Some(found) => Framing {
-                area: found.area,
-                fill,
-                scale_up: true,
-            },
+            Some(found) => {
+                let headroom = map.headroom(found.area);
+                // Only towers drift apart when drawn too close.
+                let closest = if headroom > 0.0 {
+                    FRAMED_CLOSEST
+                } else {
+                    f32::INFINITY
+                };
+                Framing {
+                    area: found.area,
+                    fill,
+                    closest,
+                    headroom,
+                }
+            }
             None => whole,
         }
     }
+}
+
+/// How many floors the tower at `item` has.
+fn item_floors(map: &ProjectMap, item: &Path) -> usize {
+    map.item(item).map_or(0, |item| item.floors.len())
 }
 
 /// Whether the folder at `folder` is `path` or holds it, however deep.
@@ -576,7 +969,7 @@ mod tests {
     fn a_node_is_framed_closer_than_a_folder_and_the_project_is_never_scaled_up() {
         let map = shop();
         let mut navigation = in_project();
-        assert!(!navigation.framing(&map).scale_up);
+        assert!(navigation.framing(&map).closest <= 1.0);
 
         navigation.select(at("catalog"));
         navigation.enter(Some(&map));
@@ -585,21 +978,21 @@ mod tests {
         navigation.enter(Some(&map));
         let node = navigation.framing(&map);
 
-        assert!(folder.scale_up && node.scale_up);
+        assert!(folder.closest > 1.0 && node.closest > 1.0);
         assert!(node.fill < folder.fill);
     }
 
     /// Zooms so that `path`'s rectangle spans `share` of the view across,
-    /// around its middle for a node and its name for a folder, where nothing
-    /// inside it lies.
+    /// around its middle for a node and just inside its left edge for a folder,
+    /// where nothing inside it lies.
     fn zoom_onto(navigation: &mut Navigation, map: &ProjectMap, path: &str, share: f32) {
         let found = map.find(&at(path)).unwrap();
         let area = found.area;
         let view = Rect::from_center_size(area.center(), area.size() / share);
-        let around = if found.is_node {
+        let around = if found.kind == Element::Node {
             area.center()
         } else {
-            area.min + egui::vec2(4.0, 4.0)
+            egui::pos2(area.min.x + 0.5, area.center().y)
         };
         navigation.zoomed(map, view, around);
     }
@@ -608,6 +1001,7 @@ mod tests {
     fn zooming_steps_through_the_folders_down_to_the_node_and_back_out() {
         let map = shop();
         let mut navigation = in_project();
+        navigation.toggle_lock();
 
         zoom_onto(&mut navigation, &map, "catalog/pricing", 0.8);
         assert_eq!(navigation.layer(), Layer::Directory);
@@ -642,7 +1036,7 @@ mod tests {
     fn a_locked_layer_only_moves_the_view() {
         let map = shop();
         let mut navigation = in_project();
-        navigation.toggle_lock();
+        assert!(navigation.is_locked(), "locked by default");
 
         zoom_onto(&mut navigation, &map, "catalog/item.rs", 0.8);
 

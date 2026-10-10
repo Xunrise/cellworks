@@ -29,7 +29,8 @@ struct Shop {
     harness: Harness<'static, CellworksApp>,
 }
 
-/// The background: "shop" is open on the Project layer.
+/// The background: "shop" is open on the Project layer, and the layer
+/// follows the zoom (locked is the default, so Z lets it follow).
 fn shop() -> Shop {
     let tree = Tree::project(
         "shop",
@@ -40,13 +41,16 @@ fn shop() -> Shop {
             "orders/order.rs",
         ],
     );
-    let harness = open(&tree, None, Recorded::listing(&[]));
+    let mut harness = open(&tree, None, Recorded::listing(&[]));
+    harness.key_press(Key::Z);
+    harness.run();
+    assert!(!harness.state().navigation().is_locked());
     Shop { tree, harness }
 }
 
 impl Shop {
     fn select(&mut self, name: &str) {
-        self.harness.get_by_label(name).click();
+        self.harness.get_by_label(name).click_accesskit();
         self.harness.run();
     }
 
@@ -87,6 +91,17 @@ impl Shop {
         )
     }
 
+    /// Where the middle of the ground of the element at `relative` is on
+    /// screen.
+    fn screen_centre_of(&self, relative: &str) -> Pos2 {
+        let map = common::map(&self.harness);
+        let found = map
+            .find(&self.tree.root.join(relative))
+            .expect("on the map");
+        let view = self.harness.state().view().expect("the map is drawn");
+        view.to_screen(found.area.center(), 0.0)
+    }
+
     /// One pinch by `factor` with the pointer at `at`.
     fn pinch(&mut self, at: Pos2, factor: f32) {
         self.harness.hover_at(at);
@@ -101,7 +116,8 @@ impl Shop {
             if node.width() > WIDTH * 0.6 {
                 return;
             }
-            self.pinch(node.center(), PINCH);
+            let over = self.screen_centre_of("catalog/rules/discount.rs");
+            self.pinch(over, PINCH);
         }
         panic!("discount.rs never filled the view");
     }

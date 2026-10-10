@@ -70,7 +70,7 @@ fn showing_ignored_files_puts_them_where_they_belong() {
     assert_eq!(held, ["item.log", "item.rs"]);
     // Like any other node: drawn, selectable, and Enter frames it.
     assert!(labels(&harness).iter().any(|label| label == "item.log"));
-    harness.get_by_label("item.log").click();
+    harness.get_by_label("item.log").click_accesskit();
     harness.run();
     harness.key_press(Key::Enter);
     harness.run();
@@ -119,7 +119,7 @@ fn hiding_them_again_while_one_is_framed_frames_the_project() {
     let mut harness = open(&tree, None, Recorded::listing(&["src/catalog/item.rs"]));
     switch(&mut harness);
     for name in ["generated", "build.rs"] {
-        harness.get_by_label(name).click();
+        harness.get_by_label(name).click_accesskit();
         harness.run();
         harness.key_press(Key::Enter);
         harness.run();

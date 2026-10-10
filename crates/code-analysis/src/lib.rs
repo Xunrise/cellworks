@@ -4,7 +4,9 @@
 //! Defined by docs/domain/contexts/CodeAnalysis/CodeAnalysis.md. So far it
 //! finds a project's included files and hands them to the Map: in a git
 //! repository git says which files it shows, elsewhere the folder is walked,
-//! and hidden folders are left out either way. With ignored files switched on,
+//! and hidden folders are left out either way. Rust files are read with
+//! tree-sitter into items: functions, types and `use` blocks, line by line,
+//! with the calls they make resolved to the item called. With ignored files switched on,
 //! the folder is walked into hidden folders too, only `.git` folders are left
 //! out, and a large ignored folder stays closed: one node with its file count. [`load`] is an ordinary blocking function and
 //! [`start_load`] is the thread around it.
@@ -13,6 +15,7 @@ mod closed;
 mod event;
 mod files;
 mod git;
+mod rust;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
@@ -93,7 +96,8 @@ pub fn load(
         }
     }));
 
-    let mut map = ProjectMap::of(name, root, &files, &Directories { prefix });
+    let items = rust::read(root, &files);
+    let mut map = ProjectMap::of_code(name, root, &files, &Directories { prefix }, items);
     map.close(&closed);
     events.push(CodeAnalysisEvent::ProjectMapped { project, map });
     events

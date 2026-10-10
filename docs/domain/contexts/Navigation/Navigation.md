@@ -38,7 +38,8 @@ Source refs are line numbers of [the prototype findings](../../../discovery/2026
   layer: from a node to its folder view with the node still selected, from a folder view to the whole project with the
   folder's district selected. A jump frames the folder holding its target and selects the target. The selection is a
   path read on the current layer, so the district of a project's top-level files, which has the project's own path,
-  is never mistaken for the project. Zooming moves the view; unless the layer is locked, it also moves the layer: the
+  is never mistaken for the project. Zooming moves the view; the layer is locked by default, and once it follows the
+  zoom, zooming also moves the layer: the
   whole project in view is the Project layer with the selection's district selected, and the innermost shown element
   under the zoom point that spans at least half the view is framed, a node also selected. Enter, Esc and a jump drop
   the zoom and frame what they move to; locking or unlocking changes neither the layer, the selection nor the view.

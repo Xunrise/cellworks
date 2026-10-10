@@ -43,7 +43,7 @@ fn shop() -> Shop {
 
 impl Shop {
     fn select(&mut self, name: &str) {
-        self.harness.get_by_label(name).click();
+        self.harness.get_by_label(name).click_accesskit();
         self.harness.run();
     }
 

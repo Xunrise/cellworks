@@ -6,6 +6,9 @@ publish = false
 
 [dependencies]
 cellworks-map = { path = "../map" }
+egui = { workspace = true }
+tree-sitter = "0.25"
+tree-sitter-rust = "0.24"
 
 [dev-dependencies]
 tempfile = { workspace = true }

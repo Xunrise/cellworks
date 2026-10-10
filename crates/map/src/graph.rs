@@ -22,7 +22,8 @@ pub struct ProjectMap {
     pub root: PathBuf,
     /// Ordered by name, byte-wise; ties by path.
     pub districts: Vec<District>,
-    /// The rectangle every district lies inside, at the layout's own scale.
+    /// The rectangle every district and every tower lies inside, at the
+    /// layout's own scale.
     pub extent: Rect,
 }
 
@@ -62,7 +63,60 @@ pub struct Group {
 pub struct Node {
     pub name: String,
     pub path: PathBuf,
+    /// The functions, types and `use` blocks the file holds, in source order.
+    /// Empty for a file no loader reads the code of.
+    pub items: Vec<Item>,
     pub area: Rect,
+}
+
+/// A function, a type or a block of `use` statements inside a node.
+///
+/// Its path is the node's path joined with its qualified name
+/// (`pricing.rs/Cart::total`), so it is unique within the project.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Item {
+    pub name: String,
+    pub path: PathBuf,
+    pub kind: ItemKind,
+    /// Whether it belongs to the tests: a test, or anything inside a test
+    /// module. Tests live in the cellar.
+    pub tests: bool,
+    /// One per line, in source order.
+    pub floors: Vec<Floor>,
+    /// The ground the item stands on, at the layout's own scale.
+    pub area: Rect,
+}
+
+/// What an item is in its source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemKind {
+    Function,
+    Test,
+    Type,
+    Uses,
+}
+
+/// One line of an item.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Floor {
+    /// The line number in the file, from 1.
+    pub number: usize,
+    pub text: String,
+    /// Columns of leading whitespace, a tab counting as four.
+    pub indent: usize,
+    /// Columns up to the end of the last character that is not whitespace.
+    pub width: usize,
+    /// Where each token on the line starts and how many columns it spans.
+    pub tokens: Vec<Token>,
+    /// The paths of the items this line calls.
+    pub calls: Vec<PathBuf>,
+}
+
+/// The columns one token occupies on its line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Token {
+    pub start: usize,
+    pub len: usize,
 }
 
 impl ProjectMap {
@@ -101,6 +155,119 @@ impl ProjectMap {
     }
 }
 
+impl ProjectMap {
+    /// The rectangle of every element of the map, however deep.
+    pub(crate) fn rects_mut(&mut self) -> Vec<&mut Rect> {
+        fn nodes<'a>(nodes: &'a mut [Node], into: &mut Vec<&'a mut Rect>) {
+            for node in nodes {
+                into.push(&mut node.area);
+                into.extend(node.items.iter_mut().map(|item| &mut item.area));
+            }
+        }
+        fn groups<'a>(inside: &'a mut [Group], into: &mut Vec<&'a mut Rect>) {
+            for group in inside {
+                into.push(&mut group.area);
+                nodes(&mut group.nodes, into);
+                groups(&mut group.groups, into);
+            }
+        }
+        let mut rects = Vec::new();
+        for district in &mut self.districts {
+            rects.push(&mut district.area);
+            nodes(&mut district.nodes, &mut rects);
+            for sub in &mut district.sub_districts {
+                rects.push(&mut sub.area);
+                nodes(&mut sub.nodes, &mut rects);
+                groups(&mut sub.groups, &mut rects);
+            }
+        }
+        rects
+    }
+}
+
+/// Every item of `district`, however deep.
+pub(crate) fn items(district: &District) -> Vec<&Item> {
+    fn in_groups<'a>(groups: &'a [Group], into: &mut Vec<&'a Item>) {
+        for group in groups {
+            into.extend(group.nodes.iter().flat_map(|node| &node.items));
+            in_groups(&group.groups, into);
+        }
+    }
+    let mut all: Vec<&Item> = district.nodes.iter().flat_map(|node| &node.items).collect();
+    for sub in &district.sub_districts {
+        all.extend(sub.nodes.iter().flat_map(|node| &node.items));
+        in_groups(&sub.groups, &mut all);
+    }
+    all
+}
+
+/// Every node of `districts`, however deep.
+pub(crate) fn nodes_mut(districts: &mut [District]) -> Vec<&mut Node> {
+    fn in_groups<'a>(groups: &'a mut [Group], into: &mut Vec<&'a mut Node>) {
+        for group in groups {
+            into.extend(group.nodes.iter_mut());
+            in_groups(&mut group.groups, into);
+        }
+    }
+    let mut all = Vec::new();
+    for district in districts {
+        all.extend(district.nodes.iter_mut());
+        for sub in &mut district.sub_districts {
+            all.extend(sub.nodes.iter_mut());
+            in_groups(&mut sub.groups, &mut all);
+        }
+    }
+    all
+}
+
+impl ProjectMap {
+    /// The item standing nearest the ground point `point`; one in the cellar
+    /// only with `cellar`.
+    pub fn item_nearest(&self, point: Pos2, cellar: bool) -> Option<&Item> {
+        self.districts
+            .iter()
+            .flat_map(items)
+            .filter(|item| cellar || !item.tests)
+            .min_by(|a, b| {
+                let distance = |item: &Item| (item.area.center() - point).length();
+                distance(a).total_cmp(&distance(b))
+            })
+    }
+
+    /// The item at `path`, if the map holds one.
+    pub fn item(&self, path: &Path) -> Option<&Item> {
+        let node = self.find(path)?.parent?;
+        self.items_of(node)?.iter().find(|item| item.path == path)
+    }
+
+    /// The items standing on the node at `node`, in source order; `None` when
+    /// the map holds no such node.
+    pub fn items_of(&self, node: &Path) -> Option<&[Item]> {
+        fn in_groups<'a>(groups: &'a [Group], node: &Path) -> Option<&'a Node> {
+            groups.iter().find_map(|group| {
+                group
+                    .nodes
+                    .iter()
+                    .find(|n| n.path == node)
+                    .or_else(|| in_groups(&group.groups, node))
+            })
+        }
+        self.districts
+            .iter()
+            .find_map(|district| {
+                district.nodes.iter().find(|n| n.path == node).or_else(|| {
+                    district.sub_districts.iter().find_map(|sub| {
+                        sub.nodes
+                            .iter()
+                            .find(|n| n.path == node)
+                            .or_else(|| in_groups(&sub.groups, node))
+                    })
+                })
+            })
+            .map(|node| node.items.as_slice())
+    }
+}
+
 /// Where one element of the map is, as [`ProjectMap::find`] reports it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Found<'a> {
@@ -108,10 +275,19 @@ pub struct Found<'a> {
     pub name: &'a str,
     /// The rectangle it occupies, at the layout's own scale.
     pub area: Rect,
-    /// Whether it is a node rather than a folder.
-    pub is_node: bool,
-    /// The folder that holds it; `None` for a district, which the project holds.
+    /// Whether it is a folder, a node or an item.
+    pub kind: Element,
+    /// The folder or node that holds it; `None` for a district, which the
+    /// project holds.
     pub parent: Option<&'a Path>,
+}
+
+/// The kinds of element a map holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Element {
+    Folder,
+    Node,
+    Item,
 }
 
 impl ProjectMap {
@@ -137,37 +313,65 @@ impl ProjectMap {
 }
 
 impl ProjectMap {
-    /// The paths of the elements whose rectangle holds `point`, the district
-    /// first and the innermost last. Empty when `point` lies between districts.
+    /// The paths of the elements under `point`, the district first and the
+    /// innermost last: the district, and when `point` is on a block, the
+    /// folders down to that block's node and the node; off every block, the
+    /// folders whose rectangle holds it. Empty when `point` lies between
+    /// districts.
     pub fn at(&self, point: Pos2) -> Vec<&Path> {
-        fn nodes<'a>(nodes: &'a [Node], point: Pos2, chain: &mut Vec<&'a Path>) {
-            chain.extend(
-                nodes
-                    .iter()
-                    .filter(|n| n.area.contains(point))
-                    .map(|n| n.path.as_path()),
-            );
-        }
-        fn groups<'a>(inside: &'a [Group], point: Pos2, chain: &mut Vec<&'a Path>) {
-            for group in inside.iter().filter(|g| g.area.contains(point)) {
+        /// The folders down to the node whose block holds `point`, and that
+        /// node, appended to `chain`; `false`, with `chain` as it was, when no
+        /// block below holds it.
+        fn down<'a>(
+            groups: &'a [Group],
+            nodes: &'a [Node],
+            point: Pos2,
+            chain: &mut Vec<&'a Path>,
+        ) -> bool {
+            if let Some(node) = nodes.iter().find(|n| n.area.contains(point)) {
+                chain.push(&node.path);
+                return true;
+            }
+            groups.iter().any(|group| {
                 chain.push(&group.path);
-                groups(&group.groups, point, chain);
-                nodes(&group.nodes, point, chain);
-            }
+                let found = down(&group.groups, &group.nodes, point, chain);
+                if !found {
+                    chain.pop();
+                }
+                found
+            })
         }
-        let mut chain = Vec::new();
-        for district in self.districts.iter().filter(|d| d.area.contains(point)) {
-            chain.push(district.path.as_path());
-            for sub in district
-                .sub_districts
-                .iter()
-                .filter(|s| s.area.contains(point))
-            {
-                chain.push(&sub.path);
-                groups(&sub.groups, point, &mut chain);
-                nodes(&sub.nodes, point, &mut chain);
+        // A district is round: its square overlaps its neighbours' at the
+        // corners.
+        let within = |d: &&District| (d.area.center() - point).length() <= d.area.width() / 2.0;
+        let Some(district) = self.districts.iter().find(within) else {
+            return Vec::new();
+        };
+        let mut chain = vec![district.path.as_path()];
+        if down(&[], &district.nodes, point, &mut chain) {
+            return chain;
+        }
+        for sub in &district.sub_districts {
+            chain.push(&sub.path);
+            if down(&sub.groups, &sub.nodes, point, &mut chain) {
+                return chain;
             }
-            nodes(&district.nodes, point, &mut chain);
+            chain.pop();
+        }
+        // Off every block: the folders whose rectangle holds `point`, the
+        // first one at each level where rectangles overlap.
+        let mut groups: &[Group] = &[];
+        if let Some(sub) = district
+            .sub_districts
+            .iter()
+            .find(|s| s.area.contains(point))
+        {
+            chain.push(&sub.path);
+            groups = &sub.groups;
+        }
+        while let Some(group) = groups.iter().find(|g| g.area.contains(point)) {
+            chain.push(&group.path);
+            groups = &group.groups;
         }
         chain
     }
@@ -220,21 +424,29 @@ fn folder<'a>(name: &'a str, area: Rect, parent: Option<&'a Path>) -> Found<'a> 
     Found {
         name,
         area,
-        is_node: false,
+        kind: Element::Folder,
         parent,
     }
 }
 
 fn in_nodes<'a>(nodes: &'a [Node], path: &Path, parent: Option<&'a Path>) -> Option<Found<'a>> {
-    nodes
-        .iter()
-        .find(|node| node.path == path)
-        .map(|node| Found {
+    // An item's path is its node's path and more.
+    let node = nodes.iter().find(|node| path.starts_with(&node.path))?;
+    if node.path == path {
+        return Some(Found {
             name: &node.name,
             area: node.area,
-            is_node: true,
+            kind: Element::Node,
             parent,
-        })
+        });
+    }
+    let item = node.items.iter().find(|item| item.path == path)?;
+    Some(Found {
+        name: &item.name,
+        area: item.area,
+        kind: Element::Item,
+        parent: Some(&node.path),
+    })
 }
 
 fn in_groups<'a>(groups: &'a [Group], path: &Path, parent: Option<&'a Path>) -> Option<Found<'a>> {
@@ -267,7 +479,7 @@ mod tests {
         let sub = district.join("pricing");
         let group = sub.join("rules");
 
-        let found = |path: &Path| map.find(path).map(|f| (f.is_node, f.parent));
+        let found = |path: &Path| map.find(path).map(|f| (f.kind == Element::Node, f.parent));
         assert_eq!(found(district), Some((false, None)));
         assert_eq!(found(&sub), Some((false, Some(district))));
         assert_eq!(found(&group), Some((false, Some(sub.as_path()))));

@@ -58,7 +58,7 @@ fn universe() -> Universe {
 
 impl Universe {
     fn select(&mut self, name: &str) {
-        self.harness.get_by_label(name).click();
+        self.harness.get_by_label(name).click_accesskit();
         self.harness.run();
     }
 
@@ -105,6 +105,27 @@ impl Universe {
             .collect()
     }
 
+    /// How wide the ground of the folder `name` is on screen.
+    fn ground_width_of(&self, name: &str) -> f32 {
+        let map = map(&self.harness);
+        let path = match name {
+            "catalog" => self.shop.root.join("catalog"),
+            "pricing" => self.shop.root.join("catalog/pricing"),
+            "rules" => self.shop.root.join("catalog/pricing/rules"),
+            other => panic!("no folder {other} in the background"),
+        };
+        let area = map.find(&path).expect("on the map").area;
+        let view = self.harness.state().view().expect("drawn");
+        let corners = [
+            area.left_top(),
+            area.right_top(),
+            area.right_bottom(),
+            area.left_bottom(),
+        ];
+        let seen = corners.map(|corner| view.to_screen(corner, 0.0));
+        egui::Rect::from_points(&seen).width()
+    }
+
     /// The names of everything the framed folder at `name` holds.
     fn held_by(&self, name: &str) -> Vec<String> {
         let map = map(&self.harness);
@@ -135,16 +156,18 @@ impl Universe {
         held
     }
 
-    /// `name`'s label is the framed thing: inside the window and spanning a
-    /// good part of it, with everything it holds inside the window too.
+    /// The folder `name` is the framed thing: its name inside the window and
+    /// its ground spanning a good part of it, with everything it holds
+    /// inside the window too.
     fn assert_framed(&self, name: &str) {
-        let framed = self.rect_of(name);
-        assert!(in_window(framed), "{name} at {framed:?}");
+        let label = self.rect_of(name);
+        assert!(in_window(label), "{name} at {label:?}");
         // A folder fills 70% of the tighter side of the map's panel, which is
         // the height for a wide window under the breadcrumb.
+        let ground = self.ground_width_of(name);
         assert!(
-            framed.width() > WIDTH * 0.35,
-            "{name} at {framed:?} is not framed"
+            f64::from(ground) > WIDTH * 0.35,
+            "{name} is {ground} wide on screen: not framed"
         );
         for held in self.held_by(name) {
             let rect = self.rect_of(&held);

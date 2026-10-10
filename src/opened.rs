@@ -45,6 +45,9 @@ pub struct OpenedProject {
     notices: Vec<OpenedNotice>,
     events: Receiver<CodeAnalysisEvent>,
     rereading: bool,
+    /// Quarters the map is turned clockwise; a map read again is turned as
+    /// far.
+    turns: u8,
 }
 
 impl OpenedProject {
@@ -56,6 +59,7 @@ impl OpenedProject {
             notices: Vec::new(),
             events,
             rereading: false,
+            turns: 0,
         }
     }
 
@@ -100,6 +104,8 @@ impl OpenedProject {
                 self.state = if map.is_empty() {
                     ProjectState::Empty
                 } else {
+                    let mut map = map;
+                    map.turn(self.turns);
                     ProjectState::Mapped(map)
                 };
             }
@@ -110,6 +116,18 @@ impl OpenedProject {
                 self.note(OpenedNotice::GitExcludesUnavailable { reason });
             }
         }
+    }
+
+    /// Turns the map `quarters` quarters clockwise, and returns the centre it
+    /// turned about. `None` while there is no map to turn.
+    pub fn turn(&mut self, quarters: u8) -> Option<egui::Pos2> {
+        let ProjectState::Mapped(map) = &mut self.state else {
+            return None;
+        };
+        self.turns = (self.turns + quarters) % 4;
+        let centre = map.ground().center();
+        map.turn(quarters);
+        Some(centre)
     }
 
     /// Takes everything the read has sent so far. Never waits. A read that

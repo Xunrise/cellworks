@@ -5,9 +5,9 @@
 //! Pure: no filesystem, no git, no geometry. The rectangles are left empty
 //! here and filled in by the layout.
 //!
-//! Which folder level the districts start at is the project's prefix rule.
-//! The rules are the one table [`PREFIX_RULES`]: adding a rule is one function
-//! and one entry there, and touches nothing else.
+//! Which folders become districts is the project's district rule
+//! ([`crate::rules`]): a rule looks at the folder tree and names its cut,
+//! and this module builds the districts from it, the same for every rule.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use egui::Rect;
 
 use crate::graph::{District, Group, Node, SubDistrict};
+use crate::rules::PrefixRule;
 
 /// Decides how a project is cut into districts.
 pub trait DistrictStrategy {
@@ -23,71 +24,34 @@ pub trait DistrictStrategy {
     fn cut(&self, project: &str, root: &Path, files: &[PathBuf]) -> Vec<District>;
 }
 
-/// Districts cut by directories: the folders at the district level are the
-/// districts, the next level the sub-districts, deeper folders the groups.
+/// Districts cut by directories: the folders the project's rule names are
+/// the districts, the folders inside them the sub-districts, deeper folders
+/// the groups.
 pub struct Directories {
-    /// Where the district level is.
+    /// The rule that names the districts.
     pub prefix: &'static PrefixRule,
 }
 
-/// A named rule that finds the district level of a project's folder tree.
-pub struct PrefixRule {
-    /// The name the settings file uses for it.
-    pub name: &'static str,
-    district_level: fn(&Folder) -> &Folder,
+/// What a rule makes of a folder tree: the folders that become districts,
+/// and the folder whose own files, with whatever no district claims below
+/// it, form the district named after the project.
+///
+/// A district never holds a folder another district claims, however deep:
+/// that folder is cut out of it and stands on its own.
+pub(crate) struct Cut<'a> {
+    pub(crate) districts: Vec<&'a Folder>,
+    pub(crate) rest: &'a Folder,
 }
 
-/// Every prefix rule there is. The first is the default.
-pub const PREFIX_RULES: &[PrefixRule] = &[
-    PrefixRule {
-        name: "one-wrapper-folder",
-        district_level: one_wrapper_folder,
-    },
-    PrefixRule {
-        name: "longest-shared-prefix",
-        district_level: longest_shared_prefix,
-    },
-    PrefixRule {
-        name: "none",
-        district_level: |root| root,
-    },
-];
-
-/// The rule a project uses when its settings name none.
-pub fn default_prefix_rule() -> &'static PrefixRule {
-    &PREFIX_RULES[0]
-}
-
-/// The rule called `name`, or `None` when there is no such rule.
-pub fn prefix_rule(name: &str) -> Option<&'static PrefixRule> {
-    PREFIX_RULES.iter().find(|rule| rule.name == name)
-}
-
-/// The folder's only entry, when it has exactly one and that entry is a
-/// folder.
-fn sole_folder(folder: &Folder) -> Option<&Folder> {
-    match (folder.folders.len(), folder.files.is_empty()) {
-        (1, true) => folder.folders.values().next(),
-        _ => None,
+impl<'a> Cut<'a> {
+    /// Every folder directly inside `level` a district, the files of `level`
+    /// the project's district.
+    pub(crate) fn level(level: &'a Folder) -> Cut<'a> {
+        Cut {
+            districts: level.folders.values().collect(),
+            rest: level,
+        }
     }
-}
-
-/// Descends once into a single top folder, but only when that folder holds a
-/// folder of its own; a sole top folder holding only files stays a district.
-fn one_wrapper_folder(root: &Folder) -> &Folder {
-    match sole_folder(root) {
-        Some(wrapper) if !wrapper.folders.is_empty() => wrapper,
-        _ => root,
-    }
-}
-
-/// Descends for as long as every file shares the next folder.
-fn longest_shared_prefix(root: &Folder) -> &Folder {
-    let mut level = root;
-    while let Some(next) = sole_folder(level) {
-        level = next;
-    }
-    level
 }
 
 /// The folder tree of the included files. Built from the file list, so a
@@ -95,9 +59,9 @@ fn longest_shared_prefix(root: &Folder) -> &Folder {
 #[derive(Default)]
 pub(crate) struct Folder {
     /// Relative to the project root.
-    path: PathBuf,
-    folders: BTreeMap<OsString, Folder>,
-    files: BTreeSet<OsString>,
+    pub(crate) path: PathBuf,
+    pub(crate) folders: BTreeMap<OsString, Folder>,
+    pub(crate) files: BTreeSet<OsString>,
 }
 
 impl Folder {
@@ -125,62 +89,101 @@ impl Folder {
     }
 }
 
+impl Folder {
+    /// This folder and every folder below it.
+    pub(crate) fn all(&self) -> Vec<&Folder> {
+        let mut all = vec![self];
+        let mut index = 0;
+        while let Some(folder) = all.get(index) {
+            all.extend(folder.folders.values());
+            index += 1;
+        }
+        all
+    }
+
+    /// Whether this folder holds a file called `name`.
+    pub(crate) fn holds(&self, name: &str) -> bool {
+        self.files.contains(OsStr::new(name))
+    }
+}
+
 impl DistrictStrategy for Directories {
     fn cut(&self, project: &str, root: &Path, files: &[PathBuf]) -> Vec<District> {
         let tree = Folder::of(files);
-        let level = (self.prefix.district_level)(&tree);
+        let cut = (self.prefix.cut)(&tree);
+        let claimed: BTreeSet<&Path> = cut.districts.iter().map(|f| f.path.as_path()).collect();
+        let shape = Shape { root, claimed };
 
-        let mut districts: Vec<District> = level
-            .folders
-            .values()
+        let mut districts: Vec<District> = cut
+            .districts
+            .iter()
             .map(|folder| District {
                 name: name_of(&folder.path),
                 path: root.join(&folder.path),
-                sub_districts: folder
-                    .folders
-                    .values()
-                    .map(|sub| SubDistrict {
-                        name: name_of(&sub.path),
-                        path: root.join(&sub.path),
-                        groups: groups(root, sub),
-                        nodes: nodes(root, sub),
-                        area: Rect::NOTHING,
-                    })
-                    .collect(),
+                sub_districts: shape.sub_districts(folder),
                 nodes: nodes(root, folder),
                 area: Rect::NOTHING,
             })
+            .filter(|district| !district.sub_districts.is_empty() || !district.nodes.is_empty())
             .collect();
-
-        if !level.files.is_empty() {
-            districts.push(District {
-                name: project.to_owned(),
-                path: root.to_path_buf(),
-                sub_districts: Vec::new(),
-                nodes: nodes(root, level),
-                area: Rect::NOTHING,
-            });
-            districts.sort_by(|one, other| {
-                (one.name.as_bytes(), &one.path).cmp(&(other.name.as_bytes(), &other.path))
-            });
+        let rest = District {
+            name: project.to_owned(),
+            path: root.to_path_buf(),
+            sub_districts: shape.sub_districts(cut.rest),
+            nodes: nodes(root, cut.rest),
+            area: Rect::NOTHING,
+        };
+        if !rest.sub_districts.is_empty() || !rest.nodes.is_empty() {
+            districts.push(rest);
         }
-
+        districts.sort_by(|one, other| {
+            (one.name.as_bytes(), &one.path).cmp(&(other.name.as_bytes(), &other.path))
+        });
         districts
     }
 }
 
-fn groups(root: &Path, folder: &Folder) -> Vec<Group> {
-    folder
-        .folders
-        .values()
-        .map(|group| Group {
-            name: name_of(&group.path),
-            path: root.join(&group.path),
-            groups: groups(root, group),
-            nodes: nodes(root, group),
-            area: Rect::NOTHING,
-        })
-        .collect()
+/// How the folders below a district become sub-districts and groups: rooted
+/// at `root`, leaving out the folders other districts claim, and any folder
+/// left with nothing in it.
+struct Shape<'a> {
+    root: &'a Path,
+    claimed: BTreeSet<&'a Path>,
+}
+
+impl Shape<'_> {
+    fn unclaimed<'f>(&self, folder: &'f Folder) -> impl Iterator<Item = &'f Folder> {
+        folder
+            .folders
+            .values()
+            .filter(|inner| !self.claimed.contains(inner.path.as_path()))
+    }
+
+    fn sub_districts(&self, folder: &Folder) -> Vec<SubDistrict> {
+        self.unclaimed(folder)
+            .map(|sub| SubDistrict {
+                name: name_of(&sub.path),
+                path: self.root.join(&sub.path),
+                groups: self.groups(sub),
+                nodes: nodes(self.root, sub),
+                area: Rect::NOTHING,
+            })
+            .filter(|sub| !sub.groups.is_empty() || !sub.nodes.is_empty())
+            .collect()
+    }
+
+    fn groups(&self, folder: &Folder) -> Vec<Group> {
+        self.unclaimed(folder)
+            .map(|group| Group {
+                name: name_of(&group.path),
+                path: self.root.join(&group.path),
+                groups: self.groups(group),
+                nodes: nodes(self.root, group),
+                area: Rect::NOTHING,
+            })
+            .filter(|group| !group.groups.is_empty() || !group.nodes.is_empty())
+            .collect()
+    }
 }
 
 fn nodes(root: &Path, folder: &Folder) -> Vec<Node> {
@@ -192,6 +195,7 @@ fn nodes(root: &Path, folder: &Folder) -> Vec<Node> {
             Node {
                 name: name_of(&path),
                 path: root.join(path),
+                items: Vec::new(),
                 area: Rect::NOTHING,
             }
         })
@@ -209,6 +213,8 @@ fn name_of(path: &Path) -> String {
 mod tests {
     use super::*;
 
+    use crate::rules::prefix_rule;
+
     fn cut_with(rule: &str, files: &[&str]) -> Vec<District> {
         let files: Vec<PathBuf> = files.iter().map(PathBuf::from).collect();
         let prefix = prefix_rule(rule).expect("the rule exists");
@@ -221,19 +227,6 @@ mod tests {
 
     fn names(districts: &[District]) -> Vec<&str> {
         districts.iter().map(|d| d.name.as_str()).collect()
-    }
-
-    #[test]
-    fn the_default_rule_is_one_wrapper_folder() {
-        assert_eq!(default_prefix_rule().name, "one-wrapper-folder");
-    }
-
-    #[test]
-    fn every_rule_resolves_by_its_name_and_an_unknown_name_does_not() {
-        for rule in PREFIX_RULES {
-            assert_eq!(prefix_rule(rule.name).map(|r| r.name), Some(rule.name));
-        }
-        assert!(prefix_rule("sideways").is_none());
     }
 
     #[test]

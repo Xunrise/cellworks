@@ -17,12 +17,12 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
 use cellworks_code_analysis::{CodeAnalysisEvent, GitCli, GitListing, start_load};
-use cellworks_map::ui::Drawn;
+use cellworks_map::View;
+use cellworks_map::ui::{Drawn, DrawnTower};
 use cellworks_map::{ProjectMap, default_prefix_rule, prefix_rule};
 use cellworks_navigation::{Moved, Navigation};
 use cellworks_workspace::ui::UniverseClick;
 use cellworks_workspace::{Project, ScanState, Sources, Universe, WorkspaceEvent, start_scan};
-use egui::emath::RectTransform;
 
 use crate::opened::{OpenedNotice, OpenedProject, ProjectState};
 
@@ -38,6 +38,9 @@ const FAILED: &str = "Could not read this project.";
 /// Beside the breadcrumb: whether zooming moves the layer.
 const FOLLOWS_ZOOM: &str = "Layer follows the zoom (Z to lock)";
 const LOCKED: &str = "Layer locked (Z to follow the zoom)";
+
+/// Screen points one press of an arrow moves the view by.
+const PAN: f32 = 120.0;
 
 /// Points of scrolling that zoom in by a factor of e.
 const SCROLL_PER_E: f32 = 200.0;
@@ -55,6 +58,36 @@ pub struct CellworksApp {
     show_ignored: bool,
     /// Whether the tree is open beside the map.
     tree_open: bool,
+    /// The towers the last frame drew.
+    towers: Vec<DrawnTower>,
+    /// Where the last frame saw the map from.
+    view: Option<View>,
+    /// Whether this frame's view is underground: turned so, or Shift held.
+    underground: bool,
+}
+
+/// What the keyboard and the pointer asked for in one frame.
+struct Keys {
+    enter: bool,
+    esc: bool,
+    ignored: bool,
+    lock: bool,
+    tree: bool,
+    /// Arrows down less arrows up, and right less left.
+    rows: isize,
+    columns: isize,
+    /// Quarters to turn the map clockwise: Q one, Shift+Q three.
+    turn: u8,
+    fit: bool,
+    /// Tab: the next tower on the block.
+    cycle: bool,
+    /// U turns the view underground or back; Shift shows it while held.
+    underground: bool,
+    held_underground: bool,
+    /// Inside a tower: j less k, a floor down or up.
+    lines: isize,
+    zoom: f32,
+    pointer: Option<egui::Pos2>,
 }
 
 impl CellworksApp {
@@ -72,6 +105,9 @@ impl CellworksApp {
                 git: Arc::new(GitCli),
                 show_ignored: false,
                 tree_open: false,
+                towers: Vec::new(),
+                view: None,
+                underground: false,
             },
             None => CellworksApp {
                 universe: Universe::without_home(),
@@ -81,6 +117,9 @@ impl CellworksApp {
                 git: Arc::new(GitCli),
                 show_ignored: false,
                 tree_open: false,
+                towers: Vec::new(),
+                view: None,
+                underground: false,
             },
         }
     }
@@ -96,6 +135,9 @@ impl CellworksApp {
             git: Arc::new(GitCli),
             show_ignored: false,
             tree_open: false,
+            towers: Vec::new(),
+            view: None,
+            underground: false,
         }
     }
 
@@ -131,6 +173,16 @@ impl CellworksApp {
     /// Whether the tree is open beside the map.
     pub fn tree_open(&self) -> bool {
         self.tree_open
+    }
+
+    /// The towers the last frame drew, back to front.
+    pub fn towers(&self) -> &[DrawnTower] {
+        &self.towers
+    }
+
+    /// Where the last frame saw the open project's map from.
+    pub fn view(&self) -> Option<View> {
+        self.view
     }
 
     /// The layer the view is on, what is framed and what is selected.
@@ -232,22 +284,104 @@ impl eframe::App for CellworksApp {
 /// or scrolling zooms the map around the pointer, and Z, or the button beside
 /// the breadcrumb, locks the layer against the zoom or lets it follow again.
 /// E opens and closes the tree, where the up and down arrows move the
-/// selection one row.
+/// selection one row. In the city, Q turns it a quarter (Shift+Q back), F fits
+/// it into view, the arrows or a drag pan, Tab moves to the next tower on the
+/// block, and Enter or a double-click on a tower steps inside it, where j and
+/// k or the arrows move between floors.
 pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
-    let (enter, esc, ignored, lock, tree, rows, zoom, pointer) = ui.input(|input| {
+    if app.opened.is_none() {
+        app.towers.clear();
+    }
+    let Keys {
+        enter,
+        esc,
+        ignored,
+        lock,
+        tree,
+        rows,
+        columns,
+        turn,
+        fit,
+        cycle,
+        lines,
+        underground,
+        held_underground,
+        zoom,
+        pointer,
+    } = ui.input(|input| {
         let plain = input.modifiers.is_none();
         let pressed = |key| input.key_pressed(key);
-        (
-            pressed(egui::Key::Enter),
-            pressed(egui::Key::Escape),
-            plain && pressed(egui::Key::I),
-            plain && pressed(egui::Key::Z),
-            plain && pressed(egui::Key::E),
-            isize::from(pressed(egui::Key::ArrowDown)) - isize::from(pressed(egui::Key::ArrowUp)),
-            input.zoom_delta() * (input.smooth_scroll_delta.y / SCROLL_PER_E).exp(),
-            input.pointer.hover_pos(),
-        )
+        let towards = |less, more| isize::from(pressed(more)) - isize::from(pressed(less));
+        Keys {
+            enter: pressed(egui::Key::Enter),
+            esc: pressed(egui::Key::Escape),
+            ignored: plain && pressed(egui::Key::I),
+            lock: plain && pressed(egui::Key::Z),
+            tree: plain && pressed(egui::Key::E),
+            rows: towards(egui::Key::ArrowUp, egui::Key::ArrowDown),
+            columns: towards(egui::Key::ArrowLeft, egui::Key::ArrowRight),
+            turn: match (pressed(egui::Key::Q), input.modifiers.shift_only()) {
+                (false, _) => 0,
+                (true, false) => 1,
+                (true, true) => 3,
+            },
+            fit: plain && pressed(egui::Key::F),
+            cycle: plain && pressed(egui::Key::Tab),
+            underground: plain && pressed(egui::Key::U),
+            held_underground: input.modifiers.shift_only(),
+            lines: if plain {
+                towards(egui::Key::K, egui::Key::J)
+            } else {
+                0
+            },
+            zoom: input.zoom_delta() * (input.smooth_scroll_delta.y / SCROLL_PER_E).exp(),
+            pointer: input.pointer.hover_pos(),
+        }
     });
+    if turn != 0
+        && let Some(opened) = &mut app.opened
+        && let Some(centre) = opened.turn(turn)
+    {
+        app.navigation.turned(centre, turn);
+    }
+    if fit && app.opened.is_some() {
+        app.navigation.fit();
+    }
+    if underground {
+        app.navigation.toggle_underground();
+    }
+    app.underground = app.navigation.is_underground() || held_underground;
+    if cycle && let Some(map) = app.map().cloned() {
+        app.navigation.next_in_block(&map);
+    }
+    let inside = app.navigation.inside().is_some();
+    // Facing a facade, the arrows walk between the towers of its block.
+    let walking = app.navigation.is_walking() && !inside;
+    if walking && let Some(map) = app.map().cloned() {
+        use cellworks_map::city::Toward;
+        let toward = match (columns, rows) {
+            (1, _) => Some(Toward::Right),
+            (-1, _) => Some(Toward::Left),
+            (_, -1) => Some(Toward::Behind),
+            (_, 1) => Some(Toward::Front),
+            _ => None,
+        };
+        if let Some(toward) = toward {
+            app.navigation.walk(&map, toward);
+        }
+    }
+    if inside && let Some(map) = app.map().cloned() {
+        app.navigation.move_floor(&map, rows + lines);
+    }
+    if !inside
+        && !walking
+        && !app.tree_open
+        && (rows, columns) != (0, 0)
+        && let Some(view) = app.view
+    {
+        let by = view.ground_delta(egui::vec2(columns as f32, rows as f32) * PAN);
+        app.navigation.pan(view.visible, by);
+    }
     if ignored {
         app.toggle_ignored();
     }
@@ -255,6 +389,8 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         app.tree_open = !app.tree_open;
     }
     if app.tree_open
+        && !inside
+        && !walking
         && rows != 0
         && let Some(map) = app.map().cloned()
     {
@@ -320,41 +456,108 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                     app.navigation.select(path);
                 }
             }
-            let drawn = egui::CentralPanel::default()
-                .show(ui, |ui| project(ui, opened, &app.navigation))
+            let (drawn, minimap, floor) = egui::CentralPanel::default()
+                .frame(egui::Frame::central_panel(ui.style()).inner_margin(0.0))
+                .show(ui, |ui| {
+                    let drawn = project(ui, opened, &app.navigation, app.underground);
+                    let (Some(shown), ProjectState::Mapped(map)) = (&drawn, opened.state()) else {
+                        return (drawn, None, None);
+                    };
+                    let minimap = cellworks_map::ui::minimap(ui, map, &shown.view, shown.panel);
+                    if let Some(hints) = app.navigation.hints(map) {
+                        cellworks_navigation::ui::hints(ui, shown.panel, &hints);
+                    }
+                    let floor = app.navigation.inside().and_then(|(item, floor)| {
+                        cellworks_map::ui::inside(ui, map, item, floor, shown.panel)
+                    });
+                    (drawn, minimap, floor)
+                })
                 .inner;
             let Some(drawn) = drawn else {
+                app.towers.clear();
+                app.view = None;
                 return;
             };
+            app.towers = drawn.towers;
+            if let Some(floor) = floor {
+                app.navigation.pick_floor(floor);
+            }
+            let visible = drawn.view.visible;
+            app.view = Some(drawn.view);
+            // Close enough, the camera turns to face a facade; the pivot
+            // glides to it over the next frames.
+            if let Some(map) = app.map().cloned() {
+                let turn = cellworks_map::turn_at(drawn.view.scale());
+                let middle = drawn.view.to_ground(drawn.panel.center());
+                let nearest = map
+                    .item_nearest(middle, app.underground)
+                    .map(|item| item.path.clone());
+                let dt = ui.input(|input| input.stable_dt).min(0.1);
+                let pointed = drawn.hovered.as_deref();
+                // Half the view's height on the ground: a facade taller than
+                // twice this scrolls.
+                let half = drawn.panel.height() / 2.0 / drawn.view.scale() * 0.9;
+                let nearest = nearest.as_deref();
+                if app
+                    .navigation
+                    .face(&map, turn, pointed, nearest, visible, half, dt)
+                {
+                    ui.ctx().request_repaint();
+                }
+            }
+            if drawn.dragged != egui::Vec2::ZERO {
+                app.navigation.pan(visible, -drawn.dragged);
+            }
+            if let Some(district) = minimap
+                && let Some(found) = app.map().and_then(|map| map.find(&district))
+            {
+                let centre = found.area.center();
+                app.navigation.centre_on(visible, centre);
+            }
             if let Some(path) = drawn.clicked {
                 app.navigation.select(path);
+            } else if drawn.ground_clicked {
+                app.navigation.deselect();
+            }
+            if let Some(tower) = drawn.entered
+                && let Some(map) = app.map().cloned()
+            {
+                app.navigation.step_inside(&map, tower);
             }
             if zoom != 1.0
                 && let Some(map) = app.map().cloned()
             {
-                let pointer = pointer.unwrap_or(drawn.view.to().center());
-                let around = drawn.view.inverse().transform_pos(pointer);
+                // Turned towards a facade, zooming anchors on it.
+                let pivot = app.navigation.pivot(&map).map(|pivot| pivot.ground);
+                let around = match (pivot, pointer) {
+                    (Some(pivot), _) => pivot,
+                    (None, Some(pointer)) => drawn.view.to_ground(pointer),
+                    (None, None) => visible.center(),
+                };
                 app.navigation
-                    .zoomed(&map, zoomed(drawn.view, pointer, zoom), around);
+                    .zoomed(&map, zoomed(visible, around, zoom), around);
                 ui.ctx().request_repaint();
             }
         }
     }
 }
 
-/// The part of the map in view after zooming by `factor` around the screen
-/// point `around`, which stays over the same spot of the map.
-fn zoomed(view: RectTransform, around: egui::Pos2, factor: f32) -> egui::Rect {
-    let fixed = view.inverse().transform_pos(around);
-    let area = view.from();
+/// The part of the ground in view, `visible`, after zooming by `factor`
+/// around the ground point `fixed`, which stays where it is on screen.
+fn zoomed(visible: egui::Rect, fixed: egui::Pos2, factor: f32) -> egui::Rect {
     egui::Rect::from_min_max(
-        fixed + (area.min - fixed) / factor,
-        fixed + (area.max - fixed) / factor,
+        fixed + (visible.min - fixed) / factor,
+        fixed + (visible.max - fixed) / factor,
     )
 }
 
 /// Draws the opened project, and reports the map as drawn once there is one.
-fn project(ui: &mut egui::Ui, opened: &OpenedProject, navigation: &Navigation) -> Option<Drawn> {
+fn project(
+    ui: &mut egui::Ui,
+    opened: &OpenedProject,
+    navigation: &Navigation,
+    underground: bool,
+) -> Option<Drawn> {
     for notice in opened.notices() {
         ui.label(notice_text(notice));
     }
@@ -377,6 +580,8 @@ fn project(ui: &mut egui::Ui, opened: &OpenedProject, navigation: &Navigation) -
             navigation.framing(map),
             navigation.selection(),
             navigation.folder_view(map),
+            navigation.pivot(map),
+            underground,
         )),
     }
 }
@@ -429,7 +634,11 @@ pub fn run() -> eframe::Result {
     eframe::run_native(
         "Cellworks",
         native_options(),
-        Box::new(|_cc| Ok(Box::new(CellworksApp::start()))),
+        Box::new(|cc| {
+            // The city is drawn at night, whatever the system's appearance.
+            cc.egui_ctx.set_theme(egui::Theme::Dark);
+            Ok(Box::new(CellworksApp::start()))
+        }),
     )
 }
 
@@ -446,18 +655,14 @@ mod tests {
     }
 
     #[test]
-    fn zooming_keeps_the_point_under_the_pointer_in_place() {
-        let panel = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
-        let area = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(400.0, 300.0));
-        let view = RectTransform::from_to(area, panel);
-        let pointer = egui::pos2(200.0, 150.0);
+    fn zooming_shrinks_the_view_around_the_fixed_point() {
+        let visible = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(400.0, 400.0));
+        let fixed = egui::pos2(200.0, 150.0);
 
-        let after = zoomed(view, pointer, 2.0);
+        let after = zoomed(visible, fixed, 2.0);
 
-        assert_eq!(after.size(), area.size() / 2.0);
-        let spot = view.inverse().transform_pos(pointer);
-        let again = RectTransform::from_to(after, panel).transform_pos(spot);
-        assert!((again - pointer).length() < 0.01, "{again:?}");
+        assert_eq!(after.size(), visible.size() / 2.0);
+        assert_eq!(after.min, egui::pos2(150.0, 125.0));
     }
 
     #[test]

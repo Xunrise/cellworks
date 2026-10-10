@@ -11,7 +11,7 @@
 mod common;
 
 use cellworks::app::CellworksApp;
-use cellworks_map::ProjectMap;
+use cellworks_map::{Element, ProjectMap};
 use egui::Key;
 use egui_kittest::Harness;
 
@@ -43,7 +43,10 @@ fn assert_closed(tree: &Tree, harness: &Harness<'_, CellworksApp>, folder: &str,
     let found = map
         .find(&path)
         .unwrap_or_else(|| panic!("{folder} is not on the map"));
-    assert!(found.is_node, "{folder} is a folder, not one closed node");
+    assert!(
+        found.kind == Element::Node,
+        "{folder} is a folder, not one closed node"
+    );
     let shown = labels(harness);
     assert!(shown.iter().any(|l| l == label), "{label} not in {shown:?}");
     let inside: Vec<_> = node_paths(&map)
