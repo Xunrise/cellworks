@@ -96,7 +96,9 @@ pub enum DistrictKind {
     NoContext,
 }
 
-/// A folder directly inside a district.
+/// A folder directly inside a district. A folder holding only one folder
+/// and no file is one with it, named after both (`src/main/kotlin`), with
+/// the innermost folder's path.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SubDistrict {
     pub name: String,
@@ -106,7 +108,8 @@ pub struct SubDistrict {
     pub area: Rect,
 }
 
-/// A folder deeper than a sub-district, nested as the folders nest.
+/// A folder deeper than a sub-district, nested as the folders nest, a chain
+/// of folders each holding only the next one with it, as for a sub-district.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Group {
     pub name: String,
@@ -154,6 +157,8 @@ pub enum ItemKind {
     Test,
     Type,
     Uses,
+    /// The lines of a file no parser reads, as one item.
+    Text,
 }
 
 /// One line of an item.
@@ -427,7 +432,7 @@ impl ProjectMap {
     /// The paths of the elements under `point`, the district first and the
     /// innermost last: the district, and when `point` is on a block, the
     /// folders down to that block's node and the node; off every block, the
-    /// folders whose rectangle holds it. Empty when `point` lies between
+    /// folders whose ring holds it. Empty when `point` lies between
     /// districts.
     pub fn at(&self, point: Pos2) -> Vec<&Path> {
         /// The folders down to the node whose block holds `point`, and that
@@ -452,9 +457,10 @@ impl ProjectMap {
                 found
             })
         }
-        // A district is round: its square overlaps its neighbours' at the
-        // corners.
-        let within = |d: &&District| (d.area.center() - point).length() <= d.area.width() / 2.0;
+        // Districts and folders are round: the square around a ring overlaps
+        // its neighbours' at the corners.
+        let round = |area: Rect| (area.center() - point).length() <= area.width() / 2.0;
+        let within = |d: &&District| round(d.area);
         let Some(district) = self.districts.iter().find(within) else {
             return Vec::new();
         };
@@ -469,18 +475,13 @@ impl ProjectMap {
             }
             chain.pop();
         }
-        // Off every block: the folders whose rectangle holds `point`, the
-        // first one at each level where rectangles overlap.
+        // Off every block: the folders whose ring holds `point`.
         let mut groups: &[Group] = &[];
-        if let Some(sub) = district
-            .sub_districts
-            .iter()
-            .find(|s| s.area.contains(point))
-        {
+        if let Some(sub) = district.sub_districts.iter().find(|s| round(s.area)) {
             chain.push(&sub.path);
             groups = &sub.groups;
         }
-        while let Some(group) = groups.iter().find(|g| g.area.contains(point)) {
+        while let Some(group) = groups.iter().find(|g| round(g.area)) {
             chain.push(&group.path);
             groups = &group.groups;
         }
@@ -588,10 +589,14 @@ mod tests {
 
     #[test]
     fn find_reports_each_element_with_the_folder_holding_it() {
-        let files: Vec<PathBuf> = ["src/catalog/pricing/rules/discount.rs", "src/catalog/a.rs"]
-            .iter()
-            .map(PathBuf::from)
-            .collect();
+        let files: Vec<PathBuf> = [
+            "src/catalog/pricing/rules/discount.rs",
+            "src/catalog/a.rs",
+            "src/catalog/pricing/base.rs",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect();
         let strategy = Directories {
             prefix: default_prefix_rule(),
         };
@@ -647,10 +652,14 @@ mod tests {
 
     #[test]
     fn at_reports_the_elements_under_a_point_outermost_first() {
-        let files: Vec<PathBuf> = ["src/catalog/pricing/rules/discount.rs", "src/orders/a.rs"]
-            .iter()
-            .map(PathBuf::from)
-            .collect();
+        let files: Vec<PathBuf> = [
+            "src/catalog/pricing/rules/discount.rs",
+            "src/orders/a.rs",
+            "src/catalog/pricing/base.rs",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect();
         let strategy = Directories {
             prefix: default_prefix_rule(),
         };

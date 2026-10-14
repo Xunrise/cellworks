@@ -326,16 +326,28 @@ fn the_whole_project_fits_the_panel_and_every_element_is_labelled() {
         }
     }
     let map = map(&harness);
+    fn groups(groups: &[cellworks_map::Group], into: &mut Vec<String>) {
+        for group in groups {
+            into.push(group.name.clone());
+            groups_and_nodes(&group.groups, &group.nodes, into);
+        }
+    }
+    fn groups_and_nodes(
+        inner: &[cellworks_map::Group],
+        nodes: &[cellworks_map::Node],
+        into: &mut Vec<String>,
+    ) {
+        groups(inner, into);
+        into.extend(nodes.iter().map(|node| node.name.clone()));
+    }
     let mut expected = Vec::new();
     for district in &map.districts {
         expected.push(district.name.clone());
         for sub in &district.sub_districts {
             expected.push(sub.name.clone());
-            for group in &sub.groups {
-                expected.push(group.name.clone());
-                expected.extend(group.nodes.iter().map(|node| node.name.clone()));
-            }
+            groups_and_nodes(&sub.groups, &sub.nodes, &mut expected);
         }
+        expected.extend(district.nodes.iter().map(|node| node.name.clone()));
     }
     let mut shown = labels(&harness);
     shown.sort();

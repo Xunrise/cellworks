@@ -835,6 +835,7 @@ mod tests {
     /// group `rules` and the node `discount.rs`, plus files at the top.
     fn shop() -> ProjectMap {
         let files: Vec<PathBuf> = [
+            "catalog/pricing/base.rs",
             "catalog/pricing/rules/discount.rs",
             "catalog/pricing/rules/tax.rs",
             "catalog/item.rs",

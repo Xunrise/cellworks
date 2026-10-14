@@ -6,7 +6,8 @@
 //! repository git says which files it shows, elsewhere the folder is walked,
 //! and hidden folders are left out either way. Rust files are read with
 //! tree-sitter into items: functions, types and `use` blocks, line by line,
-//! with the calls they make resolved to the item called. With ignored files switched on,
+//! with the calls they make resolved to the item called. Any other file
+//! holding text is read as one tower of its lines. With ignored files switched on,
 //! the folder is walked into hidden folders too, only `.git` folders are left
 //! out, and a large ignored folder stays closed: one node with its file count. [`load`] is an ordinary blocking function and
 //! [`start_load`] is the thread around it.
@@ -16,6 +17,7 @@ mod co_change;
 mod event;
 mod files;
 mod git;
+mod plain;
 mod rust;
 
 use std::path::{Path, PathBuf};
@@ -98,7 +100,10 @@ pub fn load(
         }
     }));
 
-    let items = rust::read(root, &files);
+    let mut items = rust::read(root, &files);
+    // A file no parser read stands as one tower of its lines.
+    let unread: Vec<&PathBuf> = files.iter().filter(|f| !items.contains_key(*f)).collect();
+    items.extend(plain::read(root, unread));
     let mut map = ProjectMap::of_code(name, root, &files, &Directories { prefix }, items);
     map.close(&closed);
     // Without history the co-change lens is empty; git saying why has been

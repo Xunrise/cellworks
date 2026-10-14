@@ -31,6 +31,7 @@ fn shop() -> Shop {
     let tree = Tree::project(
         "shop",
         &[
+            "catalog/pricing/base.rs",
             "catalog/pricing/rules/discount.rs",
             "catalog/pricing/rules/vat.rs",
             "catalog/item.rs",
@@ -94,6 +95,7 @@ fn enter_on_a_folder_shows_its_folder_view() {
     assert_eq!(
         shop.shown(),
         [
+            "base.rs",
             "catalog",
             "discount.rs",
             "item.rs",
@@ -117,6 +119,7 @@ fn one_esc_leaves_the_folder_and_the_layer_together() {
     assert_eq!(
         shop.shown(),
         [
+            "base.rs",
             "catalog",
             "discount.rs",
             "item.rs",

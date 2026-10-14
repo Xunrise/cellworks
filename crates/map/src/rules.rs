@@ -162,7 +162,10 @@ mod tests {
         assert_eq!(names(&districts), ["catalog", "orders", "shop"]);
         let orders = &districts[1];
         assert_eq!(orders.path, Path::new("/p/shop/crates/orders"));
-        assert_eq!(orders.sub_districts[0].name, "src");
+        assert_eq!(
+            orders.sub_districts[0].name, "src/order",
+            "src holds only the folder order"
+        );
         let shop = &districts[2];
         let subs: Vec<&str> = shop.sub_districts.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(

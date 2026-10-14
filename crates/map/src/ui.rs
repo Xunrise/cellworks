@@ -47,6 +47,9 @@ pub struct Drawn {
     pub panel: Rect,
     /// Every district drawn, with the outline it was drawn in.
     pub districts: Vec<(PathBuf, Outline)>,
+    /// In the folders lens, every folder drawn as a ring, and whether its
+    /// name is written on it.
+    pub rings: Vec<(PathBuf, bool)>,
     /// Every lane drawn.
     pub lanes: Vec<DrawnLane>,
     /// The lane clicked, if any.
@@ -101,7 +104,8 @@ impl Outline {
 pub struct DrawnTower {
     pub path: PathBuf,
     pub colour: Color32,
-    /// Where each floor went on screen, the ground floor first.
+    /// Where each floor went on screen, the ground floor first; far out, where
+    /// the floors are no longer told apart, one span up the tower's middle.
     pub floors: Vec<Span>,
     /// The screen rectangle its building covers.
     pub outline: Rect,
@@ -292,6 +296,20 @@ const PICK_REACH: f32 = 3.0;
 /// point per token.
 const TOKENS_FROM: f32 = 0.8;
 
+/// Below this scale a tower's floors are no longer told apart: it is drawn
+/// as its box with a lit front, and picked by its middle.
+const BOXES_BELOW: f32 = 0.5;
+
+/// How brightly a far-out tower's front is lit, against a line's.
+const BOX_FACE: f32 = 0.6;
+
+/// How much wider than its name a folder ring is on screen before the name
+/// is written on it.
+const NAME_ROOM: f32 = 1.5;
+
+/// The size of a folder ring's name.
+const RING_NAME: f32 = 11.0;
+
 /// The colour of the district at `index` in the map's list.
 fn district_colour(index: usize) -> Color32 {
     DISTRICT_COLOURS[index % DISTRICT_COLOURS.len()]
@@ -333,6 +351,11 @@ struct Painter<'a> {
     /// The district whose name was dragged this frame, how far on screen,
     /// and whether the drag ended.
     name_dragged: Option<(PathBuf, Vec2, bool)>,
+    /// Whether folders are drawn as rings (the folders lens): a ring inside
+    /// the ring of the folder holding it, blocks without avenues.
+    rings: bool,
+    /// Every folder ring named this frame, and whether its name is written.
+    ring_names: Vec<(PathBuf, bool)>,
 }
 
 /// A name to put on the map: the ground it names, how it is written, the
@@ -340,12 +363,14 @@ struct Painter<'a> {
 type Labelled<'a> = (Rect, Naming, &'a str, &'a Path, f32);
 
 /// How a name is written: a district's in its colour along its front,
-/// always; a block with code on it just below its front edge, quietly and
-/// only close enough to read. Folders below a district and blocks without
-/// code are named for the accessibility tree only.
+/// always; a folder ring's on its front once the ring has room for it; a
+/// block with code on it just below its front edge, quietly and only close
+/// enough to read. Folders below a district that are not rings, and blocks
+/// without code, are named for the accessibility tree only.
 #[derive(Clone, Copy)]
 enum Naming {
     District(Color32),
+    Ring,
     Folder,
     /// A block, and whether it has code on it.
     Block(bool),
@@ -424,6 +449,8 @@ pub fn project(ui: &mut egui::Ui, map: &ProjectMap, options: ViewOptions<'_>) ->
         cycles: &map.cycles,
         arranging: map.lens == Lens::Custom,
         name_dragged: None,
+        rings: map.lens == Lens::Folders,
+        ring_names: Vec::new(),
     };
     orbits(ui, map, &view);
     let mut outlines = Vec::new();
@@ -462,11 +489,15 @@ pub fn project(ui: &mut egui::Ui, map: &ProjectMap, options: ViewOptions<'_>) ->
     }
     roads(ui, map, &view);
     // The quiet names of folders and blocks lie under the ground's sense, so
-    // a click on a tower standing over a name reaches the tower; a district's
-    // name lies over it.
+    // a click on a tower standing over a name reaches the tower; the names of
+    // districts, and of folder rings written on them, lie over it.
     let (districts, quiet): (Vec<_>, Vec<_>) = std::mem::take(&mut painter.labels)
         .into_iter()
-        .partition(|(_, naming, _, _, _)| matches!(naming, Naming::District(_)));
+        .partition(|(area, naming, name, _, lift)| match naming {
+            Naming::District(_) => true,
+            Naming::Ring => painter.ring_has_room(*area, name, *lift),
+            Naming::Folder | Naming::Block(_) => false,
+        });
     for (area, naming, name, path, lift) in quiet {
         painter.label(ui, area, naming, name, path, lift);
     }
@@ -584,7 +615,17 @@ pub fn project(ui: &mut egui::Ui, map: &ProjectMap, options: ViewOptions<'_>) ->
             .iter()
             .find(|(area, _, lift)| area.contains(view.to_ground_at(at, *lift)))
             .map(|(_, path, _)| path.to_path_buf());
-        match tower.or(block) {
+        // In the folders lens a click on a ring's open ground selects the
+        // innermost folder holding it; a district's open ground is empty
+        // ground.
+        let ring = || {
+            let chain = map.at(view.to_ground(at));
+            match chain.as_slice() {
+                [_district, .., folder] if painter.rings => Some(folder.to_path_buf()),
+                _ => None,
+            }
+        };
+        match tower.or(block).or_else(ring) {
             Some(path) => painter.clicked = Some(path),
             None => ground_clicked = true,
         }
@@ -608,6 +649,7 @@ pub fn project(ui: &mut egui::Ui, map: &ProjectMap, options: ViewOptions<'_>) ->
         dragged,
         panel,
         districts: outlines,
+        rings: painter.ring_names,
         lane_hovered: frame.hovered.map(|i| frame.lanes[i].id.clone()),
         lanes: frame.lanes,
         lane_clicked,
@@ -709,7 +751,8 @@ fn orbits(ui: &egui::Ui, map: &ProjectMap, view: &View) {
 
 /// The tower one of whose lines is under the screen point `at`, the nearest
 /// first, the cellar left out unless `underground`: a line is hit only where it has characters, so a tower is reached
-/// through the gaps of the towers in front of it.
+/// through the gaps of the towers in front of it. Far out a tower's one span
+/// runs up its middle.
 fn pick(towers: &[DrawnTower], at: Pos2, underground: bool) -> Option<PathBuf> {
     towers
         .iter()
@@ -738,7 +781,8 @@ impl<'a> Painter<'a> {
     /// is shown (`inside`), it is the folder view, or there is no folder view.
     /// Outside the folder view the city stays, faded, and its names are not
     /// put on the map. A district is a plaza: a round ground faintly tinted in
-    /// its colour with a dashed edge; a deeper folder has no ground of its
+    /// its colour with a dashed edge. In the folders lens a deeper folder is
+    /// a finer dashed ring in that colour; elsewhere it has no ground of its
     /// own, only its name. Returns whether it is shown, which is whether what
     /// it holds is shown.
     fn ground(
@@ -806,13 +850,20 @@ impl<'a> Painter<'a> {
                 );
             }
         }
+        if !district && self.rings {
+            let mut ring = self.view.ring(area, self.lift);
+            ring.push(ring[0]);
+            let edge = Stroke::new(1.0, self.colour.gamma_multiply(0.3 * fade));
+            ui.painter()
+                .extend(Shape::dashed_line(&ring, edge, 4.0, 4.0));
+        }
         if !shown {
             return false;
         }
-        let naming = if district {
-            Naming::District(self.colour)
-        } else {
-            Naming::Folder
+        let naming = match (district, self.rings) {
+            (true, _) => Naming::District(self.colour),
+            (false, true) => Naming::Ring,
+            (false, false) => Naming::Folder,
         };
         self.labels.push((area, naming, name, path, self.lift));
         true
@@ -823,7 +874,8 @@ impl<'a> Painter<'a> {
     fn nodes(&mut self, ui: &egui::Ui, nodes: &'a [Node], shown: bool) {
         let fade = if shown { 1.0 } else { OUTSIDE };
         for node in nodes {
-            if let Some(plaza) = self.plaza {
+            // In the folders lens the rings say which folder a block is in.
+            if let Some(plaza) = self.plaza.filter(|_| !self.rings) {
                 let avenue = [
                     self.view.to_screen(plaza, self.lift),
                     self.view.to_screen(node.area.center(), self.lift),
@@ -909,6 +961,7 @@ impl<'a> Painter<'a> {
         let depth = |item: &Item| depth(&view, item);
         towers.sort_by(|(one, _), (other, _)| depth(one).total_cmp(&depth(other)));
         let scale = self.view.scale();
+        let boxes = scale < BOXES_BELOW;
         let tokens = scale >= TOKENS_FROM;
         let point = if tokens {
             (scale * 0.32).clamp(1.0, 3.0)
@@ -920,16 +973,20 @@ impl<'a> Painter<'a> {
             .map(|(item, colour)| DrawnTower {
                 path: item.path.clone(),
                 colour: *colour,
-                floors: (0..item.floors.len())
-                    .map(|index| {
-                        let z = city::floor_z(item, index);
-                        let (start, end) = city::floor_span(item, index);
-                        Span {
-                            start: self.view.to_screen(start, z),
-                            end: self.view.to_screen(end, z),
-                        }
-                    })
-                    .collect(),
+                floors: if boxes {
+                    vec![self.middle(item)]
+                } else {
+                    (0..item.floors.len())
+                        .map(|index| {
+                            let z = city::floor_z(item, index);
+                            let (start, end) = city::floor_span(item, index);
+                            Span {
+                                start: self.view.to_screen(start, z),
+                                end: self.view.to_screen(end, z),
+                            }
+                        })
+                        .collect()
+                },
                 outline: Rect::from_points(&self.solid(item).concat()),
                 glass: false,
                 light: 1.0,
@@ -981,6 +1038,13 @@ impl<'a> Painter<'a> {
                 continue;
             }
             self.body(&mut shapes, item, tower.colour, lit, turn);
+            if boxes {
+                // Its lines, too close to tell apart, light its front.
+                let [front, _, _] = self.solid(item);
+                let face = glow(tower.colour, LINE * BOX_FACE * lit);
+                shapes.push(Shape::convex_polygon(front, face, Stroke::NONE));
+                continue;
+            }
             for (index, floor) in item.floors.iter().enumerate() {
                 let z = city::floor_z(item, index);
                 let bright = if floor.calls.is_empty() {
@@ -1073,6 +1137,15 @@ impl<'a> Painter<'a> {
         ]
     }
 
+    /// The span up the middle of `item`'s front, from its foot to its roof.
+    fn middle(&self, item: &Item) -> Span {
+        let [front, _, _] = self.solid(item);
+        Span {
+            start: front[0] + (front[1] - front[0]) / 2.0,
+            end: front[3] + (front[2] - front[3]) / 2.0,
+        }
+    }
+
     /// Draws `item`'s box: a dark front face, a darker side and a roof, edged
     /// in `colour`, so a nearer building hides the ones behind it. `lit`
     /// thins it out with the tower; the side and roof fade as the camera
@@ -1136,6 +1209,13 @@ impl<'a> Painter<'a> {
             .into()
     }
 
+    /// Whether the ring around `area`, raised by `lift`, is wide enough on
+    /// screen for `name` to be written on it.
+    fn ring_has_room(&self, area: Rect, name: &str, lift: f32) -> bool {
+        let bounds = Rect::from_points(&self.view.ring(area, lift));
+        bounds.width() > NAME_ROOM * name_width(name, RING_NAME)
+    }
+
     /// Writes `name` on the ground `area` as `naming` says, outlines that
     /// ground when `path` is selected, and notes a click on the name.
     fn label(
@@ -1148,7 +1228,7 @@ impl<'a> Painter<'a> {
         lift: f32,
     ) {
         let bounds = match naming {
-            Naming::District(_) => Rect::from_points(&self.view.ring(area, lift)),
+            Naming::District(_) | Naming::Ring => Rect::from_points(&self.view.ring(area, lift)),
             Naming::Folder | Naming::Block(_) => Rect::from_points(&self.view.corners(area, lift)),
         };
         let strip = TITLE.min(bounds.height());
@@ -1164,9 +1244,26 @@ impl<'a> Painter<'a> {
                 // small plaza nor covers what stands beside it under a
                 // large one.
                 let size = if self.view.scale() > 1.0 { 15.0 } else { 12.0 };
-                let width = name.chars().count() as f32 * size * 0.62 + 16.0;
+                let width = name_width(name, size);
                 let at = Rect::from_center_size(front.center(), vec2(width, front.height()));
                 (at, RichText::new(name).strong().size(size).color(colour))
+            }
+            // On the front of its ring, once the ring has room for it; until
+            // then named for the accessibility tree, and clickable, only.
+            Naming::Ring => {
+                let width = name_width(name, RING_NAME);
+                let written = self.ring_has_room(area, name, lift);
+                self.ring_names.push((path.to_path_buf(), written));
+                let colour = if written {
+                    INK.gamma_multiply(0.75)
+                } else {
+                    Color32::TRANSPARENT
+                };
+                let at = Rect::from_center_size(
+                    pos2(bounds.center().x, bounds.max.y - RING_NAME),
+                    vec2(width, RING_NAME + 6.0),
+                );
+                (at, RichText::new(name).size(RING_NAME).color(colour))
             }
             // Folders below a district and blocks without code are ground,
             // not landmarks: named for the accessibility tree only.
@@ -1219,8 +1316,11 @@ impl<'a> Painter<'a> {
         }
         if self.selected == Some(path) {
             let stroke = ui.visuals().selection.stroke;
-            ui.painter()
-                .add(Shape::closed_line(self.view.corners(area, lift), stroke));
+            let outline = match naming {
+                Naming::Ring => self.view.ring(area, lift),
+                _ => self.view.corners(area, lift),
+            };
+            ui.painter().add(Shape::closed_line(outline, stroke));
             ui.ctx()
                 .accesskit_node_builder(response.id, |node| node.set_selected(true));
         }
@@ -1228,6 +1328,11 @@ impl<'a> Painter<'a> {
             self.clicked = Some(path.to_path_buf());
         }
     }
+}
+
+/// How wide `name` is on screen at `size`, with a little room either side.
+fn name_width(name: &str, size: f32) -> f32 {
+    name.chars().count() as f32 * size * 0.62 + 16.0
 }
 
 /// How far back `item` stands as `view` sees it: lower on screen is nearer,
@@ -1565,5 +1670,71 @@ mod tests {
             outside.a() < inside.a(),
             "{outside:?} is not fainter than {inside:?}"
         );
+    }
+
+    #[test]
+    fn far_out_a_tower_is_one_box_picked_by_its_middle() {
+        use std::collections::BTreeMap;
+
+        use crate::graph::{Floor, Item, ItemKind};
+
+        let floor = |number: usize| Floor {
+            number,
+            text: "let a = 1;".to_owned(),
+            indent: 0,
+            width: 10,
+            tokens: Vec::new(),
+            calls: Vec::new(),
+            imports: Vec::new(),
+        };
+        let file = PathBuf::from("catalog/a.rs");
+        let path = Path::new("/p/shop/catalog/a.rs/f").to_path_buf();
+        let item = Item {
+            name: "f".to_owned(),
+            path: path.clone(),
+            kind: ItemKind::Function,
+            tests: false,
+            floors: (1..=3).map(floor).collect(),
+            area: Rect::NOTHING,
+            base: 0.0,
+        };
+        let strategy = Directories {
+            prefix: default_prefix_rule(),
+        };
+        let items = BTreeMap::from([(file.clone(), vec![item])]);
+        let map = ProjectMap::of_code("shop", Path::new("/p/shop"), &[file], &strategy, items);
+        // Framed as a part of a far larger city: far out.
+        let framing = Framing {
+            area: map.extent.expand(map.extent.width() * 200.0),
+            fill: 1.0,
+            closest: 1.0,
+            headroom: 0.0,
+        };
+
+        let ctx = egui::Context::default();
+        let mut towers = Vec::new();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            towers = project(
+                ui,
+                &map,
+                ViewOptions {
+                    framing,
+                    selected: None,
+                    folder_view: None,
+                    pivot: None,
+                    underground: false,
+                    lanes: Lanes::default(),
+                    picked: None,
+                    network: None,
+                },
+            )
+            .towers;
+        });
+        output.textures_delta.clear();
+
+        let tower = towers.iter().find(|t| t.path == path).expect("drawn");
+        assert_eq!(tower.floors.len(), 1, "one span, not one per floor");
+        let middle = tower.floors[0].start + (tower.floors[0].end - tower.floors[0].start) / 2.0;
+        assert_eq!(pick(&towers, middle, false), Some(path));
     }
 }

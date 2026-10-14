@@ -38,6 +38,7 @@ fn universe() -> Universe {
     let shop = Tree::project(
         "shop",
         &[
+            "catalog/pricing/base.rs",
             "catalog/pricing/rules/discount.rs",
             "catalog/pricing/rules/vat.rs",
             "catalog/item.rs",

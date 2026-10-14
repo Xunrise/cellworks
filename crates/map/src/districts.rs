@@ -149,7 +149,8 @@ impl DistrictStrategy for Directories {
 
 /// How the folders below a district become sub-districts and groups: rooted
 /// at `root`, leaving out the folders other districts claim, and any folder
-/// left with nothing in it.
+/// left with nothing in it. A folder holding only one folder and no file is
+/// one with it, named after both: `src/main/kotlin`.
 struct Shape<'a> {
     root: &'a Path,
     claimed: BTreeSet<&'a Path>,
@@ -163,10 +164,27 @@ impl Shape<'_> {
             .filter(|inner| !self.claimed.contains(inner.path.as_path()))
     }
 
+    /// The folder at the end of the chain from `folder` in which each holds
+    /// only the next and no file, and the chain's name.
+    fn chain<'f>(&self, folder: &'f Folder) -> (&'f Folder, String) {
+        let mut name = name_of(&folder.path);
+        let mut folder = folder;
+        while folder.files.is_empty() {
+            let mut inner = self.unclaimed(folder);
+            let (Some(only), None) = (inner.next(), inner.next()) else {
+                break;
+            };
+            name = format!("{name}/{}", name_of(&only.path));
+            folder = only;
+        }
+        (folder, name)
+    }
+
     fn sub_districts(&self, folder: &Folder) -> Vec<SubDistrict> {
         self.unclaimed(folder)
-            .map(|sub| SubDistrict {
-                name: name_of(&sub.path),
+            .map(|sub| self.chain(sub))
+            .map(|(sub, name)| SubDistrict {
+                name,
                 path: self.root.join(&sub.path),
                 groups: self.groups(sub),
                 nodes: nodes(self.root, sub),
@@ -178,8 +196,9 @@ impl Shape<'_> {
 
     fn groups(&self, folder: &Folder) -> Vec<Group> {
         self.unclaimed(folder)
-            .map(|group| Group {
-                name: name_of(&group.path),
+            .map(|group| self.chain(group))
+            .map(|(group, name)| Group {
+                name,
                 path: self.root.join(&group.path),
                 groups: self.groups(group),
                 nodes: nodes(self.root, group),
@@ -332,7 +351,11 @@ mod tests {
 
     #[test]
     fn every_element_carries_the_canonical_path_it_stands_for() {
-        let districts = cut(&["src/catalog/pricing/rules/discount.rs", "src/ordering/o.rs"]);
+        let districts = cut(&[
+            "src/catalog/pricing/price.rs",
+            "src/catalog/pricing/rules/discount.rs",
+            "src/ordering/o.rs",
+        ]);
 
         let catalog = &districts[0];
         assert_eq!(catalog.path, Path::new("/p/shop/src/catalog"));
@@ -345,6 +368,58 @@ mod tests {
         assert_eq!(
             rules.nodes[0].path,
             Path::new("/p/shop/src/catalog/pricing/rules/discount.rs")
+        );
+    }
+
+    #[test]
+    fn a_folder_holding_only_one_folder_is_one_folder_named_after_both() {
+        let districts = cut(&[
+            "src/catalog/item.rs",
+            "src/catalog/pricing/rules/seasonal/winter.rs",
+            "src/catalog/pricing/rules/discount.rs",
+            "src/catalog/web/src/main/app.ts",
+            "src/ordering/order.rs",
+        ]);
+
+        let catalog = &districts[0];
+        let names: Vec<&str> = catalog
+            .sub_districts
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(names, ["pricing/rules", "web/src/main"]);
+        let rules = &catalog.sub_districts[0];
+        assert_eq!(rules.path, Path::new("/p/shop/src/catalog/pricing/rules"));
+        assert_eq!(rules.nodes[0].name, "discount.rs");
+        assert_eq!(
+            rules.groups[0].name, "seasonal",
+            "a folder holding a file ends the chain"
+        );
+        assert_eq!(
+            catalog.sub_districts[1].nodes[0].path,
+            Path::new("/p/shop/src/catalog/web/src/main/app.ts")
+        );
+    }
+
+    #[test]
+    fn a_folder_another_district_claims_does_not_count_in_a_chain() {
+        let districts = cut_with(
+            "rust-crates",
+            &[
+                "Cargo.toml",
+                "src/main.rs",
+                "crates/catalog/Cargo.toml",
+                "crates/catalog/src/lib.rs",
+                "crates/notes/drafts/idea.md",
+            ],
+        );
+
+        let shop = districts.iter().find(|d| d.name == "shop").expect("shop");
+        let names: Vec<&str> = shop.sub_districts.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["crates/notes/drafts", "src"],
+            "the claimed catalog leaves crates holding only notes"
         );
     }
 

@@ -75,7 +75,7 @@ pub fn iso_bounds(rect: Rect) -> Rect {
 pub fn floor_height(item: &Item) -> f32 {
     match item.kind {
         ItemKind::Function | ItemKind::Test => FLOOR,
-        ItemKind::Type | ItemKind::Uses => LOW_FLOOR,
+        ItemKind::Type | ItemKind::Uses | ItemKind::Text => LOW_FLOOR,
     }
 }
 

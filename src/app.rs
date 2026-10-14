@@ -69,6 +69,8 @@ pub struct CellworksApp {
     underground: bool,
     /// The districts the last frame drew, with their outlines.
     districts: Vec<(std::path::PathBuf, Outline)>,
+    /// The folder rings the last frame drew, and whether each was named.
+    rings: Vec<(std::path::PathBuf, bool)>,
     /// The lanes the last frame drew, and the one under the pointer.
     lanes: Vec<DrawnLane>,
     lane_hovered: Option<cellworks_map::LaneId>,
@@ -126,6 +128,7 @@ impl CellworksApp {
                 view: None,
                 underground: false,
                 districts: Vec::new(),
+                rings: Vec::new(),
                 lanes: Vec::new(),
                 lane_hovered: None,
             },
@@ -142,6 +145,7 @@ impl CellworksApp {
                 view: None,
                 underground: false,
                 districts: Vec::new(),
+                rings: Vec::new(),
                 lanes: Vec::new(),
                 lane_hovered: None,
             },
@@ -164,6 +168,7 @@ impl CellworksApp {
             view: None,
             underground: false,
             districts: Vec::new(),
+            rings: Vec::new(),
             lanes: Vec::new(),
             lane_hovered: None,
         }
@@ -229,6 +234,12 @@ impl CellworksApp {
     /// The districts the last frame drew, with the outline of each.
     pub fn districts(&self) -> &[(std::path::PathBuf, Outline)] {
         &self.districts
+    }
+
+    /// The folders the last frame drew as rings, and whether the name of each
+    /// was written on it.
+    pub fn rings(&self) -> &[(std::path::PathBuf, bool)] {
+        &self.rings
     }
 
     /// Where the last frame saw the open project's map from.
@@ -576,6 +587,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             };
             app.towers = drawn.towers;
             app.districts = drawn.districts;
+            app.rings = drawn.rings;
             app.lanes = drawn.lanes;
             app.lane_hovered = drawn.lane_hovered;
             if let Some(floor) = floor {

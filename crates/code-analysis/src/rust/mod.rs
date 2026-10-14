@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 
 use cellworks_map::{Floor, Item};
 
-use parse::{Call, FileCode, column};
+pub(crate) use parse::column;
+use parse::{Call, FileCode};
 use resolve::{Index, Module, module_of, package_name};
 
 /// Files larger than this are left unread: generated code, not code to walk.
