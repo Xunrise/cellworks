@@ -49,7 +49,16 @@ const DELETED: &[&str] = &["ls-files", "-z", "--deleted"];
 
 /// The files of the last 500 commits, each commit opened by a line holding
 /// only the record separator.
-const HISTORY: &[&str] = &["log", "-n", "500", "--name-only", "--format=%x1e"];
+/// Paths come unquoted, as `ls-files -z` lists them, so `café.rs` pairs up.
+const HISTORY: &[&str] = &[
+    "-c",
+    "core.quotePath=false",
+    "log",
+    "-n",
+    "500",
+    "--name-only",
+    "--format=%x1e",
+];
 
 impl GitListing for GitCli {
     fn visible_files(&self, repository: &Path) -> Result<Vec<PathBuf>, GitUnavailable> {

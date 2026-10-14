@@ -23,7 +23,8 @@ use cellworks_map::{Lens, ProjectMap, default_prefix_rule, prefix_rule};
 use cellworks_navigation::{Moved, Navigation};
 use cellworks_workspace::ui::UniverseClick;
 use cellworks_workspace::{
-    ArrangementStore, Project, ScanState, Sources, Universe, WorkspaceEvent, start_scan,
+    ArrangementKeeper, ArrangementStore, Project, ScanState, Sources, Universe, WorkspaceEvent,
+    start_scan,
 };
 
 use crate::opened::{OpenedNotice, OpenedProject, ProjectState};
@@ -71,8 +72,9 @@ pub struct CellworksApp {
     /// The lanes the last frame drew, and the one under the pointer.
     lanes: Vec<DrawnLane>,
     lane_hovered: Option<cellworks_map::LaneId>,
-    /// Where custom arrangements are kept; none, none are kept.
-    arrangements: Option<ArrangementStore>,
+    /// Where custom arrangements are kept, and the thread keeping them;
+    /// none, none are kept.
+    arrangements: Option<(ArrangementStore, ArrangementKeeper)>,
 }
 
 /// What the keyboard and the pointer asked for in one frame.
@@ -112,7 +114,7 @@ impl CellworksApp {
     pub fn start() -> CellworksApp {
         match Sources::for_this_user() {
             Some(sources) => CellworksApp {
-                arrangements: Some(ArrangementStore::beside(&sources.settings_file)),
+                arrangements: Some(kept(ArrangementStore::beside(&sources.settings_file))),
                 universe: Universe::scanning(&sources),
                 events: Some(start_scan(sources)),
                 opened: None,
@@ -176,7 +178,7 @@ impl CellworksApp {
     /// The same app, keeping custom arrangements in `store`.
     pub fn with_arrangements(self, store: ArrangementStore) -> CellworksApp {
         CellworksApp {
-            arrangements: Some(store),
+            arrangements: Some(kept(store)),
             ..self
         }
     }
@@ -242,17 +244,14 @@ impl CellworksApp {
     /// Moves straight to the element of the open project at `path`, showing
     /// the folder holding it in its folder view.
     pub fn jump(&mut self, path: std::path::PathBuf) {
-        if let Some(map) = self.map().cloned() {
-            self.navigation.jump(&map, path);
+        if let Some(map) = mapped(&self.opened) {
+            self.navigation.jump(map, path);
         }
     }
 
     /// The opened project's map, once it has arrived.
     fn map(&self) -> Option<&ProjectMap> {
-        match self.opened.as_ref()?.state() {
-            ProjectState::Mapped(map) => Some(map),
-            _ => None,
-        }
+        mapped(&self.opened)
     }
 
     /// The universe's project whose folder is `path`.
@@ -272,13 +271,11 @@ impl CellworksApp {
         let events = self.read(&project);
         let knowledge =
             cellworks_domain_knowledge::start_read(path.clone(), project.contexts.clone());
-        let arranged = self.arrangements.clone().map(|store| {
-            // Read off the frame loop, like the code.
-            let (sender, receiver) = std::sync::mpsc::channel();
-            let id = project.id.clone();
-            std::thread::spawn(move || sender.send(store.load(&id)));
-            receiver
-        });
+        // Read off the frame loop, like the code.
+        let arranged = self
+            .arrangements
+            .as_ref()
+            .map(|(store, _)| store.start_read(project.id.clone()));
         let mut opened = OpenedProject::reading(project, events);
         opened.know(knowledge);
         if let Some(arranged) = arranged {
@@ -425,10 +422,11 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             opened.toggle_call_lanes();
         }
     }
-    if let Some(opened) = &mut app.opened
-        && opened.flying(now)
-    {
-        ui.ctx().request_repaint();
+    if let Some(opened) = &mut app.opened {
+        if opened.flying(now) {
+            ui.ctx().request_repaint();
+        }
+        opened.prepare_lanes();
     }
     if fit && app.opened.is_some() {
         app.navigation.fit();
@@ -437,13 +435,13 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         app.navigation.toggle_underground();
     }
     app.underground = app.navigation.is_underground() || held_underground;
-    if cycle && let Some(map) = app.map().cloned() {
-        app.navigation.next_in_block(&map);
+    if cycle && let Some(map) = mapped(&app.opened) {
+        app.navigation.next_in_block(map);
     }
     let inside = app.navigation.inside().is_some();
     // Facing a facade, the arrows walk between the towers of its block.
     let walking = app.navigation.is_walking() && !inside;
-    if walking && let Some(map) = app.map().cloned() {
+    if walking && let Some(map) = mapped(&app.opened) {
         use cellworks_map::city::Toward;
         let toward = match (columns, rows) {
             (1, _) => Some(Toward::Right),
@@ -453,11 +451,11 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             _ => None,
         };
         if let Some(toward) = toward {
-            app.navigation.walk(&map, toward);
+            app.navigation.walk(map, toward);
         }
     }
-    if inside && let Some(map) = app.map().cloned() {
-        app.navigation.move_floor(&map, rows + lines);
+    if inside && let Some(map) = mapped(&app.opened) {
+        app.navigation.move_floor(map, rows + lines);
     }
     if !inside
         && !walking
@@ -478,26 +476,21 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         && !inside
         && !walking
         && rows != 0
-        && let Some(map) = app.map().cloned()
+        && let Some(map) = mapped(&app.opened)
     {
-        app.navigation.move_in_tree(&map, rows);
+        app.navigation.move_in_tree(map, rows);
     }
     if lock {
         app.navigation.toggle_lock();
     }
-    if esc {
-        let map = app.map().cloned();
-        if app.navigation.esc(map.as_ref()) == Some(Moved::Closed) {
-            app.opened = None;
-        }
+    if esc && app.navigation.esc(mapped(&app.opened)) == Some(Moved::Closed) {
+        app.opened = None;
     }
-    if enter {
-        let map = app.map().cloned();
-        if let Some(Moved::Opened(path)) = app.navigation.enter(map.as_ref())
-            && let Some(project) = app.project_at(&path)
-        {
-            app.open(project);
-        }
+    if enter
+        && let Some(Moved::Opened(path)) = app.navigation.enter(mapped(&app.opened))
+        && let Some(project) = app.project_at(&path)
+    {
+        app.open(project);
     }
 
     // What the lens bar and the lane toggles asked for: applied once the
@@ -592,7 +585,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             app.view = Some(drawn.view);
             // Close enough, the camera turns to face a facade; the pivot
             // glides to it over the next frames.
-            if let Some(map) = app.map().cloned() {
+            if let Some(map) = mapped(&app.opened) {
                 let turn = cellworks_map::turn_at(drawn.view.scale());
                 let middle = drawn.view.to_ground(drawn.panel.center());
                 let nearest = map
@@ -606,7 +599,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 let nearest = nearest.as_deref();
                 if app
                     .navigation
-                    .face(&map, turn, pointed, nearest, visible, half, dt)
+                    .face(map, turn, pointed, nearest, visible, half, dt)
                 {
                     ui.ctx().request_repaint();
                 }
@@ -618,12 +611,11 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 opened.move_by(path, *by);
             }
             if drawn.move_ended
-                && let (Some(store), Some(opened)) = (app.arrangements.clone(), &app.opened)
+                && let (Some((_, keeper)), Some(opened)) = (&app.arrangements, &app.opened)
                 && let Some(arrangement) = opened.arrangement()
             {
-                // Kept off the frame loop; a failed write only loses the move.
-                let id = opened.project().id.clone();
-                std::thread::spawn(move || store.save(&id, &arrangement));
+                // Kept off the frame loop, in order.
+                keeper.keep(opened.project().id.clone(), arrangement);
             }
             if let Some(district) = minimap
                 && let Some(found) = app.map().and_then(|map| map.find(&district))
@@ -632,9 +624,9 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 app.navigation.centre_on(visible, centre);
             }
             if let Some(click) = drawn.lane_clicked {
-                match (click.travel, app.map().cloned()) {
+                match (click.travel, mapped(&app.opened)) {
                     // Travelling along a lane: the view frames its far end.
-                    (Some(far), Some(map)) => app.navigation.jump(&map, far),
+                    (Some(far), Some(map)) => app.navigation.jump(map, far),
                     _ => app.navigation.pick_lane(click.lane),
                 }
             } else if let Some(path) = drawn.clicked {
@@ -644,22 +636,22 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 app.navigation.drop_lane();
             }
             if let Some(tower) = drawn.entered
-                && let Some(map) = app.map().cloned()
+                && let Some(map) = mapped(&app.opened)
             {
-                app.navigation.step_inside(&map, tower);
+                app.navigation.step_inside(map, tower);
             }
             if zoom != 1.0
-                && let Some(map) = app.map().cloned()
+                && let Some(map) = mapped(&app.opened)
             {
                 // Turned towards a facade, zooming anchors on it.
-                let pivot = app.navigation.pivot(&map).map(|pivot| pivot.ground);
+                let pivot = app.navigation.pivot(map).map(|pivot| pivot.ground);
                 let around = match (pivot, pointer) {
                     (Some(pivot), _) => pivot,
                     (None, Some(pointer)) => drawn.view.to_ground(pointer),
                     (None, None) => visible.center(),
                 };
                 app.navigation
-                    .zoomed(&map, zoomed(visible, around, zoom), around);
+                    .zoomed(map, zoomed(visible, around, zoom), around);
                 ui.ctx().request_repaint();
             }
         }
@@ -714,7 +706,7 @@ fn project(
             ui,
             &opened
                 .shown(ui.input(|input| input.time))
-                .unwrap_or_else(|| (**map).clone()),
+                .unwrap_or(std::borrow::Cow::Borrowed(map)),
             cellworks_map::ui::ViewOptions {
                 framing: navigation.framing(map),
                 selected: navigation.selection(),
@@ -723,8 +715,24 @@ fn project(
                 underground,
                 lanes: opened.lanes(),
                 picked: navigation.picked_lane(),
+                network: opened.network(),
             },
         )),
+    }
+}
+
+/// `store`, with a thread keeping what is handed to it.
+fn kept(store: ArrangementStore) -> (ArrangementStore, ArrangementKeeper) {
+    let keeper = store.start_keeping();
+    (store, keeper)
+}
+
+/// The map of `opened`, once it has arrived: borrowed from that field alone,
+/// so the navigation can change beside it without copying the map.
+fn mapped(opened: &Option<OpenedProject>) -> Option<&ProjectMap> {
+    match opened.as_ref()?.state() {
+        ProjectState::Mapped(map) => Some(map),
+        _ => None,
     }
 }
 

@@ -11,6 +11,8 @@ mod relation;
 mod shape;
 mod stair;
 
+pub(crate) use stair::STEP_GAP;
+
 use std::collections::BTreeMap;
 
 pub use flight::Flight;
@@ -147,16 +149,17 @@ impl Lens {
 pub fn relens(folders: &ProjectMap, lens: Lens) -> ProjectMap {
     let mut map = folders.clone();
     map.lens = lens;
-    map.homes = homes(folders);
+    // In the folders and custom lenses every tower stands in its own crate,
+    // whose colour it has already.
     if lens == Lens::Folders {
         return map;
     }
     if lens == Lens::Custom {
         let mut map = custom::arranged(folders);
         map.lens = lens;
-        map.homes = homes(folders);
         return map;
     }
+    map.homes = homes(folders);
     if lens == Lens::Cells {
         let Some(known) = &folders.contexts else {
             return map;
@@ -189,6 +192,7 @@ pub fn relens(folders: &ProjectMap, lens: Lens) -> ProjectMap {
                 .filter(|node| {
                     let mut files: Vec<&std::path::Path> =
                         node.items.iter().filter_map(|i| i.path.parent()).collect();
+                    files.sort();
                     files.dedup();
                     files.len() > 1
                 })

@@ -35,7 +35,8 @@ pub struct ProjectMap {
     pub lens: Lens,
     /// For every item, the index of the district it stands in under the
     /// folders lens: its crate, whose colour it keeps in every lens. Empty
-    /// for a map made by the folders lens, where that is its own district.
+    /// for a map made by the folders or the custom lens, where that is its
+    /// own district.
     pub homes: BTreeMap<PathBuf, usize>,
     /// The district a lens put in the middle of the others, if it did.
     pub hub: Option<usize>,

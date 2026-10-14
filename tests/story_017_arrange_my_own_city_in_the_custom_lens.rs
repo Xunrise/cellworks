@@ -53,6 +53,7 @@ fn open(tree: &Tree, kept: &Path) -> Harness<'static, CellworksApp> {
             break;
         }
         harness.key_press(egui::Key::L);
+        common::await_lens(&mut harness);
         harness.run_steps(120);
     }
     assert_eq!(
@@ -122,6 +123,7 @@ fn the_custom_lens_starts_as_the_folder_city() {
     let folders = {
         let mut harness = open(&tree, kept.path());
         harness.key_press(egui::Key::L);
+        common::await_lens(&mut harness);
         harness.run_steps(120);
         common::map(&harness)
     };

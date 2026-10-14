@@ -104,6 +104,8 @@ impl Universe {
             WorkspaceEvent::SettingsUnreadable { path, reason } => {
                 self.note(NoticeKind::SettingsUnreadable, path, reason);
             }
+            // An opened project's, not the universe's.
+            WorkspaceEvent::ArrangementRead { .. } => {}
         }
     }
 

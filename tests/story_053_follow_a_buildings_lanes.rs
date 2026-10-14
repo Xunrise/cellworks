@@ -194,7 +194,7 @@ fn pointing_at_a_call_lane_shows_the_calling_line() {
 
     assert_eq!(shop.harness.state().hovered_lane(), Some(&lane.id));
     assert_eq!(
-        lane.card,
+        shop.charge_lane().card,
         [
             "lib.rs:5 charge calls discount (pricing.rs)",
             "    catalog::pricing::discount();"

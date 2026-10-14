@@ -118,6 +118,23 @@ pub fn double_click(harness: &mut Harness<'_, CellworksApp>, name: &str) {
     harness.run();
 }
 
+/// Lets the map of a new lens, worked out while the towers lift off,
+/// arrive.
+pub fn await_lens(harness: &mut Harness<'_, CellworksApp>) {
+    // A key pressed is read in the next frame.
+    harness.step();
+    let started = Instant::now();
+    while harness
+        .state()
+        .opened()
+        .is_some_and(|opened| opened.is_relensing())
+        && started.elapsed() < Duration::from_secs(30)
+    {
+        std::thread::sleep(Duration::from_millis(1));
+        harness.state_mut().apply_pending();
+    }
+}
+
 /// Lets the read, or the read again, finish, then draws the frame that shows it.
 pub fn await_read(harness: &mut Harness<'_, CellworksApp>) {
     let started = Instant::now();

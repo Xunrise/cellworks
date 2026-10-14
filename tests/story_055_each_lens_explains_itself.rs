@@ -68,11 +68,20 @@ fn open(tree: &Tree, git: Arc<dyn GitListing + Send + Sync>) -> Harness<'static,
     let mut harness = common::harness(common::app(vec![project], git));
     common::double_click(&mut harness, &name);
     common::await_read(&mut harness);
-    // The domain knowledge is read beside the code.
-    for _ in 0..100 {
+    // The domain knowledge is read beside the code: wait until the cells
+    // lens is offered, or long enough that it never will be.
+    let started = std::time::Instant::now();
+    while started.elapsed() < std::time::Duration::from_secs(2) {
         harness.state_mut().apply_pending();
         harness.step();
-        std::thread::sleep(std::time::Duration::from_millis(2));
+        if harness
+            .state()
+            .opened()
+            .is_some_and(|o| o.offers(Lens::Cells))
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
     harness
 }
@@ -119,6 +128,7 @@ fn switch_to(harness: &mut Harness<'static, CellworksApp>, lens: Lens) {
             return;
         }
         harness.key_press(egui::Key::L);
+        common::await_lens(harness);
         harness.run_steps(150);
     }
     assert_eq!(harness.state().opened().map(|o| o.lens()), Some(lens));

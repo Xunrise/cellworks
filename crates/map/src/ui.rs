@@ -372,6 +372,8 @@ pub struct ViewOptions<'a> {
     pub lanes: Lanes,
     /// The lane picked, kept lit with what it carries.
     pub picked: Option<&'a LaneId>,
+    /// The map's lanes, worked out once for it; no lane is drawn without.
+    pub network: Option<&'a crate::Network>,
 }
 
 /// A click on a lane: the lane, and with Cmd held the tower at its far end
@@ -394,6 +396,7 @@ pub fn project(ui: &mut egui::Ui, map: &ProjectMap, options: ViewOptions<'_>) ->
         underground,
         lanes: shown,
         picked,
+        network,
     } = options;
     let panel = ui.available_rect_before_wrap();
     let view = fit(framing, panel);
@@ -524,6 +527,7 @@ pub fn project(ui: &mut egui::Ui, map: &ProjectMap, options: ViewOptions<'_>) ->
         selected,
         picked,
         pointer,
+        network,
     };
     let mut frame = lanes::frame(map, &view, &focus);
     let mut shapes = Vec::new();
@@ -1537,6 +1541,7 @@ mod tests {
                     underground: false,
                     lanes: Lanes::default(),
                     picked: None,
+                    network: None,
                 },
             )
             .towers;

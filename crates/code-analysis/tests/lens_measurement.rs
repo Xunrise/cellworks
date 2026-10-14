@@ -1,6 +1,6 @@
-//! A measurement, not a check: how long seeing this repository's own code
-//! through each lens takes, and how many districts each makes. Skips when
-//! the checkout is not there.
+//! A measurement, not a check: how long seeing this repository's own code,
+//! or the project at `LENS_PROJECT`, through each lens takes, and how many
+//! districts each makes. Skips when the checkout is not there.
 //!
 //! cargo test --workspace --release -- --ignored --nocapture
 
@@ -13,7 +13,9 @@ use cellworks_map::{Lens, prefix_rule, relens};
 #[test]
 #[ignore = "measurement; run with --ignored --nocapture"]
 fn see_this_repository_through_every_lens() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = std::env::var("LENS_PROJECT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."));
     let Ok(root) = root.canonicalize() else {
         println!("no checkout at {}; skipped", root.display());
         return;

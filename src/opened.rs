@@ -6,14 +6,15 @@
 //! beside whichever state is current and never replaces the map. A project
 //! read again keeps its map on screen until the new one arrives.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 use cellworks_code_analysis::CodeAnalysisEvent;
 use cellworks_domain_knowledge::DomainKnowledgeEvent;
-use cellworks_map::{BoundedContexts, Flight, Lanes, Lens, ProjectMap, relens};
-use cellworks_workspace::Arrangement;
+use cellworks_map::{BoundedContexts, Flight, Lanes, Lens, Network, ProjectMap, relens};
 use cellworks_workspace::Project;
+use cellworks_workspace::{Arrangement, WorkspaceEvent};
 
 /// How far the read has got.
 #[derive(Clone, Debug, PartialEq)]
@@ -65,10 +66,15 @@ pub struct OpenedProject {
     knowledge: Option<Receiver<DomainKnowledgeEvent>>,
     contexts: Option<BoundedContexts>,
     /// The read of the project's custom arrangement, and the arrangement.
-    arranged: Option<Receiver<Arrangement>>,
+    arranged: Option<Receiver<WorkspaceEvent>>,
     arrangement: Arrangement,
     /// When the lens last changed, in seconds.
     switched_at: Option<f64>,
+    /// The map's lanes, worked out once for the map as it is now.
+    network: Option<Network>,
+    /// The map of a new lens and its lanes, worked out off the frame loop
+    /// while the towers lift off, and the turns it was worked out for.
+    relensing: Option<(Receiver<(ProjectMap, Network)>, u8)>,
 }
 
 impl OpenedProject {
@@ -90,6 +96,8 @@ impl OpenedProject {
             arranged: None,
             arrangement: Arrangement::default(),
             switched_at: None,
+            network: None,
+            relensing: None,
         }
     }
 
@@ -143,6 +151,8 @@ impl OpenedProject {
                         self.lens = Lens::Folders;
                     }
                     self.state = ProjectState::Mapped(Box::new(self.seen(&map)));
+                    self.network = None;
+                    self.relensing = None;
                     self.folders = Some(map);
                 }
             }
@@ -153,6 +163,11 @@ impl OpenedProject {
                 self.note(OpenedNotice::GitExcludesUnavailable { reason });
             }
         }
+    }
+
+    /// Whether the map of a new lens is still being worked out.
+    pub fn is_relensing(&self) -> bool {
+        self.relensing.is_some()
     }
 
     /// The lens the map is seen through.
@@ -172,7 +187,7 @@ impl OpenedProject {
     }
 
     /// Reads the project's custom arrangement over `arranged`.
-    pub fn arrange(&mut self, arranged: Receiver<Arrangement>) {
+    pub fn arrange(&mut self, arranged: Receiver<WorkspaceEvent>) {
         self.arranged = Some(arranged);
     }
 
@@ -203,6 +218,8 @@ impl OpenedProject {
         folders.arrangement = self.arrangement.clone();
         let folders = folders.clone();
         self.state = ProjectState::Mapped(Box::new(self.seen(&folders)));
+        self.network = None;
+        self.relensing = None;
     }
 
     /// Whether the map can be seen through `lens`.
@@ -238,7 +255,8 @@ impl OpenedProject {
 
     /// Sees the map through `lens`, its towers flying from where they stand
     /// at time `now` (seconds) to their new places. Nothing while there is
-    /// no map.
+    /// no map. The new map is worked out off the frame loop; until it
+    /// arrives the towers lift off where they stand.
     pub fn set_lens(&mut self, lens: Lens, now: f64) {
         let (Some(folders), ProjectState::Mapped(_)) = (&self.folders, &self.state) else {
             return;
@@ -250,31 +268,62 @@ impl OpenedProject {
         self.switched_at = Some(now);
         self.lens = lens;
         self.lanes = lens.lanes();
-        let map = self.seen(&folders.clone());
-        self.state = ProjectState::Mapped(Box::new(map));
+        let (folders, turns) = (folders.clone(), self.turns);
+        let (sender, relensed) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut map = relens(&folders, lens);
+            map.turn(turns);
+            let network = Network::of(&map);
+            // The engineer may have switched again or closed the project.
+            let _ = sender.send((map, network));
+        });
+        self.relensing = Some((relensed, turns));
         self.flight = before;
     }
 
     /// The map as it is drawn at time `now`: mid-flight while the towers fly
     /// to the places of a new lens. `None` while there is no map.
-    pub fn shown(&self, now: f64) -> Option<ProjectMap> {
+    ///
+    /// Borrowed as it is, and copied only while towers fly.
+    pub fn shown(&self, now: f64) -> Option<Cow<'_, ProjectMap>> {
         let ProjectState::Mapped(map) = &self.state else {
             return None;
         };
-        let mut map = (**map).clone();
-        if let Some(flight) = &self.flight {
-            flight.apply(&mut map, now);
+        match &self.flight {
+            Some(flight) if !flight.landed(now) => {
+                let mut map = (**map).clone();
+                flight.apply(&mut map, now);
+                Some(Cow::Owned(map))
+            }
+            _ => Some(Cow::Borrowed(map)),
         }
-        Some(map)
+    }
+
+    /// Works the map's lanes out once per map, when lanes are shown: for the
+    /// map the towers fly to, so they are ready when they land.
+    pub fn prepare_lanes(&mut self) {
+        let shown = self.lanes.imports || self.lanes.calls;
+        if !shown || self.network.is_some() {
+            return;
+        }
+        if let ProjectState::Mapped(map) = &self.state {
+            self.network = Some(Network::of(map));
+        }
+    }
+
+    /// The map's lanes, if worked out: none while towers fly, whose lanes
+    /// would run where they land.
+    pub fn network(&self) -> Option<&Network> {
+        self.network.as_ref().filter(|_| self.flight.is_none())
     }
 
     /// Whether towers are still flying at time `now`; ends the flight once
     /// all have landed.
     pub fn flying(&mut self, now: f64) -> bool {
-        let (Some(flight), ProjectState::Mapped(map)) = (&self.flight, &self.state) else {
+        let Some(flight) = &self.flight else {
             return false;
         };
-        let landed = flight.apply(&mut map.clone(), now);
+        let landed = flight.landed(now);
         if landed {
             self.flight = None;
         }
@@ -298,6 +347,7 @@ impl OpenedProject {
         self.flight = None;
         let centre = map.ground().center();
         map.turn(quarters);
+        self.network = None;
         Some(centre)
     }
 
@@ -305,7 +355,25 @@ impl OpenedProject {
     /// goes away before its map arrives has failed; after it, it is just over.
     /// A read again that goes away without a map leaves the old one on screen.
     pub fn drain(&mut self) {
-        if let Some(arrangement) = self
+        if let Some((map, network)) = self
+            .relensing
+            .as_ref()
+            .and_then(|(relensed, _)| relensed.try_recv().ok())
+            && let Some((_, turns)) = self.relensing.take()
+            && let ProjectState::Mapped(_) = self.state
+        {
+            let mut map = map;
+            // Turned while it was worked out: turn it as far.
+            let missed = (self.turns + 4 - turns) % 4;
+            if missed > 0 {
+                map.turn(missed);
+                self.network = None;
+            } else {
+                self.network = Some(network);
+            }
+            self.state = ProjectState::Mapped(Box::new(map));
+        }
+        if let Some(WorkspaceEvent::ArrangementRead { arrangement, .. }) = self
             .arranged
             .as_ref()
             .and_then(|arranged| arranged.try_recv().ok())
@@ -317,6 +385,8 @@ impl OpenedProject {
                 if self.lens == Lens::Custom {
                     let folders = folders.clone();
                     self.state = ProjectState::Mapped(Box::new(self.seen(&folders)));
+                    self.network = None;
+                    self.relensing = None;
                 }
             }
         }

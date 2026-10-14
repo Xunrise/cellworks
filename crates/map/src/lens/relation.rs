@@ -113,8 +113,22 @@ pub(crate) fn rebuild(folders: &ProjectMap, lens: Lens, blocks_of: Blocks) -> Ve
             .enumerate()
             .map(|(j, b)| block_node(&blocks[*b], place(&[d.to_string(), j.to_string()])))
             .collect();
+        // What may name it: the functions of its blocks for calls, their
+        // files, code or not, otherwise.
+        let candidates: Vec<PathBuf> = members
+            .iter()
+            .flat_map(|b| &blocks[*b])
+            .flat_map(|u| match lens {
+                Lens::Calls => units[*u]
+                    .items
+                    .iter()
+                    .map(|item| item.path.clone())
+                    .collect(),
+                _ => vec![units[*u].file.clone()],
+            })
+            .collect();
         districts.push(District {
-            name: hub_name(lens, &nodes, &score),
+            name: hub_name(lens, &candidates, &score),
             path: place(&[d.to_string()]),
             sub_districts: Vec::new(),
             nodes,
@@ -303,24 +317,20 @@ pub(crate) fn links(
 }
 
 /// A district's name: what holds it together most.
-fn hub_name(lens: Lens, nodes: &[Node], score: &HashMap<PathBuf, f32>) -> String {
-    let candidates = nodes.iter().flat_map(|n| &n.items).map(|item| match lens {
-        Lens::Calls => item.path.clone(),
-        _ => item
-            .path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_default(),
-    });
+/// A district's name: of `candidates`, what holds it together most by
+/// `score`.
+fn hub_name(lens: Lens, candidates: &[PathBuf], score: &HashMap<PathBuf, f32>) -> String {
     let hub = candidates
+        .iter()
         .max_by(|a, b| {
-            let (x, y) = (score.get(a).unwrap_or(&0.0), score.get(b).unwrap_or(&0.0));
+            let (x, y) = (score.get(*a).unwrap_or(&0.0), score.get(*b).unwrap_or(&0.0));
             x.total_cmp(y).then(b.cmp(a))
         })
-        .map(|path| name_of(&path))
+        .map(|path| name_of(path))
         .unwrap_or_default();
     match lens {
-        Lens::Calls => format!("around {}()", hub.rsplit("::").next().unwrap_or(&hub)),
+        // Its qualified name, `Pool::new`, so two `new`s are told apart.
+        Lens::Calls => format!("around {hub}()"),
         Lens::CoChange => format!("changes with {hub}"),
         _ => format!("around {hub}"),
     }

@@ -68,6 +68,7 @@ fn imports_lens(tree: &Tree) -> Harness<'static, CellworksApp> {
     let mut harness = open(tree, None, Recorded::listing(&[]));
     while harness.state().opened().map(|o| o.lens()) != Some(Lens::Imports) {
         harness.key_press(egui::Key::L);
+        common::await_lens(&mut harness);
         harness.run_steps(120);
     }
     harness

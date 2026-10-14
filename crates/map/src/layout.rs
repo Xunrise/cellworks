@@ -145,31 +145,46 @@ fn spiral(radii: &[f32], hole: f32, gap: f32) -> Vec<Pos2> {
     const GROWTH: f32 = 0.6;
     // Three turns back, to find room the spiral passed on its way out.
     const BACK: usize = 63;
-    let mut placed: Vec<(Pos2, f32)> = Vec::with_capacity(radii.len());
+    // Circles placed, bucketed on a grid as wide as the largest clearance
+    // two circles need: a circle that could touch a candidate lies in the
+    // candidate's bucket or one of the eight around it.
+    let widest = radii.iter().copied().fold(0.0, f32::max);
+    let bucket = (2.0 * widest + gap).max(1.0);
+    let key = |at: Pos2| {
+        (
+            (at.x / bucket).floor() as i64,
+            (at.y / bucket).floor() as i64,
+        )
+    };
+    let mut buckets: std::collections::HashMap<(i64, i64), Vec<(Pos2, f32)>> =
+        std::collections::HashMap::new();
+    let mut placed: Vec<Pos2> = Vec::with_capacity(radii.len());
     let mut step = 0usize;
     for (index, &r) in radii.iter().enumerate() {
-        if index == 0 && hole == 0.0 {
-            placed.push((Pos2::ZERO, r));
-            continue;
-        }
-        // ponytail: every candidate is checked against every circle placed;
-        // a grid of buckets if districts reach thousands of blocks.
-        step = step.saturating_sub(BACK);
-        loop {
-            let angle = step as f32 * TURN;
-            let distance = hole + r + step as f32 * GROWTH;
-            let at = pos2(angle.cos() * distance, angle.sin() * distance);
-            let free = placed
-                .iter()
-                .all(|(other, other_r)| (*other - at).length() > other_r + r + gap);
-            if free {
-                placed.push((at, r));
-                break;
+        let at = if index == 0 && hole == 0.0 {
+            Pos2::ZERO
+        } else {
+            step = step.saturating_sub(BACK);
+            loop {
+                let angle = step as f32 * TURN;
+                let distance = hole + r + step as f32 * GROWTH;
+                let at = pos2(angle.cos() * distance, angle.sin() * distance);
+                let (x, y) = key(at);
+                let free = (x - 1..=x + 1)
+                    .flat_map(|i| (y - 1..=y + 1).map(move |j| (i, j)))
+                    .filter_map(|cell| buckets.get(&cell))
+                    .flatten()
+                    .all(|(other, other_r)| (*other - at).length() > other_r + r + gap);
+                if free {
+                    break at;
+                }
+                step += 1;
             }
-            step += 1;
-        }
+        };
+        buckets.entry(key(at)).or_default().push((at, r));
+        placed.push(at);
     }
-    placed.into_iter().map(|(at, _)| at).collect()
+    placed
 }
 
 /// Moves `district` and everything on it by `offset`.

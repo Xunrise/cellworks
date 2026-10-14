@@ -83,6 +83,7 @@ fn to_cells(harness: &mut Harness<'static, CellworksApp>) -> ProjectMap {
             break;
         }
         harness.key_press(egui::Key::L);
+        common::await_lens(harness);
         harness.run_steps(120);
     }
     assert_eq!(
@@ -191,6 +192,7 @@ fn a_project_without_a_domain_model_offers_no_cells_lens() {
     let mut seen = Vec::new();
     for _ in 0..2 * Lens::ALL.len() {
         harness.key_press(egui::Key::L);
+        common::await_lens(&mut harness);
         harness.run_steps(120);
         seen.extend(harness.state().opened().map(|o| o.lens()));
     }

@@ -35,6 +35,12 @@ impl Flight {
         }
     }
 
+    /// Whether every tower has landed by time `now`: the last takes off
+    /// after the longest wait and flies for the full flight.
+    pub fn landed(&self, now: f64) -> bool {
+        now - self.started >= FLIGHT + STAGGER
+    }
+
     /// Moves every tower of `map` part of the way from where it stood to its
     /// place in `map`, as seen at time `now`; returns whether all have landed.
     /// A tower that did not stand anywhere before is simply there.

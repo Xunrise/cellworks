@@ -25,7 +25,7 @@ mod test_tree;
 use std::path::PathBuf;
 use std::sync::mpsc;
 
-pub use arrangement::{Arrangement, ArrangementStore};
+pub use arrangement::{Arrangement, ArrangementKeeper, ArrangementStore};
 pub use event::WorkspaceEvent;
 pub use project::{Project, ProjectId};
 pub use universe::{Notice, NoticeKind, ScanState, Universe};

@@ -59,6 +59,13 @@ pub struct Call {
     pub caller: PathBuf,
     pub floor: usize,
     pub callee: PathBuf,
+    /// The calling line's number, and the block the caller stands on.
+    pub line: usize,
+    pub block: PathBuf,
+    /// Where the arc starts, at the calling line, and ends, on top of the
+    /// called tower: a ground point and its height.
+    pub start: (Pos2, f32),
+    pub end: (Pos2, f32),
 }
 
 /// Where a lane runs: its points on the ground, the height of each, and
@@ -68,6 +75,36 @@ pub struct Route {
     pub points: Vec<Pos2>,
     pub heights: Vec<f32>,
     pub highway: bool,
+}
+
+/// The street grid's segments: (column or row, cell, horizontal) to how many
+/// lanes run along it and their width.
+pub type Streets = BTreeMap<(i32, i32, bool), (usize, f32)>;
+
+/// The lanes of one map worked out on the ground: the import flows and their
+/// routes, the street pieces the routes within districts share, and the
+/// calls. Worked out once per map, not once per frame.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Network {
+    pub flows: Vec<Flow>,
+    pub routes: Vec<Route>,
+    pub streets: Streets,
+    pub calls: Vec<Call>,
+}
+
+impl Network {
+    /// The lanes of `map`.
+    pub fn of(map: &ProjectMap) -> Network {
+        let flows = import_flows(map);
+        let routes = routes(map, &flows);
+        let streets = streets(&flows, &routes);
+        Network {
+            calls: calls(map),
+            flows,
+            routes,
+            streets,
+        }
+    }
 }
 
 /// The street grid lanes run on, in layout points.
@@ -133,8 +170,8 @@ pub fn calls(map: &ProjectMap) -> Vec<Call> {
         .map(|item| (item.path.as_path(), item))
         .collect();
     let mut calls = Vec::new();
-    for district in &map.districts {
-        for item in graph::items(district) {
+    for node in map.districts.iter().flat_map(graph::nodes) {
+        for item in &node.items {
             if item.kind == ItemKind::Uses || city::in_cellar(item) {
                 continue;
             }
@@ -144,10 +181,15 @@ pub fn calls(map: &ProjectMap) -> Vec<Call> {
                         continue;
                     };
                     if callee.path != item.path && !city::in_cellar(callee) {
+                        let (start, _) = city::floor_span(item, floor);
                         calls.push(Call {
                             caller: item.path.clone(),
                             floor,
                             callee: callee.path.clone(),
+                            line: line.number,
+                            block: node.path.clone(),
+                            start: (start, city::floor_z(item, floor)),
+                            end: (callee.area.center(), city::height(callee)),
                         });
                     }
                 }
@@ -273,8 +315,8 @@ fn crossing(map: &ProjectMap, p: usize, q: usize, lane: f32) -> Option<(Pos2, Po
         let (low, high) = (a0.max(b0), a1.min(b1));
         ((low + high) / 2.0 + lane).clamp(low + 2.0, (high - 2.0).max(low + 2.0))
     };
-    // Steps stand a small gap apart; anything closer than this shares an edge.
-    const NEAR: f32 = 20.0;
+    // Steps stand `STEP_GAP` apart; anything a few gaps close shares an edge.
+    const NEAR: f32 = crate::lens::STEP_GAP * 3.0;
     if (b.max.x - a.min.x).abs() < NEAR {
         let y = middle(a.min.y, a.max.y, b.min.y, b.max.y);
         Some((pos2(a.min.x, y), pos2(b.max.x, y)))
@@ -317,7 +359,7 @@ fn offsets(streets: &BTreeMap<usize, Vec<(usize, usize)>>) -> HashMap<usize, f32
 /// The pieces of grid street the lanes within districts share, and how many
 /// imports run along each: one piece of `GRID` from its grid corner, along
 /// ground x or along ground y.
-pub fn streets(flows: &[Flow], routes: &[Route]) -> BTreeMap<(i32, i32, bool), (usize, f32)> {
+pub fn streets(flows: &[Flow], routes: &[Route]) -> Streets {
     let cell = |v: f32| (v / GRID).round() as i32;
     let mut pieces = BTreeMap::new();
     for (flow, route) in flows.iter().zip(routes).filter(|(_, r)| !r.highway) {

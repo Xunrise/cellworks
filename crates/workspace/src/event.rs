@@ -7,12 +7,13 @@
 use std::path::PathBuf;
 
 use crate::project::Project;
+use crate::{Arrangement, ProjectId};
 
 /// Something the Workspace context has finished doing.
 ///
 /// Sent from the scan thread over a `std::sync::mpsc` channel and drained by
 /// the UI thread once per frame.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum WorkspaceEvent {
     /// The scan finished: these are the projects of the universe, sorted by
     /// canonical path. Exactly one of these is sent per scan, even when the
@@ -27,4 +28,9 @@ pub enum WorkspaceEvent {
     /// The settings file exists but could not be read or parsed. The projects
     /// found under the projects folder are reported all the same.
     SettingsUnreadable { path: PathBuf, reason: String },
+    /// A project's custom arrangement was read: empty when none was kept.
+    ArrangementRead {
+        project: ProjectId,
+        arrangement: Arrangement,
+    },
 }

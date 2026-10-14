@@ -143,6 +143,7 @@ impl Shop {
                 break;
             }
             self.harness.key_press(egui::Key::L);
+            common::await_lens(&mut self.harness);
             // Traffic on the lanes keeps asking for frames: two seconds of
             // them, enough for every tower to land.
             self.harness.run_steps(120);
@@ -289,7 +290,15 @@ fn switching_lens_moves_every_tower_to_its_new_place() {
 
     shop.harness.key_press(egui::Key::L);
     shop.harness.step();
-    let started = shop.harness.ctx.input(|input| input.time);
+    common::await_lens(&mut shop.harness);
+    // From the moment of the switch: frames pass while the new map is
+    // worked out, and a tower may already be in the air.
+    let started = shop
+        .harness
+        .state()
+        .opened()
+        .and_then(|o| o.switched_at())
+        .expect("the lens switched");
     let at = |shop: &Shop, time: f64| {
         let shown = shop
             .harness

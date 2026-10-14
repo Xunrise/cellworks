@@ -4,16 +4,16 @@
 //! lanes, a selected block, folder or district everything in or out of it;
 //! a lane pointed at or picked stands out with what it carries.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use egui::{Color32, Pos2, Rect, Shape, Stroke, StrokeKind, pos2, vec2};
 
 use super::{DIM, INK, LINE_STRONG, PANEL};
+use crate::Item;
 use crate::graph::ProjectMap;
 use crate::lanes::{self, LaneId, LaneKind, Lanes};
 use crate::view::View;
-use crate::{Item, city};
 
 /// One lane as drawn this frame.
 #[derive(Clone, Debug, PartialEq)]
@@ -56,16 +56,19 @@ pub(super) struct Focus<'a> {
     pub selected: Option<&'a Path>,
     /// The lane picked, kept lit.
     pub picked: Option<&'a LaneId>,
+    /// The lanes of the map, worked out once for it; none while the towers
+    /// fly.
+    pub network: Option<&'a lanes::Network>,
     pub pointer: Option<Pos2>,
 }
 
 /// The lanes of one frame, worked out before any is drawn: the import lanes
 /// go under the towers, the call lanes over them.
-pub(super) struct Frame {
+pub(super) struct Frame<'a> {
     pub lanes: Vec<DrawnLane>,
     /// The street pieces lanes within districts share, and the imports along
     /// each, drawn only in the overview.
-    streets: BTreeMap<(i32, i32, bool), (usize, f32)>,
+    streets: Option<&'a lanes::Streets>,
     /// The lane under the pointer, the arcs before the pipes.
     pub hovered: Option<usize>,
     /// Whether only what is lit is drawn: something is selected or picked.
@@ -109,30 +112,28 @@ fn file_name(path: &Path) -> String {
 }
 
 /// Works out the lanes `focus` shows on `map` this frame.
-pub(super) fn frame(map: &ProjectMap, view: &View, focus: &Focus<'_>) -> Frame {
+pub(super) fn frame<'a>(map: &ProjectMap, view: &View, focus: &Focus<'a>) -> Frame<'a> {
     let mut lanes = Vec::new();
-    let mut streets = BTreeMap::new();
+    let mut streets = None;
+    let Some(network) = focus
+        .network
+        .filter(|_| focus.shown.imports || focus.shown.calls)
+    else {
+        return Frame {
+            lanes,
+            streets,
+            hovered: None,
+            only_lit: false,
+        };
+    };
+    let flows: &[lanes::Flow] = if focus.shown.imports {
+        &network.flows
+    } else {
+        &[]
+    };
     if focus.shown.imports {
-        let flows = lanes::import_flows(map);
-        let routes = lanes::routes(map, &flows);
-        streets = lanes::streets(&flows, &routes);
-        for (flow, route) in flows.iter().zip(&routes) {
-            let names: Vec<String> = flow
-                .imports
-                .iter()
-                .map(|(_, target)| {
-                    map.item(target)
-                        .map_or_else(|| file_name(target), |i| i.name.clone())
-                })
-                .collect();
-            let mut shown: Vec<&str> = names.iter().map(String::as_str).take(4).collect();
-            shown.dedup();
-            let more = names.len().saturating_sub(shown.len());
-            let more = if more > 0 {
-                format!(", +{more}")
-            } else {
-                String::new()
-            };
+        streets = Some(&network.streets);
+        for (flow, route) in flows.iter().zip(&network.routes) {
             lanes.push(DrawnLane {
                 id: LaneId {
                     kind: LaneKind::Imports,
@@ -158,82 +159,36 @@ pub(super) fn frame(map: &ProjectMap, view: &View, focus: &Focus<'_>) -> Frame {
                 shown: true,
                 streak: false,
                 ends: [flow.imports[0].0.clone(), flow.imports[0].1.clone()],
-                card: vec![format!(
-                    "{} imports from {}  {}: {}{more}",
-                    file_name(&flow.from),
-                    file_name(&flow.to),
-                    names.len(),
-                    shown.join(", ")
-                )],
+                card: Vec::new(),
             });
         }
     }
     if focus.shown.calls {
-        for call in lanes::calls(map) {
-            let (Some(caller), Some(callee)) = (map.item(&call.caller), map.item(&call.callee))
-            else {
-                continue;
-            };
-            let block = map
-                .find(&caller.path)
-                .and_then(|found| found.parent)
-                .unwrap_or(&caller.path);
-            let file = |item: &Item| file_name(item.path.parent().unwrap_or(&item.path));
-            let floor = &caller.floors[call.floor];
+        for call in &network.calls {
             lanes.push(DrawnLane {
                 id: LaneId {
                     kind: LaneKind::Calls,
-                    from: caller.path.clone(),
-                    to: callee.path.clone(),
+                    from: call.caller.clone(),
+                    to: call.callee.clone(),
                     floor: Some(call.floor),
                 },
                 kind: LaneKind::Calls,
-                from: caller.path.clone(),
-                to: callee.path.clone(),
-                line: Some(floor.number),
-                screen: arc(view, caller, call.floor, callee),
+                from: call.caller.clone(),
+                to: call.callee.clone(),
+                line: Some(call.line),
+                screen: arc(view, call.start, call.end),
                 ground: Vec::new(),
                 heights: Vec::new(),
                 highway: false,
-                colour: colour_of(block),
+                colour: colour_of(&call.block),
                 lit: false,
                 shown: true,
                 streak: false,
-                ends: [caller.path.clone(), callee.path.clone()],
-                card: vec![
-                    format!(
-                        "{}:{} {} calls {} ({})",
-                        file(caller),
-                        floor.number,
-                        caller.name,
-                        callee.name,
-                        file(callee)
-                    ),
-                    format!("    {}", floor.text.trim()),
-                ],
+                ends: [call.caller.clone(), call.callee.clone()],
+                card: Vec::new(),
             });
         }
     }
-
-    // Under the pointer: an arc wins over the pipe beneath it.
-    let hovered = focus.pointer.and_then(|at| {
-        let near = |lane: &DrawnLane| {
-            let reach = if lane.kind == LaneKind::Calls {
-                4.0
-            } else {
-                4.0 + width(1) / 2.0
-            };
-            distance_to(&lane.screen, at) < reach
-        };
-        let calls = lanes
-            .iter()
-            .position(|l| l.kind == LaneKind::Calls && near(l));
-        calls.or_else(|| {
-            lanes
-                .iter()
-                .position(|l| l.kind == LaneKind::Imports && near(l))
-        })
-    });
 
     // A selected tower: only its own lanes. A selected block, folder or
     // district: everything in or out of it.
@@ -250,30 +205,23 @@ pub(super) fn frame(map: &ProjectMap, view: &View, focus: &Focus<'_>) -> Frame {
                 .collect()
         })
         .unwrap_or_default();
-    let flows = if focus.shown.imports {
-        lanes::import_flows(map)
-    } else {
-        Vec::new()
-    };
     for (i, lane) in lanes.iter_mut().enumerate() {
+        // The import lanes come first, one per flow, in the same order.
+        let flow = flows.get(i).filter(|_| lane.kind == LaneKind::Imports);
         let own = match (lane.kind, tower) {
-            (LaneKind::Imports, Some(tower)) => flows
-                .iter()
-                .find(|f| f.from == lane.from && f.to == lane.to)
-                .is_some_and(|f| f.imports.iter().any(|(by, of)| by == tower || of == tower)),
-            (LaneKind::Imports, None) => flows
-                .iter()
-                .find(|f| f.from == lane.from && f.to == lane.to)
-                .is_some_and(|f| {
-                    f.imports
-                        .iter()
-                        .any(|(by, of)| held.contains(by.as_path()) || held.contains(of.as_path()))
-                }),
+            (LaneKind::Imports, Some(tower)) => {
+                flow.is_some_and(|f| f.imports.iter().any(|(by, of)| by == tower || of == tower))
+            }
+            (LaneKind::Imports, None) => flow.is_some_and(|f| {
+                f.imports
+                    .iter()
+                    .any(|(by, of)| held.contains(by.as_path()) || held.contains(of.as_path()))
+            }),
             (LaneKind::Calls, _) => {
                 held.contains(lane.from.as_path()) || held.contains(lane.to.as_path())
             }
         };
-        lane.lit = own || hovered == Some(i) || focus.picked == Some(&lane.id);
+        lane.lit = own || focus.picked == Some(&lane.id);
     }
     // A selection that holds no item (the project itself) has nothing to
     // filter by.
@@ -281,11 +229,95 @@ pub(super) fn frame(map: &ProjectMap, view: &View, focus: &Focus<'_>) -> Frame {
     for lane in &mut lanes {
         lane.shown = lane.lit || !only_lit;
     }
+    // Under the pointer: an arc wins over the pipe beneath it.
+    let hovered = focus.pointer.and_then(|at| {
+        let near = |lane: &DrawnLane| {
+            let reach = if lane.kind == LaneKind::Calls {
+                4.0
+            } else {
+                4.0 + width(1) / 2.0
+            };
+            distance_to(&lane.screen, at) < reach
+        };
+        // Only a lane drawn can be pointed at.
+        let calls = lanes
+            .iter()
+            .position(|l| l.shown && l.kind == LaneKind::Calls && near(l));
+        calls.or_else(|| {
+            lanes
+                .iter()
+                .position(|l| l.shown && l.kind == LaneKind::Imports && near(l))
+        })
+    });
+
+    if let Some(i) = hovered {
+        lanes[i].lit = true;
+    }
+    // Only a lane pointed at or picked is read, so only its card is written.
+    for (i, lane) in lanes.iter_mut().enumerate() {
+        if hovered == Some(i) || focus.picked == Some(&lane.id) {
+            lane.card = card_text(lane, flows.get(i), map);
+        }
+    }
     Frame {
         lanes,
         streets,
         hovered,
         only_lit,
+    }
+}
+
+/// What `lane` reads when pointed at or picked: an import lane the files
+/// and the names imported through it (`flow`), a call lane the calling
+/// line.
+fn card_text(lane: &DrawnLane, flow: Option<&lanes::Flow>, map: &ProjectMap) -> Vec<String> {
+    match (lane.kind, flow) {
+        (LaneKind::Imports, Some(flow)) => {
+            let names: Vec<String> = flow
+                .imports
+                .iter()
+                .map(|(_, target)| {
+                    map.item(target)
+                        .map_or_else(|| file_name(target), |item| item.name.clone())
+                })
+                .collect();
+            let mut shown: Vec<&str> = names.iter().map(String::as_str).take(4).collect();
+            shown.dedup();
+            let more = names.len().saturating_sub(shown.len());
+            let more = if more > 0 {
+                format!(", +{more}")
+            } else {
+                String::new()
+            };
+            vec![format!(
+                "{} imports from {}  {}: {}{more}",
+                file_name(&flow.from),
+                file_name(&flow.to),
+                names.len(),
+                shown.join(", ")
+            )]
+        }
+        (LaneKind::Calls, _) => {
+            let (Some(caller), Some(callee)) = (map.item(&lane.from), map.item(&lane.to)) else {
+                return Vec::new();
+            };
+            let file = |item: &Item| file_name(item.path.parent().unwrap_or(&item.path));
+            let Some(floor) = lane.id.floor.and_then(|f| caller.floors.get(f)) else {
+                return Vec::new();
+            };
+            vec![
+                format!(
+                    "{}:{} {} calls {} ({})",
+                    file(caller),
+                    floor.number,
+                    caller.name,
+                    callee.name,
+                    file(callee)
+                ),
+                format!("    {}", floor.text.trim()),
+            ]
+        }
+        (LaneKind::Imports, None) => Vec::new(),
     }
 }
 
@@ -299,7 +331,7 @@ pub(super) fn draw(
 ) {
     let quiet_pipe = PIPE.gamma_multiply(if frame.only_lit { 0.0 } else { 0.3 });
     if kind == LaneKind::Imports && !frame.only_lit {
-        for (&(i, j, along_x), &(carried, z)) in &frame.streets {
+        for (&(i, j, along_x), &(carried, z)) in frame.streets.into_iter().flatten() {
             let start = pos2(i as f32 * lanes::GRID, j as f32 * lanes::GRID);
             let end = if along_x {
                 start + vec2(lanes::GRID, 0.0)
@@ -392,7 +424,12 @@ pub(super) fn draw(
 
 /// Draws the card of the lane hovered, or else of the lane picked at its
 /// middle, on top of everything.
-pub(super) fn card(ui: &egui::Ui, frame: &Frame, picked: Option<&LaneId>, pointer: Option<Pos2>) {
+pub(super) fn card(
+    ui: &egui::Ui,
+    frame: &Frame<'_>,
+    picked: Option<&LaneId>,
+    pointer: Option<Pos2>,
+) {
     let (lane, at) = match (frame.hovered, pointer) {
         (Some(i), Some(at)) => (&frame.lanes[i], at),
         _ => {
@@ -454,12 +491,11 @@ pub(super) fn card(ui: &egui::Ui, frame: &Frame, picked: Option<&LaneId>, pointe
     }
 }
 
-/// The arc from the start of floor `floor` of `caller` up and over to the
-/// top of `callee`, on screen.
-fn arc(view: &View, caller: &Item, floor: usize, callee: &Item) -> Vec<Pos2> {
-    let (start, _) = city::floor_span(caller, floor);
-    let a = view.to_screen(start, city::floor_z(caller, floor));
-    let b = view.to_screen(callee.area.center(), city::height(callee));
+/// The arc from `start` up and over to `end`, each a ground point and its
+/// height, on screen.
+fn arc(view: &View, start: (Pos2, f32), end: (Pos2, f32)) -> Vec<Pos2> {
+    let a = view.to_screen(start.0, start.1);
+    let b = view.to_screen(end.0, end.1);
     let rise = ((b - a).length() * 0.35).max(12.0);
     let top = pos2((a.x + b.x) / 2.0, a.y.min(b.y) - rise);
     (0..=16)

@@ -10,8 +10,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 
-use crate::ProjectId;
+use crate::{ProjectId, WorkspaceEvent};
 
 /// How far each element of one project was moved, by its path relative to
 /// the project, in the map's unturned ground units.
@@ -76,19 +77,70 @@ impl ArrangementStore {
             .iter()
             .map(|(path, (x, y))| format!("{x}\t{y}\t{}\n", path.display()))
             .collect();
-        fs::write(self.file(project), text)
+        // Written whole beside it, then put in its place: a write cut short
+        // never leaves half an arrangement.
+        let file = self.file(project);
+        let written = file.with_extension("tsv.new");
+        fs::write(&written, text)?;
+        fs::rename(written, file)
     }
 
     /// The file of `project`: its path with every character that is not a
-    /// letter or a digit written as `_`.
+    /// letter or a digit written as `_`, and a hash of the path, so
+    /// `my-shop` and `my_shop` keep arrangements of their own.
     fn file(&self, project: &ProjectId) -> PathBuf {
-        let name: String = project
-            .path()
-            .to_string_lossy()
+        let path = project.path().to_string_lossy();
+        let name: String = path
             .chars()
             .map(|c| if c.is_alphanumeric() { c } else { '_' })
             .collect();
-        self.folder.join(format!("{name}.tsv"))
+        let hash = path.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        });
+        self.folder.join(format!("{name}-{hash:016x}.tsv"))
+    }
+
+    /// Reads `project`'s arrangement on a thread of its own, reported as
+    /// [`WorkspaceEvent::ArrangementRead`].
+    pub fn start_read(&self, project: ProjectId) -> mpsc::Receiver<WorkspaceEvent> {
+        let (sender, receiver) = mpsc::channel();
+        let store = self.clone();
+        std::thread::spawn(move || {
+            let arrangement = store.load(&project);
+            // A send that fails is the UI having gone away.
+            let _ = sender.send(WorkspaceEvent::ArrangementRead {
+                project,
+                arrangement,
+            });
+        });
+        receiver
+    }
+
+    /// A thread that keeps every arrangement handed to it, one after the
+    /// other in the order handed: the last one kept is the last one handed.
+    pub fn start_keeping(&self) -> ArrangementKeeper {
+        let (sender, receiver) = mpsc::channel::<(ProjectId, Arrangement)>();
+        let store = self.clone();
+        std::thread::spawn(move || {
+            for (project, arrangement) in receiver {
+                // A failed write only loses the move.
+                let _ = store.save(&project, &arrangement);
+            }
+        });
+        ArrangementKeeper { sender }
+    }
+}
+
+/// Where arrangements go to be kept, off the frame loop and in order.
+#[derive(Clone, Debug)]
+pub struct ArrangementKeeper {
+    sender: mpsc::Sender<(ProjectId, Arrangement)>,
+}
+
+impl ArrangementKeeper {
+    /// Keeps `arrangement` as `project`'s.
+    pub fn keep(&self, project: ProjectId, arrangement: Arrangement) {
+        let _ = self.sender.send((project, arrangement));
     }
 }
 
@@ -118,6 +170,43 @@ mod tests {
             store.load(&Project::at(PathBuf::from("/p/other")).id),
             Arrangement::default()
         );
+    }
+
+    #[test]
+    fn projects_whose_paths_differ_only_in_punctuation_keep_their_own() {
+        let folder = tempfile::tempdir().expect("a temporary directory");
+        let store = ArrangementStore::at(folder.path().to_path_buf());
+        let (dash, underscore) = (
+            Project::at(PathBuf::from("/p/my-shop")).id,
+            Project::at(PathBuf::from("/p/my_shop")).id,
+        );
+        let mut moved = Arrangement::default();
+        moved.moved(PathBuf::from("a.rs"), (1.0, 0.0));
+
+        store.save(&dash, &moved).expect("kept");
+
+        assert_eq!(store.load(&dash), moved);
+        assert_eq!(store.load(&underscore), Arrangement::default());
+    }
+
+    #[test]
+    fn arrangements_handed_one_after_the_other_are_kept_in_that_order() {
+        let folder = tempfile::tempdir().expect("a temporary directory");
+        let store = ArrangementStore::at(folder.path().join("arrangements"));
+        let shop = Project::at(PathBuf::from("/p/shop")).id;
+        let keeper = store.start_keeping();
+        let mut last = Arrangement::default();
+        for n in 0..20 {
+            last.moved(PathBuf::from("a.rs"), (n as f32, 0.0));
+            keeper.keep(shop.clone(), last.clone());
+        }
+        drop(keeper);
+
+        let started = std::time::Instant::now();
+        while store.load(&shop) != last && started.elapsed() < std::time::Duration::from_secs(5) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(store.load(&shop), last);
     }
 
     #[test]

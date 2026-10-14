@@ -29,7 +29,7 @@ pub use graph::{
     CoChange, District, DistrictKind, Element, Floor, Found, Group, Item, ItemKind, Node,
     ProjectMap, SubDistrict, Token,
 };
-pub use lanes::{LaneId, LaneKind, Lanes};
+pub use lanes::{LaneId, LaneKind, Lanes, Network};
 pub use lens::{Flight, Lens, relens};
 pub use rules::{PREFIX_RULES, PrefixRule, default_prefix_rule, prefix_rule};
 pub use view::{Pivot, View, turn_at};

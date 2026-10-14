@@ -23,7 +23,7 @@ use crate::layout;
 pub(crate) const LEVEL: f32 = 90.0;
 
 /// The space left between two steps, and between rows within a district.
-const STEP_GAP: f32 = 6.0;
+pub(crate) const STEP_GAP: f32 = 6.0;
 const ROW_GAP: f32 = 12.0;
 
 /// The import cycles of `units`: units that import each other in a loop
