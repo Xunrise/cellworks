@@ -33,10 +33,10 @@ pub struct ProjectMap {
     pub co_changes: Vec<CoChange>,
     /// The lens the districts were made by.
     pub lens: Lens,
-    /// For every item, the index of the district it stands in under the
-    /// folders lens: its crate, whose colour it keeps in every lens. Empty
-    /// for a map made by the folders or the custom lens, where that is its
-    /// own district.
+    /// For every file, the index of the district its items stand in under
+    /// the folders lens: its crate, whose colour they keep in every lens.
+    /// Empty for a map made by the folders or the custom lens, where that is
+    /// their own district.
     pub homes: BTreeMap<PathBuf, usize>,
     /// The district a lens put in the middle of the others, if it did.
     pub hub: Option<usize>,
@@ -124,16 +124,54 @@ pub struct Group {
 pub struct Node {
     pub name: String,
     pub path: PathBuf,
-    /// The functions, types and `use` blocks the file holds, in source order.
-    /// Empty for a file no loader reads the code of.
+    /// The items standing on its block: the functions, types and `use`
+    /// blocks the file holds, in source order, then the parts written in
+    /// other files of the buildings whose base the file holds. A part of a
+    /// building based in another file stands there instead. Empty for a file
+    /// no loader reads the code of.
     pub items: Vec<Item>,
     pub area: Rect,
+    /// What kind of file it is, as its loader tells it; the map stands its
+    /// items as the building of that kind.
+    pub kind: NodeKind,
+}
+
+/// The kinds of node the map builds differently, as a loader tells them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum NodeKind {
+    /// Code, or anything no other kind fits.
+    #[default]
+    Code,
+    /// Prose in sections: Markdown, reStructuredText.
+    Document,
+    /// Settings in nested keys: YAML, JSON, TOML.
+    Configuration,
+    /// Behaviour written as scenarios: Gherkin.
+    Specification,
+    /// Infrastructure as code in top-level blocks: Terraform.
+    Infrastructure,
+    /// What builds or ships the project: a Dockerfile, a Makefile, a script.
+    Build,
+    /// An interface agreed between services: Protocol Buffers.
+    Contract,
+    /// Secret values, never held or shown.
+    Secrets,
+    /// An example of the secret values, without them.
+    SecretsExample,
+    /// Written by a tool, not by hand: a lockfile, a snapshot.
+    Generated,
+    /// The shape of stored data: SQL.
+    Schema,
+    /// A picture.
+    Image,
 }
 
 /// A function, a type or a block of `use` statements inside a node.
 ///
-/// Its path is the node's path joined with its qualified name
-/// (`pricing.rs/Cart::total`), so it is unique within the project.
+/// Its path is its file's path joined with its qualified name
+/// (`pricing.rs/Cart::total`), so it is unique within the project. It
+/// usually stands on its file's node, but a part of a building stands
+/// wherever its building does: find it by its path, never by its file.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Item {
     pub name: String,
@@ -146,8 +184,56 @@ pub struct Item {
     pub floors: Vec<Floor>,
     /// The ground the item stands on, at the layout's own scale.
     pub area: Rect,
-    /// The height of that ground: 0, or how high its district is raised.
+    /// The height of that ground: 0, or how high its district is raised,
+    /// and for a part of a building how high the part below it reaches.
     pub base: f32,
+    /// What its loader says it declares, from which the map chooses the
+    /// building it stands as.
+    pub declaration: Declaration,
+}
+
+impl Item {
+    /// The file whose block it stands on in the folders lens: its own, or
+    /// for a part of a building that of the item it is part of.
+    pub(crate) fn standing_file(&self) -> Option<&Path> {
+        self.declaration
+            .part_of
+            .as_deref()
+            .unwrap_or(&self.path)
+            .parent()
+    }
+}
+
+/// What an item declares, as its loader read it: enough for the map to
+/// choose the building it stands as without knowing the language.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Declaration {
+    pub declares: Declares,
+    /// Whether code outside its module may use it.
+    pub public: bool,
+    /// The item it is part of: a method's type, a nested level's key, a
+    /// scenario's feature header.
+    pub part_of: Option<PathBuf>,
+    /// The interfaces it implements, by name as written (`Display`), in
+    /// source order.
+    pub implements: Vec<String>,
+    /// For each floor holding another item (a field of that type): the
+    /// floor's index and that item's path.
+    pub holds: Vec<(usize, PathBuf)>,
+}
+
+/// The kinds of declaration the map builds differently.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Declares {
+    /// Anything else: a function, a type with fields, a block of imports.
+    #[default]
+    Plain,
+    /// A choice among variants: for each variant, whether it carries data.
+    Enum { carries_data: Vec<bool> },
+    /// A named value that never changes.
+    Constant,
+    /// Where a program starts.
+    EntryPoint,
 }
 
 /// What an item is in its source.
@@ -157,8 +243,11 @@ pub enum ItemKind {
     Test,
     Type,
     Uses,
-    /// The lines of a file no parser reads, as one item.
+    /// The lines of a file no parser reads, as one item, or a part of such
+    /// a file: a key, a scenario, a block.
     Text,
+    /// A section of a document, from its heading to the next.
+    Section,
 }
 
 /// One line of an item.
@@ -432,7 +521,7 @@ impl ProjectMap {
     /// The paths of the elements under `point`, the district first and the
     /// innermost last: the district, and when `point` is on a block, the
     /// folders down to that block's node and the node; off every block, the
-    /// folders whose ring holds it. Empty when `point` lies between
+    /// folders whose ground holds it. Empty when `point` lies between
     /// districts.
     pub fn at(&self, point: Pos2) -> Vec<&Path> {
         /// The folders down to the node whose block holds `point`, and that
@@ -457,11 +546,7 @@ impl ProjectMap {
                 found
             })
         }
-        // Districts and folders are round: the square around a ring overlaps
-        // its neighbours' at the corners.
-        let round = |area: Rect| (area.center() - point).length() <= area.width() / 2.0;
-        let within = |d: &&District| round(d.area);
-        let Some(district) = self.districts.iter().find(within) else {
+        let Some(district) = self.districts.iter().find(|d| d.area.contains(point)) else {
             return Vec::new();
         };
         let mut chain = vec![district.path.as_path()];
@@ -475,13 +560,17 @@ impl ProjectMap {
             }
             chain.pop();
         }
-        // Off every block: the folders whose ring holds `point`.
+        // Off every block: the folders whose ground holds `point`.
         let mut groups: &[Group] = &[];
-        if let Some(sub) = district.sub_districts.iter().find(|s| round(s.area)) {
+        if let Some(sub) = district
+            .sub_districts
+            .iter()
+            .find(|s| s.area.contains(point))
+        {
             chain.push(&sub.path);
             groups = &sub.groups;
         }
-        while let Some(group) = groups.iter().find(|g| round(g.area)) {
+        while let Some(group) = groups.iter().find(|g| g.area.contains(point)) {
             chain.push(&group.path);
             groups = &group.groups;
         }

@@ -74,22 +74,35 @@ impl Index {
         item: &ParsedItem,
         call: &Call,
     ) -> Option<&PathBuf> {
+        self.resolve_in(module, code, &item.module, item.owner.as_deref(), call)
+    }
+
+    /// The path of the item `call` names when written in the module `inner`
+    /// inside the file at `module`, in an `impl` block for `owner` if any:
+    /// a call, or a type's name written in an `impl` header or a field.
+    pub fn resolve_in(
+        &self,
+        module: &Module,
+        code: &FileCode,
+        inner: &[String],
+        owner: Option<&str>,
+        call: &Call,
+    ) -> Option<&PathBuf> {
         let mut scope = module.path.clone();
-        scope.extend(item.module.iter().cloned());
+        scope.extend(inner.iter().cloned());
         let written = match call {
             Call::Method(name) => vec!["Self".to_owned(), name.clone()],
             Call::Path(segments) => segments.clone(),
         };
-        let written = match (written.first().map(String::as_str), &item.owner) {
+        let written = match (written.first().map(String::as_str), owner) {
             (Some("Self"), Some(owner)) => {
-                let mut path = vec!["self".to_owned(), owner.clone()];
+                let mut path = vec!["self".to_owned(), owner.to_owned()];
                 path.extend(written.into_iter().skip(1));
                 path
             }
             (Some("Self"), None) => return None,
             _ => written,
         };
-        let inner = &item.module;
         self.candidates(&module.krate, &scope, code, inner, &written, 0)
             .into_iter()
             .find_map(|key| self.follow(key, 0))

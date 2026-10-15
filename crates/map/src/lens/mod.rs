@@ -4,7 +4,7 @@
 //! stable home.
 
 mod cells;
-mod cluster;
+pub(crate) mod cluster;
 mod custom;
 mod flight;
 mod relation;
@@ -175,7 +175,7 @@ pub fn relens(folders: &ProjectMap, lens: Lens) -> ProjectMap {
         _ => relation::clustered,
     };
     let mut districts = relation::rebuild(folders, lens, blocks);
-    layout::lay_out(&mut districts);
+    layout::lay_out(&mut districts, &folders.root);
     let weights = between_districts(folders, lens, &districts);
     match lens {
         Lens::CoChange => map.hub = shape::orbit(&mut districts, &weights),
@@ -190,8 +190,14 @@ pub fn relens(folders: &ProjectMap, lens: Lens) -> ProjectMap {
                 .iter()
                 .flat_map(|district| &district.nodes)
                 .filter(|node| {
-                    let mut files: Vec<&std::path::Path> =
-                        node.items.iter().filter_map(|i| i.path.parent()).collect();
+                    // A part of a building written in another file stands
+                    // with its base: the bases say which files the block holds.
+                    let mut files: Vec<&std::path::Path> = node
+                        .items
+                        .iter()
+                        .filter(|i| i.declaration.part_of.is_none())
+                        .filter_map(|i| i.path.parent())
+                        .collect();
                     files.sort();
                     files.dedup();
                     files.len() > 1
@@ -207,8 +213,9 @@ pub fn relens(folders: &ProjectMap, lens: Lens) -> ProjectMap {
     map
 }
 
-/// For every item of `folders`, the index of the district it stands in
-/// there: its crate, whose colour it keeps in every lens.
+/// For every file of `folders`, the index of the district its items stand
+/// in there, a part of a building with the item it is part of: its crate,
+/// whose colour they keep in every lens.
 fn homes(folders: &ProjectMap) -> BTreeMap<std::path::PathBuf, usize> {
     folders
         .districts
@@ -217,7 +224,7 @@ fn homes(folders: &ProjectMap) -> BTreeMap<std::path::PathBuf, usize> {
         .flat_map(|(d, district)| {
             graph::items(district)
                 .into_iter()
-                .map(move |item| (item.path.clone(), d))
+                .filter_map(move |item| Some((item.standing_file()?.to_path_buf(), d)))
         })
         .collect()
 }
@@ -268,6 +275,7 @@ fn between_districts(
                 // two districts add up between the districts.
                 file: std::path::PathBuf::from(d.to_string()),
                 items: node.items.clone(),
+                kind: node.kind,
             })
         })
         .collect();

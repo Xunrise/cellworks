@@ -279,12 +279,12 @@ pub(crate) fn staircase(
     order
 }
 
-/// Raises `district` and everything standing on it to `height`.
+/// Raises `district` and everything standing on it by `height`.
 fn raise(district: &mut District, height: f32) {
     district.elevation = height;
     for node in crate::graph::nodes_mut(std::slice::from_mut(district)) {
         for item in &mut node.items {
-            item.base = height;
+            item.base += height;
         }
     }
 }

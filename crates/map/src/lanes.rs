@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use egui::{Pos2, Rect, pos2};
 
+use crate::Buildings;
 use crate::city;
 use crate::graph::{self, ItemKind, ProjectMap};
 
@@ -83,13 +84,16 @@ pub type Streets = BTreeMap<(i32, i32, bool), (usize, f32)>;
 
 /// The lanes of one map worked out on the ground: the import flows and their
 /// routes, the street pieces the routes within districts share, and the
-/// calls. Worked out once per map, not once per frame.
+/// calls; and what its buildings show of themselves. Worked out once per map,
+/// not once per frame.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Network {
     pub flows: Vec<Flow>,
     pub routes: Vec<Route>,
     pub streets: Streets,
     pub calls: Vec<Call>,
+    /// What each building shows of itself.
+    pub buildings: Buildings,
 }
 
 impl Network {
@@ -99,6 +103,7 @@ impl Network {
         let routes = routes(map, &flows);
         let streets = streets(&flows, &routes);
         Network {
+            buildings: Buildings::of(map),
             calls: calls(map),
             flows,
             routes,

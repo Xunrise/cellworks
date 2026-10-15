@@ -189,18 +189,10 @@ fn a_district_grows_to_keep_a_block_moved_out_of_it() {
 
     let after = common::map(&harness);
     let (district, moved) = (area(&after, &catalog), area(&after, &pricing));
-    let radius = district.width() / 2.0;
-    for corner in [
-        moved.left_top(),
-        moved.right_top(),
-        moved.left_bottom(),
-        moved.right_bottom(),
-    ] {
-        assert!(
-            (corner - district.center()).length() <= radius,
-            "{corner:?} outside {district:?}"
-        );
-    }
+    assert!(
+        district.contains_rect(moved),
+        "{moved:?} outside {district:?}"
+    );
     assert_eq!(
         after.find(&pricing).and_then(|f| f.parent),
         Some(catalog.as_path())

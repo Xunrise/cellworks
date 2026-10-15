@@ -1,13 +1,15 @@
-//! One Rust file read with tree-sitter: its functions, types and `use` blocks
-//! with their line ranges, the token positions on every line, the calls each
-//! function makes as written, and the names its `use` statements bring in.
+//! One Rust file read with tree-sitter: its functions, types, constants and
+//! `use` blocks with their line ranges and what each declares, the token
+//! positions on every line, the calls each function makes as written, the
+//! traits its `impl` blocks implement, and the names its `use` statements
+//! bring in.
 //!
 //! Pure: a string in, plain data out. Resolving a call to the item it names
 //! needs the other files and is [`super::resolve`]'s job.
 
 use std::collections::BTreeMap;
 
-use cellworks_map::{ItemKind, Token};
+use cellworks_map::{Declares, ItemKind, Token};
 use tree_sitter::{Node, Parser};
 
 /// What one file holds.
@@ -19,6 +21,8 @@ pub(crate) struct FileCode {
     pub uses: BTreeMap<Vec<String>, Uses>,
     /// Each name a `use` statement brings in, where it is written.
     pub imports: Vec<Import>,
+    /// Each trait an `impl` block implements, in source order.
+    pub impls: Vec<Impl>,
     /// Per line, from 0: the tokens on it.
     pub tokens: Vec<Vec<Token>>,
     /// The file's lines.
@@ -43,7 +47,16 @@ pub(crate) struct Import {
     pub path: Vec<String>,
 }
 
-/// A function, type or `use` block, as written.
+/// `impl Trait for Type`: the module inside the file it is written in, the
+/// type's name and the trait's name, as written.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Impl {
+    pub module: Vec<String>,
+    pub owner: String,
+    pub name: String,
+}
+
+/// A function, type, constant or `use` block, as written.
 #[derive(Debug)]
 pub(crate) struct ParsedItem {
     pub name: String,
@@ -60,6 +73,13 @@ pub(crate) struct ParsedItem {
     /// Whether it belongs to the tests: a test, or anything inside a test
     /// module (`#[cfg(test)]`, or a module called `tests`).
     pub tests: bool,
+    /// Whether code outside its module may use it: it is `pub` in any form,
+    /// or a function of an `impl Trait for Type` block.
+    pub public: bool,
+    pub declares: Declares,
+    /// Each field of a struct: its line, from 0, and a type its type names,
+    /// as written (`Vec<Price>` names `Vec` and `Price`).
+    pub fields: Vec<(usize, String)>,
 }
 
 impl ParsedItem {
@@ -113,6 +133,7 @@ pub(crate) fn parse(source: &str) -> FileCode {
         source,
         code: &mut code,
         in_tests: false,
+        in_trait_impl: false,
     };
     reader.declarations(tree.root_node(), &[], None);
     code
@@ -165,6 +186,8 @@ struct Reader<'s, 'c> {
     code: &'c mut FileCode,
     /// Whether the declarations being read lie inside a test module.
     in_tests: bool,
+    /// Whether they lie inside an `impl Trait for Type` block.
+    in_trait_impl: bool,
 }
 
 impl Reader<'_, '_> {
@@ -206,15 +229,38 @@ impl Reader<'_, '_> {
             let is_cfg_test = std::mem::take(&mut cfg_test);
             match node.kind() {
                 "function_item" => self.function(node, module, owner, is_test),
-                "struct_item" | "enum_item" | "union_item" | "trait_item" | "type_item" => {
-                    self.named(node, ItemKind::Type, module, None, Vec::new());
+                "struct_item" | "union_item" | "trait_item" | "type_item" => {
+                    self.named(node, ItemKind::Type, module, None, Declares::Plain);
+                }
+                "enum_item" => {
+                    let declares = Declares::Enum {
+                        carries_data: self.variants(node),
+                    };
+                    self.named(node, ItemKind::Type, module, None, declares);
+                }
+                // Associated constants belong to their `impl` block's type.
+                "const_item" | "static_item" if owner.is_none() => {
+                    self.named(node, ItemKind::Type, module, None, Declares::Constant);
                 }
                 "impl_item" => {
                     let owner = node
                         .child_by_field_name("type")
                         .map(|ty| type_name(self.text(ty)));
+                    let implemented = node
+                        .child_by_field_name("trait")
+                        .map(|name| type_name(self.text(name)));
+                    if let (Some(owner), Some(name)) = (&owner, &implemented) {
+                        self.code.impls.push(Impl {
+                            module: module.to_vec(),
+                            owner: owner.clone(),
+                            name: name.clone(),
+                        });
+                    }
                     if let Some(body) = node.child_by_field_name("body") {
+                        let outer = self.in_trait_impl;
+                        self.in_trait_impl = implemented.is_some();
                         self.declarations(body, module, owner.as_deref());
+                        self.in_trait_impl = outer;
                     }
                 }
                 "mod_item" => {
@@ -223,12 +269,13 @@ impl Reader<'_, '_> {
                         node.child_by_field_name("body"),
                     ) {
                         let name = self.text(name).to_owned();
-                        let outer = self.in_tests;
+                        let (outer, outer_impl) = (self.in_tests, self.in_trait_impl);
                         self.in_tests |= is_cfg_test || name == "tests";
+                        self.in_trait_impl = false;
                         let mut inner = module.to_vec();
                         inner.push(name);
                         self.declarations(body, &inner, None);
-                        self.in_tests = outer;
+                        (self.in_tests, self.in_trait_impl) = (outer, outer_impl);
                     }
                 }
                 _ => {}
@@ -248,6 +295,9 @@ impl Reader<'_, '_> {
                 end,
                 calls: Vec::new(),
                 tests: self.in_tests,
+                public: false,
+                declares: Declares::Plain,
+                fields: Vec::new(),
             });
         }
     }
@@ -277,7 +327,10 @@ impl Reader<'_, '_> {
         } else {
             ItemKind::Function
         };
-        self.named(node, kind, module, owner, calls);
+        self.named(node, kind, module, owner, Declares::Plain);
+        if let Some(item) = self.code.items.last_mut() {
+            item.calls = calls;
+        }
     }
 
     fn named(
@@ -286,12 +339,20 @@ impl Reader<'_, '_> {
         kind: ItemKind,
         module: &[String],
         owner: Option<&str>,
-        calls: Vec<(usize, Call)>,
+        declares: Declares,
     ) {
         let Some(name) = node.child_by_field_name("name") else {
             return;
         };
         let name = self.text(name).to_owned();
+        let mut cursor = node.walk();
+        let visible = node
+            .children(&mut cursor)
+            .any(|child| child.kind() == "visibility_modifier");
+        let fields = match node.kind() {
+            "struct_item" => self.fields(node),
+            _ => Vec::new(),
+        };
         self.code.items.push(ParsedItem {
             name,
             kind,
@@ -299,9 +360,52 @@ impl Reader<'_, '_> {
             owner: owner.map(str::to_owned),
             start: node.start_position().row,
             end: node.end_position().row,
-            calls,
+            calls: Vec::new(),
             tests: self.in_tests || kind == ItemKind::Test,
+            public: visible || (self.in_trait_impl && kind == ItemKind::Function),
+            declares,
+            fields,
         });
+    }
+
+    /// For each variant of the enum `node`, whether it carries data.
+    fn variants(&self, node: Node<'_>) -> Vec<bool> {
+        let Some(body) = node.child_by_field_name("body") else {
+            return Vec::new();
+        };
+        let mut cursor = body.walk();
+        body.named_children(&mut cursor)
+            .filter(|variant| variant.kind() == "enum_variant")
+            .map(|variant| variant.child_by_field_name("body").is_some())
+            .collect()
+    }
+
+    /// The types each field of the struct `node` names, with the field's line.
+    fn fields(&self, node: Node<'_>) -> Vec<(usize, String)> {
+        let Some(body) = node
+            .child_by_field_name("body")
+            .filter(|body| body.kind() == "field_declaration_list")
+        else {
+            return Vec::new();
+        };
+        let mut fields = Vec::new();
+        let mut cursor = body.walk();
+        for field in body.named_children(&mut cursor) {
+            let Some(ty) = field.child_by_field_name("type") else {
+                continue;
+            };
+            let row = field.start_position().row;
+            let mut pending = vec![ty];
+            while let Some(part) = pending.pop() {
+                if part.kind() == "type_identifier" {
+                    fields.push((row, self.text(part).to_owned()));
+                }
+                let mut inner = part.walk();
+                let children: Vec<Node<'_>> = part.named_children(&mut inner).collect();
+                pending.extend(children.into_iter().rev());
+            }
+        }
+        fields
     }
 
     /// Every call below `node`, as written.
@@ -568,6 +672,90 @@ mod tests {
     fn generic_arguments_are_not_part_of_a_path() {
         assert_eq!(segments("Vec::<u8>::new"), ["Vec", "new"]);
         assert_eq!(type_name("crate::Cart<T>"), "Cart");
+    }
+
+    const DECLARED: &str = "\
+pub struct Cart {
+    items: Vec<Price>,
+    owner: crate::Owner,
+}
+
+pub(crate) enum Lens {
+    Folders,
+    Calls(u8),
+    Custom { name: String },
+}
+
+const GAP: f32 = 4.0;
+static NAME: &str = \"shop\";
+
+impl Cart {
+    const MOST: usize = 9;
+    pub fn add(&mut self) {}
+    fn total(&self) {}
+}
+
+impl fmt::Display for Cart {
+    fn fmt(&self) {}
+}
+";
+
+    #[test]
+    fn visibility_says_whether_code_outside_may_use_an_item() {
+        let code = parse(DECLARED);
+
+        let public = |name: &[&str]| item(&code, name).public;
+        assert!(public(&["Cart"]));
+        assert!(public(&["Lens"]), "pub(crate) counts");
+        assert!(public(&["Cart", "add"]));
+        assert!(!public(&["Cart", "total"]));
+        assert!(public(&["Cart", "fmt"]), "a trait's method is public");
+        assert!(!public(&["GAP"]));
+    }
+
+    #[test]
+    fn an_enum_says_which_variants_carry_data() {
+        let code = parse(DECLARED);
+
+        assert_eq!(
+            item(&code, &["Lens"]).declares,
+            Declares::Enum {
+                carries_data: vec![false, true, true]
+            }
+        );
+        assert_eq!(item(&code, &["Cart"]).declares, Declares::Plain);
+    }
+
+    #[test]
+    fn constants_and_statics_are_constants_and_associated_ones_are_left_out() {
+        let code = parse(DECLARED);
+
+        assert_eq!(item(&code, &["GAP"]).declares, Declares::Constant);
+        assert_eq!(item(&code, &["GAP"]).kind, ItemKind::Type);
+        assert_eq!(item(&code, &["NAME"]).declares, Declares::Constant);
+        assert!(code.items.iter().all(|item| item.name != "MOST"));
+    }
+
+    #[test]
+    fn a_trait_impl_names_its_type_and_trait_and_a_struct_its_field_types() {
+        let code = parse(DECLARED);
+
+        assert_eq!(
+            code.impls,
+            [Impl {
+                module: Vec::new(),
+                owner: "Cart".to_owned(),
+                name: "Display".to_owned()
+            }]
+        );
+        assert_eq!(
+            item(&code, &["Cart"]).fields,
+            [
+                (1, "Vec".to_owned()),
+                (1, "Price".to_owned()),
+                (2, "Owner".to_owned())
+            ]
+        );
     }
 
     #[test]

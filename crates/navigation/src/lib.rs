@@ -90,6 +90,8 @@ pub struct Navigation {
     facing: Option<Facing>,
     /// Whether the view is turned underground, the cellar within reach.
     underground: bool,
+    /// Whether a cable runs from each mast to the building it calls.
+    cables: bool,
     /// The lane picked, kept lit until another click.
     lane: Option<LaneId>,
 }
@@ -142,6 +144,7 @@ impl Default for Navigation {
             inside: None,
             facing: None,
             underground: false,
+            cables: false,
             lane: None,
         }
     }
@@ -522,6 +525,17 @@ impl Navigation {
     /// above stepped back, or back above the ground.
     pub fn toggle_underground(&mut self) {
         self.underground = !self.underground;
+    }
+
+    /// Whether the cables from the masts are shown.
+    pub fn shows_cables(&self) -> bool {
+        self.cables
+    }
+
+    /// Shows the cables from each mast to the building it calls, or hides
+    /// them.
+    pub fn toggle_cables(&mut self) {
+        self.cables = !self.cables;
     }
 
     /// The tower whose facade the camera turns to, while it is turned.

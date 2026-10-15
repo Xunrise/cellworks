@@ -75,6 +75,9 @@ pub struct OpenedProject {
     /// The map of a new lens and its lanes, worked out off the frame loop
     /// while the towers lift off, and the turns it was worked out for.
     relensing: Option<(Receiver<(ProjectMap, Network)>, u8)>,
+    /// The lanes and building features of the map as it is now, worked out
+    /// off the frame loop, and the turns they were worked out for.
+    preparing: Option<(Receiver<Network>, u8)>,
 }
 
 impl OpenedProject {
@@ -98,6 +101,7 @@ impl OpenedProject {
             switched_at: None,
             network: None,
             relensing: None,
+            preparing: None,
         }
     }
 
@@ -153,6 +157,7 @@ impl OpenedProject {
                     self.state = ProjectState::Mapped(Box::new(self.seen(&map)));
                     self.network = None;
                     self.relensing = None;
+                    self.preparing = None;
                     self.folders = Some(map);
                 }
             }
@@ -220,6 +225,7 @@ impl OpenedProject {
         self.state = ProjectState::Mapped(Box::new(self.seen(&folders)));
         self.network = None;
         self.relensing = None;
+        self.preparing = None;
     }
 
     /// Whether the map can be seen through `lens`.
@@ -299,16 +305,28 @@ impl OpenedProject {
         }
     }
 
-    /// Works the map's lanes out once per map, when lanes are shown: for the
-    /// map the towers fly to, so they are ready when they land.
-    pub fn prepare_lanes(&mut self) {
-        let shown = self.lanes.imports || self.lanes.calls;
-        if !shown || self.network.is_some() {
+    /// Works the map's lanes and what its buildings show out once per map,
+    /// whether lanes are shown or not, off the frame loop: for the map the
+    /// towers fly to, so they are ready when they land.
+    pub fn prepare_network(&mut self) {
+        if self.network.is_some() || self.preparing.is_some() {
             return;
         }
         if let ProjectState::Mapped(map) = &self.state {
-            self.network = Some(Network::of(map));
+            let map = (**map).clone();
+            let (sender, prepared) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                // The map may have changed or the project closed meanwhile.
+                let _ = sender.send(Network::of(&map));
+            });
+            self.preparing = Some((prepared, self.turns));
         }
+    }
+
+    /// Whether the lanes and building features of the map are still being
+    /// worked out.
+    pub fn is_preparing(&self) -> bool {
+        self.preparing.is_some()
     }
 
     /// The map's lanes, if worked out: none while towers fly, whose lanes
@@ -348,12 +366,14 @@ impl OpenedProject {
         let centre = map.ground().center();
         map.turn(quarters);
         self.network = None;
+        self.preparing = None;
         Some(centre)
     }
 
     /// Takes everything the read has sent so far. Never waits. A read that
     /// goes away before its map arrives has failed; after it, it is just over.
     /// A read again that goes away without a map leaves the old one on screen.
+    /// Starts working out the lanes and building features of a map without.
     pub fn drain(&mut self) {
         if let Some((map, network)) = self
             .relensing
@@ -371,7 +391,21 @@ impl OpenedProject {
             } else {
                 self.network = Some(network);
             }
+            self.preparing = None;
             self.state = ProjectState::Mapped(Box::new(map));
+        }
+        if let Some((prepared, turns)) = &self.preparing {
+            match prepared.try_recv() {
+                Ok(network) => {
+                    // Turned while it was worked out: work it out again.
+                    if *turns == self.turns {
+                        self.network = Some(network);
+                    }
+                    self.preparing = None;
+                }
+                Err(TryRecvError::Disconnected) => self.preparing = None,
+                Err(TryRecvError::Empty) => {}
+            }
         }
         if let Some(WorkspaceEvent::ArrangementRead { arrangement, .. }) = self
             .arranged
@@ -387,6 +421,7 @@ impl OpenedProject {
                     self.state = ProjectState::Mapped(Box::new(self.seen(&folders)));
                     self.network = None;
                     self.relensing = None;
+                    self.preparing = None;
                 }
             }
         }
@@ -404,16 +439,17 @@ impl OpenedProject {
         loop {
             match self.events.try_recv() {
                 Ok(event) => self.apply(event),
-                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     self.rereading = false;
                     if self.state == ProjectState::Reading {
                         self.state = ProjectState::Failed;
                     }
-                    return;
+                    break;
                 }
             }
         }
+        self.prepare_network();
     }
 }
 

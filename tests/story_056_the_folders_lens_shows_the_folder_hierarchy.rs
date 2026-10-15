@@ -1,8 +1,9 @@
-//! STORY-056, the folders lens shows the folder hierarchy: each folder is a
-//! ring inside the ring of the folder holding it, a folder holding only one
-//! folder is one ring named after both, a ring is named once it has room for
-//! its name and is selected by its name or its open ground, and tests stay in
-//! their folder.
+//! STORY-056, the folders lens shows the folder hierarchy: each folder is
+//! outlined inside the outline of the folder holding it, a folder holding
+//! only one folder is one outline named after both, an outline is named once
+//! it has room for its name and is selected by its name or its open ground,
+//! and tests stay in their folder. Since STORY-068 a folder ring is a folder
+//! outline, and issue #81 says so.
 //!
 //! One test per scenario of issue #81, named after it. The project "fleet"
 //! has the district "services" with the folders "billing" and "routing";
@@ -63,31 +64,37 @@ impl Fleet {
         self.tree.root.join(relative)
     }
 
-    /// Whether the folder at `relative` was drawn as a ring, and whether its
-    /// name was written on it.
-    fn ring(&self, relative: &str) -> Option<bool> {
+    /// Whether the folder at `relative` was drawn by its outline, and
+    /// whether its name was written on it.
+    fn outline(&self, relative: &str) -> Option<bool> {
         let path = self.path(relative);
         self.harness
             .state()
-            .rings()
+            .folders()
             .iter()
             .find(|(ring, _)| *ring == path)
             .map(|(_, written)| *written)
     }
 
-    /// A screen point on the open ground of the ring of the folder at
-    /// `relative`: inside it, on no block and in no ring it holds.
+    /// A screen point on the open ground of the folder at `relative`:
+    /// inside its outline, on no block and in no folder it holds.
     fn open_ground_of(&self, relative: &str) -> Pos2 {
         let map = map(&self.harness);
         let path = self.path(relative);
-        let (centre, radius) = ring_of(map.find(&path).expect("the folder").area);
-        let ground = (0..36)
-            .map(|step| {
-                let angle = step as f32 * std::f32::consts::TAU / 36.0;
-                centre + radius * 0.85 * egui::vec2(angle.cos(), angle.sin())
-            })
-            .find(|at| map.at(*at).last() == Some(&path.as_path()))
-            .expect("open ground in the ring");
+        let area = map.find(&path).expect("the folder").area;
+        let outline = self
+            .harness
+            .state()
+            .outlines()
+            .iter()
+            .find(|(drawn, _)| *drawn == path)
+            .map(|(_, outline)| outline.clone())
+            .expect("the folder is outlined");
+        let ground = (1..20)
+            .flat_map(|i| (1..20).map(move |j| (i as f32 / 20.0, j as f32 / 20.0)))
+            .map(|(u, v)| area.min + egui::vec2(u * area.width(), v * area.height()))
+            .find(|at| within(&outline, *at) && map.at(*at).last() == Some(&path.as_path()))
+            .expect("open ground in the folder");
         self.harness
             .state()
             .view()
@@ -123,37 +130,36 @@ impl Fleet {
     }
 }
 
-/// The circle of the ring `area` is the square around: centre and radius.
-fn ring_of(area: Rect) -> (Pos2, f32) {
-    (area.center(), area.width() / 2.0)
-}
-
-/// Whether `inner` lies inside the ring of the folder at `folder`.
+/// Whether `inner` lies inside the ground of the folder at `folder`.
 fn inside(map: &ProjectMap, inner: Rect, folder: &Path) -> bool {
-    let (centre, radius) = ring_of(map.find(folder).expect("the folder").area);
-    let corners = [
-        inner.left_top(),
-        inner.right_top(),
-        inner.left_bottom(),
-        inner.right_bottom(),
-    ];
-    corners
-        .iter()
-        .all(|corner| (*corner - centre).length() <= radius + 1e-3)
+    map.find(folder)
+        .expect("the folder")
+        .area
+        .contains_rect(inner)
 }
 
-/// Each folder is a ring inside the ring of the folder holding it
+/// Whether `at` lies inside the convex `outline`.
+fn within(outline: &[Pos2], at: Pos2) -> bool {
+    let n = outline.len();
+    let side = |i: usize| {
+        let (a, b) = (outline[i], outline[(i + 1) % n]);
+        (b - a).x * (at - a).y - (b - a).y * (at - a).x
+    };
+    (0..n).all(|i| side(i) >= 0.0) || (0..n).all(|i| side(i) <= 0.0)
+}
+
+/// Each folder is an outline inside the outline of the folder holding it
 #[test]
-fn each_folder_is_a_ring_inside_the_ring_of_the_folder_holding_it() {
+fn each_folder_is_an_outline_inside_the_outline_of_the_folder_holding_it() {
     let fleet = fleet();
 
     assert!(
-        fleet.ring("services/billing").is_some(),
-        "billing is a ring"
+        fleet.outline("services/billing").is_some(),
+        "billing is outlined"
     );
     assert!(
-        fleet.ring("services/routing").is_some(),
-        "routing is a ring"
+        fleet.outline("services/routing").is_some(),
+        "routing is outlined"
     );
     let map = map(&fleet.harness);
     let billing = fleet.path("services/billing");
@@ -167,43 +173,59 @@ fn each_folder_is_a_ring_inside_the_ring_of_the_folder_holding_it() {
         "services/billing/src/main/invoices/invoice.rs",
     ] {
         let area = map.find(&fleet.path(block)).expect("the block").area;
-        assert!(
-            inside(&map, area, &billing),
-            "{block} lies in the ring of billing"
-        );
+        assert!(inside(&map, area, &billing), "{block} lies in billing");
     }
 }
 
-/// A folder holding only one folder is one ring named after both
+/// A folder holding only one folder is one outline named after both
 #[test]
-fn a_folder_holding_only_one_folder_is_one_ring_named_after_both() {
+fn a_folder_holding_only_one_folder_is_one_outline_named_after_both() {
     let fleet = fleet();
 
     let map = map(&fleet.harness);
     let invoices = map
         .find(&fleet.path("services/billing/src/main/invoices"))
-        .expect("one ring for the chain");
+        .expect("one folder for the chain");
     assert_eq!(invoices.name, "src/main/invoices");
     assert_eq!(
         invoices.parent,
         Some(fleet.path("services/billing").as_path())
     );
-    assert!(fleet.ring("services/billing/src/main/invoices").is_some());
+    assert!(
+        fleet
+            .outline("services/billing/src/main/invoices")
+            .is_some()
+    );
     for own in ["services/billing/src", "services/billing/src/main"] {
         assert!(
             map.find(&fleet.path(own)).is_none(),
             "{own} is no folder of its own"
         );
-        assert!(fleet.ring(own).is_none(), "{own} has no ring");
+        assert!(fleet.outline(own).is_none(), "{own} has no outline");
     }
 }
 
-/// A folder ring is named and can be selected
+/// A folder outline is named and can be selected
 #[test]
-fn a_folder_ring_is_named_and_can_be_selected() {
+fn a_folder_outline_is_named_and_can_be_selected() {
     let mut fleet = fleet();
+    // Given its outline is wide enough on screen: closer until it is.
+    for _ in 0..10 {
+        if fleet.outline("services/routing") == Some(true) {
+            break;
+        }
+        let routing = map(&fleet.harness)
+            .find(&fleet.path("services/routing"))
+            .expect("routing")
+            .area
+            .center();
+        let view = fleet.harness.state().view().expect("drawn");
+        fleet.harness.hover_at(view.to_screen(routing, 0.0));
+        fleet.harness.event(Event::Zoom(1.25));
+        fleet.harness.run();
+    }
     assert_eq!(
-        fleet.ring("services/routing"),
+        fleet.outline("services/routing"),
         Some(true),
         "routing has room for its name"
     );
@@ -219,9 +241,9 @@ fn a_folder_ring_is_named_and_can_be_selected() {
     assert_eq!(fleet.selected(), ["routing"], "by its open ground");
 }
 
-/// A folder ring too small on screen carries no name
+/// A folder outline too small on screen carries no name
 #[test]
-fn a_folder_ring_too_small_on_screen_carries_no_name() {
+fn a_folder_outline_too_small_on_screen_carries_no_name() {
     let mut fleet = fleet();
     let centre = fleet
         .harness
@@ -236,9 +258,9 @@ fn a_folder_ring_too_small_on_screen_carries_no_name() {
         fleet.harness.run();
     }
 
-    let rings = fleet.harness.state().rings();
-    assert!(!rings.is_empty(), "the rings are still drawn");
-    assert!(rings.iter().all(|(_, written)| !written), "{rings:?}");
+    let folders = fleet.harness.state().folders();
+    assert!(!folders.is_empty(), "the outlines are still drawn");
+    assert!(folders.iter().all(|(_, written)| !written), "{folders:?}");
 }
 
 /// Tests stay in the folder that holds them

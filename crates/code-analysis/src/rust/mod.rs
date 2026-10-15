@@ -1,5 +1,8 @@
-//! The Rust files of a project read into map items: functions, types and
-//! `use` blocks with their lines, tokens and resolved calls.
+//! The Rust files of a project read into map items: functions, types,
+//! constants and `use` blocks with their lines, tokens and resolved calls,
+//! and what each declares: a method is part of its type wherever in the
+//! project the type is written, and a type implements the traits of every
+//! `impl` block for it.
 
 mod parse;
 mod resolve;
@@ -7,10 +10,10 @@ mod resolve;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-use cellworks_map::{Floor, Item};
+use cellworks_map::{Declaration, Declares, Floor, Item, ItemKind};
 
 pub(crate) use parse::column;
-use parse::{Call, FileCode};
+use parse::{Call, FileCode, ParsedItem};
 use resolve::{Index, Module, module_of, package_name};
 
 /// Files larger than this are left unread: generated code, not code to walk.
@@ -69,6 +72,15 @@ pub(crate) fn read(root: &Path, files: &[PathBuf]) -> BTreeMap<PathBuf, Vec<Item
         index.add_uses(module, code);
     }
 
+    let mut implements: HashMap<&PathBuf, Vec<String>> = HashMap::new();
+    for ((_, module, code), paths) in read.iter().zip(&paths) {
+        for found in &code.impls {
+            if let Some(ty) = type_path(&index, module, code, paths, &found.module, &found.owner) {
+                implements.entry(ty).or_default().push(found.name.clone());
+            }
+        }
+    }
+
     read.iter()
         .zip(&paths)
         .map(|((file, module, code), paths)| {
@@ -104,6 +116,30 @@ pub(crate) fn read(root: &Path, files: &[PathBuf]) -> BTreeMap<PathBuf, Vec<Item
                             floor.calls.push(target.clone());
                         }
                     }
+                    let ty = |name: &str| {
+                        type_path(&index, module, code, paths, &item.module, name)
+                            .filter(|found| *found != path)
+                    };
+                    let entry = item.name == "main"
+                        && item.kind == ItemKind::Function
+                        && item.module.is_empty()
+                        && item.owner.is_none()
+                        && module.path.is_empty();
+                    let declaration = Declaration {
+                        declares: if entry {
+                            Declares::EntryPoint
+                        } else {
+                            item.declares.clone()
+                        },
+                        public: item.public,
+                        part_of: item.owner.as_deref().and_then(ty).cloned(),
+                        implements: implements.get(path).cloned().unwrap_or_default(),
+                        holds: item
+                            .fields
+                            .iter()
+                            .filter_map(|(row, name)| Some((row - item.start, ty(name)?.clone())))
+                            .collect(),
+                    };
                     Item {
                         name: item.name.clone(),
                         path: path.clone(),
@@ -112,12 +148,37 @@ pub(crate) fn read(root: &Path, files: &[PathBuf]) -> BTreeMap<PathBuf, Vec<Item
                         floors,
                         area: egui::Rect::NOTHING,
                         base: 0.0,
+                        declaration,
                     }
                 })
                 .collect();
             (file.clone(), items)
         })
         .collect()
+}
+
+/// The path of the type `name` stands for, written in the module `inner` of
+/// the file at `module` whose items have `paths`: resolved through the
+/// module tree as a call is, else a type of that name in the same file.
+fn type_path<'a>(
+    index: &'a Index,
+    module: &Module,
+    code: &FileCode,
+    paths: &'a [PathBuf],
+    inner: &[String],
+    name: &str,
+) -> Option<&'a PathBuf> {
+    let written = Call::Path(vec![name.to_owned()]);
+    let is_type = |item: &ParsedItem| item.kind == ItemKind::Type && item.owner.is_none();
+    index
+        .resolve_in(module, code, inner, None, &written)
+        .or_else(|| {
+            code.items
+                .iter()
+                .zip(paths)
+                .find(|(item, _)| is_type(item) && item.name == name)
+                .map(|(_, path)| path)
+        })
 }
 
 /// The map path of each item of `code`: the file's path joined with the
@@ -238,6 +299,59 @@ mod tests {
             [tree.path().join("src/money.rs/Money")]
         );
         assert!(uses.floors.iter().all(|floor| floor.calls.is_empty()));
+    }
+
+    #[test]
+    fn a_method_is_part_of_its_type_and_the_type_implements_its_traits_across_files() {
+        let tree = project(&[
+            ("Cargo.toml", "[package]\nname = \"shop\"\n"),
+            ("src/main.rs", "mod cart;\nmod show;\nfn main() {}\n"),
+            (
+                "src/cart.rs",
+                "pub struct Cart { price: Price }\npub struct Price;\n\
+                 impl Cart { pub fn add(&self) {} }\nimpl Default for Cart { fn default() {} }\n",
+            ),
+            (
+                "src/show.rs",
+                "use crate::cart::Cart;\nimpl std::fmt::Display for Cart { fn fmt(&self) {} }\n\
+                 impl Cart { fn total(&self) {} }\nfn helper() {}\n",
+            ),
+        ]);
+        let files: Vec<PathBuf> = ["Cargo.toml", "src/main.rs", "src/cart.rs", "src/show.rs"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+
+        let items = read(tree.path(), &files);
+
+        let declared = |file: &str, name: &str| {
+            items[Path::new(file)]
+                .iter()
+                .find(|item| item.name == name)
+                .map(|item| item.declaration.clone())
+                .unwrap_or_else(|| panic!("no {name} in {file}"))
+        };
+        let cart = tree.path().join("src/cart.rs/Cart");
+        assert_eq!(declared("src/cart.rs", "add").part_of.as_ref(), Some(&cart));
+        assert_eq!(
+            declared("src/show.rs", "total").part_of.as_ref(),
+            Some(&cart)
+        );
+        assert_eq!(declared("src/show.rs", "fmt").part_of.as_ref(), Some(&cart));
+        assert_eq!(declared("src/show.rs", "helper").part_of, None);
+        assert_eq!(
+            declared("src/cart.rs", "Cart").implements,
+            ["Default", "Display"]
+        );
+        assert_eq!(
+            declared("src/cart.rs", "Cart").holds,
+            [(0, tree.path().join("src/cart.rs/Price"))]
+        );
+        assert_eq!(
+            declared("src/main.rs", "main").declares,
+            Declares::EntryPoint
+        );
+        assert_eq!(declared("src/show.rs", "helper").declares, Declares::Plain);
     }
 
     #[test]

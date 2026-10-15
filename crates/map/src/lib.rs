@@ -4,9 +4,12 @@
 //! Defined by docs/domain/contexts/Map/Map.md. A loader hands over a project's
 //! included files; [`ProjectMap::of`] cuts them into districts with a
 //! [`DistrictStrategy`] and lays them out, and [`ui::project`] draws the
-//! result: a city whose items stand as towers on their node's block
-//! ([`city`]). Lanes arrive with the stories that need them.
+//! result: a city whose items stand as the buildings their declarations and
+//! their node's kind make on its block ([`city`]). Lanes arrive with the
+//! stories that need them.
 
+mod arrange;
+mod buildings;
 pub mod city;
 mod contexts;
 mod districts;
@@ -23,11 +26,12 @@ use std::path::{Path, PathBuf};
 
 use egui::{Pos2, Rect, vec2};
 
+pub use buildings::{Bridge, Buildings, Form, Mast, Stand, Trim};
 pub use contexts::{BoundedContext, BoundedContexts, Road};
 pub use districts::{Directories, DistrictStrategy};
 pub use graph::{
-    CoChange, District, DistrictKind, Element, Floor, Found, Group, Item, ItemKind, Node,
-    ProjectMap, SubDistrict, Token,
+    CoChange, Declaration, Declares, District, DistrictKind, Element, Floor, Found, Group, Item,
+    ItemKind, Node, NodeKind, ProjectMap, SubDistrict, Token,
 };
 pub use lanes::{LaneId, LaneKind, Lanes, Network};
 pub use lens::{Flight, Lens, relens};
@@ -43,26 +47,39 @@ impl ProjectMap {
         files: &[PathBuf],
         strategy: &dyn DistrictStrategy,
     ) -> ProjectMap {
-        ProjectMap::of_code(project, root, files, strategy, BTreeMap::new())
+        ProjectMap::of_code(
+            project,
+            root,
+            files,
+            strategy,
+            BTreeMap::new(),
+            &BTreeMap::new(),
+        )
     }
 
     /// The map of a project whose code was read: like [`ProjectMap::of`], with
-    /// `items` keyed by the file, relative to `root`, that holds them.
+    /// `items` keyed by the file, relative to `root`, that holds them, and
+    /// the kind of each node that is not code in `kinds`, keyed the same way.
     pub fn of_code(
         project: &str,
         root: &Path,
         files: &[PathBuf],
         strategy: &dyn DistrictStrategy,
         mut items: BTreeMap<PathBuf, Vec<Item>>,
+        kinds: &BTreeMap<PathBuf, NodeKind>,
     ) -> ProjectMap {
         let mut districts = strategy.cut(project, root, files);
         for node in graph::nodes_mut(&mut districts) {
             let relative = node.path.strip_prefix(root).unwrap_or(&node.path);
+            if let Some(kind) = kinds.get(relative) {
+                node.kind = *kind;
+            }
             if let Some(held) = items.remove(relative) {
                 node.items = held;
             }
         }
-        layout::lay_out(&mut districts);
+        buildings::gather(&mut graph::nodes_mut(&mut districts));
+        layout::lay_out(&mut districts, root);
         let mut map = ProjectMap {
             project: project.to_owned(),
             root: root.to_path_buf(),

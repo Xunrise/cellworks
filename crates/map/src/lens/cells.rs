@@ -86,7 +86,7 @@ pub(crate) fn cells(
             elevation: 0.0,
         });
     }
-    layout::lay_out(&mut districts);
+    layout::lay_out(&mut districts, &root);
     let roads: Vec<(usize, usize, String)> = known
         .roads
         .iter()

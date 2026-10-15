@@ -5,8 +5,10 @@
 //! the item, the first line on top as in an editor, and every token of a line
 //! a point along its front face, starting at the line's indentation, so the
 //! tower's silhouette is the shape of its code. Functions have taller floors
-//! than types and `use` blocks. The towers of a block stand in a skyline:
-//! the tallest at the back, the shortest at the front.
+//! than types and `use` blocks. Items stand together as buildings
+//! ([`crate::buildings`]): a type's methods as the tiers of its skyscraper.
+//! The buildings of a block stand like a town ([`crate::arrange`]), in a
+//! skyline: one shorter than the building it stands beside in front of it.
 //!
 //! The ground is the layout's own plane. It is seen isometrically: ground
 //! `x` runs down to the right, ground `y` down to the left, and height
@@ -14,9 +16,14 @@
 //!
 //! Pure geometry: `egui::{Rect, Vec2, Pos2}` only, no widget.
 
+use std::collections::HashMap;
+
 use egui::{Pos2, Rect, Vec2, pos2, vec2};
 
-use crate::graph::{Item, ItemKind};
+use crate::arrange::{self, Piece, arrange, seed};
+use crate::buildings::{self, Building};
+use crate::graph::{Item, ItemKind, NodeKind};
+use crate::lens::cluster::{Weights, link};
 
 /// Layout points per column of a line.
 pub const COLUMN: f32 = 0.3;
@@ -34,10 +41,23 @@ const NARROWEST: f32 = 4.0;
 /// The depth of the ground a tower stands on.
 pub const WALL: f32 = 3.0;
 
-/// Space between towers in a row, between rows, and around them on a block.
+/// Space between towers in a row of the cellar, between its rows, and
+/// around the buildings on a block.
 const TOWER_GAP: f32 = 4.5;
 const ROW: f32 = 12.0;
 const MARGIN: f32 = 4.0;
+
+/// The streets between the buildings of a block: how wide at the least, and
+/// how much wider at the most.
+const STREET: (f32, f32) = (2.0, 3.0);
+
+/// How strongly a skybridge binds two buildings, against a call's one.
+const SKYBRIDGE: f32 = 3.0;
+
+/// The open ground a building keeps around it for each of its doors, and the
+/// most it keeps.
+const ROOM_PER_DOOR: f32 = 0.6;
+const ROOM_MOST: f32 = 6.0;
 
 /// The isometric axes: how far one layout point along ground `x` moves on
 /// screen across and down.
@@ -74,7 +94,7 @@ pub fn iso_bounds(rect: Rect) -> Rect {
 /// The height of one floor of `item`.
 pub fn floor_height(item: &Item) -> f32 {
     match item.kind {
-        ItemKind::Function | ItemKind::Test => FLOOR,
+        ItemKind::Function | ItemKind::Test | ItemKind::Section => FLOOR,
         ItemKind::Type | ItemKind::Uses | ItemKind::Text => LOW_FLOOR,
     }
 }
@@ -189,38 +209,62 @@ pub enum Toward {
     Front,
 }
 
-/// The tower next to `from` going `toward` among `block`, the items of
+/// The building next to `from` going `toward` among `block`, the items of
 /// `from`'s block, on the same level as `from` (above the ground or in the
-/// cellar). Left and right walk the rows as they stand, on to the next row
-/// past a row's end, and stop at the block's first and last tower; behind
-/// and in front step to the nearest row, landing on the tower nearest
-/// across.
+/// cellar): the item standing as its base, a part of a building counting as
+/// its base. Left and right walk the rows as they stand, on to the next row
+/// past a row's end, and stop at the block's first and last building; behind
+/// and in front step to the nearest row, landing on the building nearest
+/// across. A row is the buildings whose ground overlaps in depth.
 pub fn neighbour<'a>(block: &[&'a Item], from: &Item, toward: Toward) -> Option<&'a Item> {
     let level = in_cellar(from);
-    // Along the facade, and how far forward: rows lie at one depth each.
+    let held = |path: Option<&std::path::Path>| {
+        block
+            .iter()
+            .copied()
+            .find(|i| Some(i.path.as_path()) == path)
+    };
+    // A part whose base stands on the block is walked as that base.
+    let base_of = |item: &'a Item| {
+        held(item.declaration.part_of.as_deref()).filter(|base| base.declaration.part_of.is_none())
+    };
+    let from = block
+        .iter()
+        .copied()
+        .find(|item| item.path == from.path)
+        .map(|item| base_of(item).unwrap_or(item))?;
+    // Along the facade, and the depth the ground spans: rows run along it.
     let place = |item: &Item| {
-        let at = item.area.center();
+        let area = item.area;
         if along_x(from) {
-            (at.x, at.y)
+            (area.center().x, (area.min.y, area.max.y))
         } else {
-            (at.y, -at.x)
+            (area.center().y, (-area.max.x, -area.min.x))
         }
     };
-    let mut rows: Vec<Vec<&'a Item>> = Vec::new();
     let mut items: Vec<&'a Item> = block
         .iter()
         .copied()
-        .filter(|item| in_cellar(item) == level)
+        .filter(|item| in_cellar(item) == level && base_of(item).is_none())
         .collect();
     items.sort_by(|a, b| {
         let (a, b) = (place(a), place(b));
-        a.1.total_cmp(&b.1).then(a.0.total_cmp(&b.0))
+        a.1.0.total_cmp(&b.1.0).then(a.0.total_cmp(&b.0))
     });
+    let mut rows: Vec<(f32, Vec<&'a Item>)> = Vec::new();
     for item in items {
+        let (_, (back, front)) = place(item);
         match rows.last_mut() {
-            Some(row) if (place(row[0]).1 - place(item).1).abs() < 0.5 => row.push(item),
-            _ => rows.push(vec![item]),
+            Some((reach, row)) if back < *reach - 0.01 => {
+                *reach = reach.max(front);
+                row.push(item);
+            }
+            _ => rows.push((front, vec![item])),
         }
+    }
+    let mut rows: Vec<Vec<&'a Item>> = rows.into_iter().map(|(_, row)| row).collect();
+    for row in &mut rows {
+        row.sort_by(|a, b| place(a).0.total_cmp(&place(b).0));
     }
     let row = rows
         .iter()
@@ -254,43 +298,147 @@ pub fn neighbour<'a>(block: &[&'a Item], from: &Item, toward: Toward) -> Option<
     }
 }
 
-/// Places `items` in rows on a block whose plot starts at the origin, and
-/// returns the size the plot takes. Rows aim for a roughly square plot no
-/// narrower than `narrowest`. They form a skyline: the tallest towers fill
-/// the back rows and the shortest the front, so whatever stands behind rises
-/// above what stands in front of it.
-pub(crate) fn place(items: &mut [Item], narrowest: f32) -> Vec2 {
-    // Above the ground and in the cellar share the plot, in rows of their
-    // own. The cellar's rows run the other way: the deepest at the front, so
-    // a wall hanging behind does not reach over one in front.
-    let (mut cellar, mut above): (Vec<&mut Item>, Vec<&mut Item>) =
-        items.iter_mut().partition(|item| in_cellar(item));
-    above.sort_by(|a, b| reach(b).total_cmp(&reach(a)));
-    cellar.sort_by(|a, b| reach(a).total_cmp(&reach(b)));
-    place_rows(above, narrowest).max(place_rows(cellar, narrowest))
+/// Stands `items`, a node of `kind`'s, as their buildings on a block whose
+/// plot starts at the origin, and returns the size the plot takes, no
+/// narrower than `narrowest`. Above the ground they stand like a town
+/// ([`arrange`]): the building with the most doors is the centrepiece, in
+/// the middle of the plot with open ground around it, and buildings joined
+/// by a skybridge or a call stand together, the shorter in front.
+pub(crate) fn place(items: &mut [Item], kind: NodeKind, narrowest: f32) -> Vec2 {
+    let standing = buildings::buildings(items, kind);
+    let sizes: Vec<Vec2> = standing
+        .iter()
+        .map(|b| buildings::stand(items, b))
+        .collect();
+    let (mut cellar, above): (Vec<usize>, Vec<usize>) =
+        (0..standing.len()).partition(|b| in_cellar(&items[standing[*b].base]));
+    let pieces: Vec<Piece> = above
+        .iter()
+        .map(|b| {
+            let building = &standing[*b];
+            let doors = building
+                .parts
+                .iter()
+                .filter(|p| items[**p].declaration.public)
+                .count() as f32;
+            Piece {
+                size: sizes[*b],
+                weight: doors,
+                room: (doors * ROOM_PER_DOOR).min(ROOM_MOST),
+                height: buildings::reach(items, building),
+                // By its name, not where its project lies.
+                seed: seed(name(&items[building.base].path)),
+            }
+        })
+        .collect();
+    let affinity = bound(items, &standing, &above);
+    let corners = arrange(&pieces, &affinity, STREET);
+    let rects: Vec<Rect> = pieces
+        .iter()
+        .zip(&corners)
+        .map(|(piece, corner)| Rect::from_min_size(*corner, piece.size))
+        .collect();
+    let mut extent = rects.iter().fold(Rect::NOTHING, |e, r| e.union(*r));
+    // The centrepiece stands in the middle of its plot.
+    if let Some(centre) = arrange::first(&pieces).filter(|c| pieces[*c].weight > 0.0) {
+        extent = arrange::about(extent, rects[centre].center());
+    }
+    let mut plot = Vec2::ZERO;
+    if extent.is_positive() {
+        let width = extent.width().max(narrowest - 2.0 * MARGIN);
+        let offset = pos2(MARGIN + (width - extent.width()) / 2.0, MARGIN) - extent.min;
+        for (b, corner) in above.iter().zip(&corners) {
+            shift(items, &standing[*b], *corner + offset);
+        }
+        plot = vec2(width, extent.height()) + Vec2::splat(2.0 * MARGIN);
+    }
+    // The cellar keeps its rows on the same plot, the deepest at the front,
+    // so a wall hanging behind does not reach over one in front.
+    let heights: Vec<f32> = standing
+        .iter()
+        .map(|b| buildings::reach(items, b))
+        .collect();
+    cellar.sort_by(|a, b| heights[*a].total_cmp(&heights[*b]));
+    let in_rows: Vec<Vec2> = cellar.iter().map(|b| sizes[*b]).collect();
+    let (corners, size) = place_rows(&in_rows, narrowest);
+    for (b, corner) in cellar.iter().zip(corners) {
+        shift(items, &standing[*b], corner);
+    }
+    plot.max(size)
 }
 
-fn place_rows(mut items: Vec<&mut Item>, narrowest: f32) -> Vec2 {
-    if items.is_empty() {
-        return Vec2::ZERO;
+/// The last part of `path`: an item's qualified name.
+fn name(path: &std::path::Path) -> &[u8] {
+    path.file_name().map_or(&[], |name| name.as_encoded_bytes())
+}
+
+/// How strongly the buildings `above` of `standing` are bound, by their
+/// indices in `above`: a skybridge three, every call one.
+fn bound(items: &[Item], standing: &[Building], above: &[usize]) -> Weights {
+    let mut of: HashMap<&std::path::Path, usize> = HashMap::new();
+    for (k, b) in above.iter().enumerate() {
+        let building = &standing[*b];
+        for i in std::iter::once(&building.base).chain(&building.parts) {
+            of.insert(&items[*i].path, k);
+        }
     }
-    let widths: Vec<f32> = items.iter().map(|item| width(item)).collect();
-    let total: f32 = widths.iter().map(|w| w + TOWER_GAP).sum();
+    let mut affinity = Weights::new();
+    for (k, b) in above.iter().enumerate() {
+        let building = &standing[*b];
+        for i in std::iter::once(&building.base).chain(&building.parts) {
+            let item = &items[*i];
+            for (_, held) in &item.declaration.holds {
+                if let Some(&other) = of.get(held.as_path()) {
+                    link(&mut affinity, k, other, SKYBRIDGE);
+                }
+            }
+            for target in item.floors.iter().flat_map(|floor| &floor.calls) {
+                if let Some(&other) = of.get(target.as_path()) {
+                    link(&mut affinity, k, other, 1.0);
+                }
+            }
+        }
+    }
+    affinity
+}
+
+/// Moves every item of `building`, standing from the origin, so its ground
+/// starts at `corner`.
+fn shift(items: &mut [Item], building: &Building, corner: Pos2) {
+    let offset = corner.to_vec2();
+    for i in std::iter::once(&building.base).chain(&building.parts) {
+        items[*i].area = items[*i].area.translate(offset);
+    }
+}
+
+/// Where each of the grounds of `sizes`, in order, has its corner in rows,
+/// each row as deep as its deepest ground, and the size of the plot.
+fn place_rows(sizes: &[Vec2], narrowest: f32) -> (Vec<Pos2>, Vec2) {
+    if sizes.is_empty() {
+        return (Vec::new(), Vec2::ZERO);
+    }
+    let total: f32 = sizes.iter().map(|size| size.x + TOWER_GAP).sum();
     let limit = (total.sqrt() * 8.0)
         .max(narrowest - 2.0 * MARGIN)
-        .max(widths.iter().copied().fold(0.0, f32::max));
+        .max(sizes.iter().map(|size| size.x).fold(0.0, f32::max));
 
-    let (mut x, mut y, mut widest) = (0.0_f32, 0.0_f32, 0.0_f32);
-    for (item, width) in items.iter_mut().zip(widths) {
-        if x > 0.0 && x + width > limit {
+    let (mut x, mut y, mut deepest, mut widest) = (0.0_f32, 0.0_f32, 0.0_f32, 0.0_f32);
+    let mut corners = Vec::with_capacity(sizes.len());
+    for size in sizes {
+        if x > 0.0 && x + size.x > limit {
             x = 0.0;
-            y += ROW;
+            y += deepest + ROW - WALL;
+            deepest = 0.0;
         }
-        item.area = Rect::from_min_size(pos2(MARGIN + x, MARGIN + y), vec2(width, WALL));
-        widest = widest.max(x + width);
-        x += width + TOWER_GAP;
+        corners.push(pos2(MARGIN + x, MARGIN + y));
+        widest = widest.max(x + size.x);
+        deepest = deepest.max(size.y);
+        x += size.x + TOWER_GAP;
     }
-    vec2(widest + 2.0 * MARGIN, y + WALL + 2.0 * MARGIN)
+    (
+        corners,
+        vec2(widest + 2.0 * MARGIN, y + deepest + 2.0 * MARGIN),
+    )
 }
 
 #[cfg(test)]
@@ -324,6 +472,7 @@ mod tests {
                 .collect(),
             area: Rect::from_min_size(pos2(10.0, 100.0), vec2(30.0, WALL)),
             base: 0.0,
+            declaration: Default::default(),
         }
     }
 
@@ -351,25 +500,27 @@ mod tests {
     }
 
     #[test]
-    fn the_tallest_towers_of_a_block_stand_at_the_back() {
-        let mut items: Vec<Item> = [3, 40, 12, 25, 8]
-            .iter()
-            .map(|&lines| item(&vec![(0, 200); lines]))
-            .collect();
-
-        place(&mut items, 48.0);
-
-        for one in &items {
-            for other in &items {
-                if height(one) > height(other) {
-                    assert!(
-                        one.area.min.y <= other.area.min.y,
-                        "{} floors stand in front of {} floors",
-                        one.floors.len(),
-                        other.floors.len()
-                    );
-                }
+    fn a_shorter_building_stands_in_front_of_the_one_it_stands_beside() {
+        for lines in [[3, 40], [40, 3]] {
+            let mut items: Vec<Item> = lines
+                .iter()
+                .map(|&lines| item(&vec![(0, 200); lines]))
+                .collect();
+            for (n, item) in items.iter_mut().enumerate() {
+                item.path = PathBuf::from(format!("/p/a.rs/f{n}"));
             }
+
+            place(&mut items, NodeKind::Code, 48.0);
+
+            let (short, tall) = if lines[0] < lines[1] {
+                (items[0].area, items[1].area)
+            } else {
+                (items[1].area, items[0].area)
+            };
+            assert!(
+                short.min.x >= tall.max.x || short.min.y >= tall.max.y,
+                "{lines:?}: short {short:?}, tall {tall:?}"
+            );
         }
     }
 
@@ -383,7 +534,7 @@ mod tests {
             item.path = PathBuf::from(format!("/p/a.rs/f{n}"));
         }
         items[5].tests = true;
-        place(&mut items, 48.0);
+        place(&mut items, NodeKind::Code, 48.0);
         let block: Vec<&Item> = items.iter().collect();
         let name = |item: Option<&Item>| item.map(|item| item.path.file_name().unwrap().to_owned());
         let at = |n: usize| &items[n];
@@ -419,7 +570,7 @@ mod tests {
         for (n, item) in items.iter_mut().enumerate() {
             item.path = PathBuf::from(format!("/p/a.rs/f{n}"));
         }
-        place(&mut items, 48.0);
+        place(&mut items, NodeKind::Code, 48.0);
         let block: Vec<&Item> = items.iter().collect();
 
         let back = &items[0];
@@ -431,6 +582,35 @@ mod tests {
             Some(&back.path)
         );
         assert_eq!(neighbour(&block, back, Toward::Behind), None);
+    }
+
+    #[test]
+    fn walking_steps_between_buildings_and_a_tier_walks_as_its_base() {
+        let mut items: Vec<Item> = [3, 9, 6, 12]
+            .iter()
+            .map(|&lines| item(&vec![(0, 150); lines]))
+            .collect();
+        for (item, name) in items.iter_mut().zip(["T", "T::f", "T::g", "h"]) {
+            item.path = PathBuf::from(format!("/p/a.rs/{name}"));
+        }
+        for tier in &mut items[1..3] {
+            tier.declaration.part_of = Some(PathBuf::from("/p/a.rs/T"));
+        }
+        place(&mut items, NodeKind::Code, 48.0);
+        let block: Vec<&Item> = items.iter().collect();
+        let path = |item: Option<&Item>| item.map(|item| item.path.clone());
+
+        assert_eq!(
+            path(neighbour(&block, &items[1], Toward::Front)),
+            Some(items[3].path.clone()),
+            "from a tier, as from its base"
+        );
+        assert_eq!(
+            path(neighbour(&block, &items[3], Toward::Behind)),
+            Some(items[0].path.clone()),
+            "to the base, not a tier"
+        );
+        assert_eq!(neighbour(&block, &items[0], Toward::Left), None);
     }
 
     #[test]
@@ -456,7 +636,7 @@ mod tests {
     fn towers_on_a_block_never_share_ground() {
         let mut items: Vec<Item> = (1..30).map(|n| item(&[(0, n * 7)])).collect();
 
-        let size = place(&mut items, 120.0);
+        let size = place(&mut items, NodeKind::Code, 120.0);
 
         for (i, one) in items.iter().enumerate() {
             assert!(Rect::from_min_size(pos2(0.0, 0.0), size).contains_rect(one.area));

@@ -6,8 +6,10 @@
 //! repository git says which files it shows, elsewhere the folder is walked,
 //! and hidden folders are left out either way. Rust files are read with
 //! tree-sitter into items: functions, types and `use` blocks, line by line,
-//! with the calls they make resolved to the item called. Any other file
-//! holding text is read as one tower of its lines. With ignored files switched on,
+//! with the calls they make resolved to the item called. Every file is told
+//! by its kind, and any other file holding text is read in the parts its
+//! kind has: a document's sections, a configuration's keys, a feature
+//! file's scenarios; else one tower of its lines. With ignored files switched on,
 //! the folder is walked into hidden folders too, only `.git` folders are left
 //! out, and a large ignored folder stays closed: one node with its file count. [`load`] is an ordinary blocking function and
 //! [`start_load`] is the thread around it.
@@ -17,13 +19,14 @@ mod co_change;
 mod event;
 mod files;
 mod git;
+mod kinds;
 mod plain;
 mod rust;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 
-use cellworks_map::{Directories, PrefixRule, ProjectMap};
+use cellworks_map::{Directories, NodeKind, PrefixRule, ProjectMap};
 
 pub use event::CodeAnalysisEvent;
 pub use git::{GitCli, GitListing, GitUnavailable};
@@ -104,7 +107,13 @@ pub fn load(
     // A file no parser read stands as one tower of its lines.
     let unread: Vec<&PathBuf> = files.iter().filter(|f| !items.contains_key(*f)).collect();
     items.extend(plain::read(root, unread));
-    let mut map = ProjectMap::of_code(name, root, &files, &Directories { prefix }, items);
+    let kinds = files
+        .iter()
+        .map(|file| (file.clone(), kinds::kind_of(file)))
+        .filter(|(_, kind)| *kind != NodeKind::Code)
+        .collect();
+    let strategy = Directories { prefix };
+    let mut map = ProjectMap::of_code(name, root, &files, &strategy, items, &kinds);
     map.close(&closed);
     // Without history the co-change lens is empty; git saying why has been
     // reported with the listing already.
@@ -231,6 +240,29 @@ mod tests {
 
             assert_eq!(git.asked.get(), kind != "none", "{kind}");
         }
+    }
+
+    #[test]
+    fn each_node_carries_the_kind_of_its_file() {
+        let tree = tree(&["README.md", "src/main.rs", "deploy/main.tf"]);
+
+        let events = read(tree.path(), &Recorded::listing(&[]));
+
+        let map = map_of(&events);
+        let kind = |file: &str| {
+            map.districts
+                .iter()
+                .flat_map(|d| {
+                    d.nodes
+                        .iter()
+                        .chain(d.sub_districts.iter().flat_map(|s| &s.nodes))
+                })
+                .find(|node| node.path.ends_with(file))
+                .map(|node| node.kind)
+        };
+        assert_eq!(kind("README.md"), Some(NodeKind::Document));
+        assert_eq!(kind("src/main.rs"), Some(NodeKind::Code));
+        assert_eq!(kind("deploy/main.tf"), Some(NodeKind::Infrastructure));
     }
 
     #[test]

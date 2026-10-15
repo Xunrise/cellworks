@@ -75,13 +75,7 @@ impl Flight {
 
 /// How long the tower at `path` waits to take off: always the same for it.
 fn delay(path: &std::path::Path) -> f64 {
-    let hash = path
-        .as_os_str()
-        .as_encoded_bytes()
-        .iter()
-        .fold(2_166_136_261_u32, |h, b| {
-            (h ^ u32::from(*b)).wrapping_mul(16_777_619)
-        });
+    let hash = crate::arrange::seed(path.as_os_str().as_encoded_bytes());
     f64::from(hash % 1000) / 1000.0 * STAGGER
 }
 
@@ -107,6 +101,7 @@ mod tests {
                 floors: Vec::new(),
                 area: node.area,
                 base: 0.0,
+                declaration: Default::default(),
             });
         }
         map

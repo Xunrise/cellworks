@@ -14,13 +14,15 @@ use egui::Rect;
 
 use super::Lens;
 use super::cluster::{Weights, communities, link};
-use crate::graph::{self, District, DistrictKind, Item, ItemKind, Node, ProjectMap};
+use crate::graph::{self, District, DistrictKind, Item, ItemKind, Node, NodeKind, ProjectMap};
 
 /// What a lens connects, with the items it carries.
 pub(crate) struct Unit {
     /// The file the unit comes from.
     pub file: PathBuf,
     pub items: Vec<Item>,
+    /// The kind of the node it comes from.
+    pub kind: NodeKind,
 }
 
 /// How a lens groups its units into blocks.
@@ -40,13 +42,14 @@ pub(crate) fn rebuild(folders: &ProjectMap, lens: Lens, blocks_of: Blocks) -> Ve
     let labels = blocks_of(&units, &weights);
 
     let mut blocks: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    let mut outskirts: BTreeMap<PathBuf, Vec<Item>> = BTreeMap::new();
+    let mut outskirts: BTreeMap<PathBuf, (NodeKind, Vec<Item>)> = BTreeMap::new();
     for (unit, label) in labels.iter().enumerate() {
         match label {
             Some(label) => blocks.entry(*label).or_default().push(unit),
             None => outskirts
                 .entry(units[unit].file.clone())
-                .or_default()
+                .or_insert_with(|| (units[unit].kind, Vec::new()))
+                .1
                 .extend(units[unit].items.iter().cloned()),
         }
     }
@@ -86,6 +89,15 @@ pub(crate) fn rebuild(folders: &ProjectMap, lens: Lens, blocks_of: Blocks) -> Ve
             *files.entry(&units[*u].file).or_default() += 1;
             items.extend(units[*u].items.iter().cloned());
         }
+        // A block of one kind of file stands as that kind; a mixed one as
+        // code.
+        let mut kinds = members.iter().map(|u| units[*u].kind);
+        let first = kinds.next().unwrap_or_default();
+        let kind = if kinds.all(|kind| kind == first) {
+            first
+        } else {
+            NodeKind::Code
+        };
         let main = files
             .iter()
             .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
@@ -103,6 +115,7 @@ pub(crate) fn rebuild(folders: &ProjectMap, lens: Lens, blocks_of: Blocks) -> Ve
             path,
             items,
             area: Rect::NOTHING,
+            kind,
         }
     };
 
@@ -163,6 +176,7 @@ pub(crate) fn rebuild(folders: &ProjectMap, lens: Lens, blocks_of: Blocks) -> Ve
             path: place(&["tests".to_owned(), j.to_string()]),
             items,
             area: Rect::NOTHING,
+            kind: NodeKind::Code,
         };
         match votes
             .into_iter()
@@ -203,11 +217,12 @@ pub(crate) fn rebuild(folders: &ProjectMap, lens: Lens, blocks_of: Blocks) -> Ve
         outskirts
             .into_iter()
             .enumerate()
-            .map(|(j, (file, items))| Node {
+            .map(|(j, (file, (kind, items)))| Node {
                 name: name_of(&file),
                 path: place(&["outskirts".to_owned(), j.to_string()]),
                 items,
                 area: Rect::NOTHING,
+                kind,
             }),
     );
     if !far.is_empty() {
@@ -244,12 +259,14 @@ fn units(folders: &ProjectMap, lens: Lens) -> (Vec<Unit>, Vec<(PathBuf, Vec<Item
                 Lens::Calls => units.extend(code.into_iter().map(|item| Unit {
                     file: node.path.clone(),
                     items: vec![item],
+                    kind: node.kind,
                 })),
                 // A file of only tests has nothing left to place.
                 _ if code.is_empty() && !node.items.is_empty() => {}
                 _ => units.push(Unit {
                     file: node.path.clone(),
                     items: code,
+                    kind: node.kind,
                 }),
             }
         }

@@ -135,16 +135,17 @@ pub fn await_lens(harness: &mut Harness<'_, CellworksApp>) {
     }
 }
 
-/// Lets the read, or the read again, finish, then draws the frame that shows it.
+/// Lets the read, or the read again, finish and the map's lanes and
+/// building features be worked out, then draws the frame that shows it.
 pub fn await_read(harness: &mut Harness<'_, CellworksApp>) {
     let started = Instant::now();
     loop {
         harness.state_mut().apply_pending();
-        let reading = harness
+        let busy = harness
             .state()
             .opened()
-            .is_some_and(|opened| opened.is_reading());
-        if !reading || started.elapsed() > Duration::from_secs(30) {
+            .is_some_and(|opened| opened.is_reading() || opened.is_preparing());
+        if !busy || started.elapsed() > Duration::from_secs(30) {
             break;
         }
         std::thread::sleep(Duration::from_millis(5));

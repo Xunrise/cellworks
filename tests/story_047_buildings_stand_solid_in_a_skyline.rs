@@ -74,8 +74,10 @@ fn the_taller_tower_stands_behind_the_shorter_one() {
     let total = map.item(&shop.at("total")).expect("total").area;
     let discount = map.item(&shop.at("discount")).expect("discount").area;
 
+    // Farther back is higher up the screen: ground x and y both run down it.
+    let depth = |ground: egui::Rect| ground.center().x + ground.center().y;
     assert!(
-        total.max.y < discount.min.y,
+        depth(total) < depth(discount),
         "total {total:?}, discount {discount:?}"
     );
 }

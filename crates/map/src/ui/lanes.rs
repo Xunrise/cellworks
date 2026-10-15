@@ -11,6 +11,7 @@ use egui::{Color32, Pos2, Rect, Shape, Stroke, StrokeKind, pos2, vec2};
 
 use super::{DIM, INK, LINE_STRONG, PANEL};
 use crate::Item;
+use crate::arrange::seed;
 use crate::graph::ProjectMap;
 use crate::lanes::{self, LaneId, LaneKind, Lanes};
 use crate::view::View;
@@ -91,12 +92,6 @@ const AIR_REST: (f32, f32) = (2.5, 11.5);
 pub fn colour_of(path: &Path) -> Color32 {
     let hash = seed(path.as_os_str().as_encoded_bytes());
     egui::ecolor::Hsva::new((hash % 997) as f32 / 997.0, 0.75, 1.0, 1.0).into()
-}
-
-fn seed(bytes: &[u8]) -> u32 {
-    bytes.iter().fold(2_166_136_261_u32, |h, b| {
-        (h ^ u32::from(*b)).wrapping_mul(16_777_619)
-    })
 }
 
 /// The width of a pipe carrying `n` imports.

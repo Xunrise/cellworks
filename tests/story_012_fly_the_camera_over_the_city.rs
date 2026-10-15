@@ -139,7 +139,16 @@ fn fitting_brings_the_whole_city_into_view() {
         shop.harness.event(Event::Zoom(1.5));
         shop.harness.run();
     }
-    assert!(!in_window(shop.rect_of("orders")), "zoomed into orders");
+    let ground = map(&shop.harness)
+        .find(&shop.tree.root.join("orders"))
+        .expect("orders")
+        .area;
+    let view = shop.harness.state().view().expect("drawn");
+    let seen = Rect::from_points(&[
+        view.to_screen(ground.left_top(), 0.0),
+        view.to_screen(ground.right_bottom(), 0.0),
+    ]);
+    assert!(!in_window(seen), "zoomed into orders: {seen:?}");
 
     shop.press(Key::F);
 
@@ -168,11 +177,14 @@ fn the_minimap_shows_where_the_view_is_and_jumps_on_request() {
     shop.harness.get_by_label("orders on the minimap").click();
     shop.harness.run();
 
-    let orders = shop.rect_of("orders");
-    assert!(
-        (orders.center().x - WIDTH / 2.0).abs() < 2.0,
-        "orders at {orders:?}"
-    );
+    // The middle of its ground stands in the middle of the view.
+    let ground = map(&shop.harness)
+        .find(&shop.tree.root.join("orders"))
+        .expect("orders")
+        .area;
+    let view = shop.harness.state().view().expect("drawn");
+    let orders = view.to_screen(ground.center(), 0.0);
+    assert!((orders.x - WIDTH / 2.0).abs() < 2.0, "orders at {orders:?}");
     let frame = shop.rect_of("View on the minimap");
     let spot = shop.rect_of("orders on the minimap").center();
     assert!(frame.contains(spot), "{frame:?} does not mark {spot:?}");

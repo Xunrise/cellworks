@@ -25,8 +25,9 @@ pub(crate) fn core(districts: &[District]) -> Vec<usize> {
         .collect()
 }
 
+/// The radius of the circle around `district`'s ground.
 fn radius(district: &District) -> f32 {
-    district.area.width() / 2.0
+    district.area.size().length() / 2.0
 }
 
 /// A network: districts linked by `weights` pull together, all push each

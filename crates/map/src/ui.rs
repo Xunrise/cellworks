@@ -12,18 +12,20 @@ use std::path::{Path, PathBuf};
 
 use egui::{Color32, Pos2, Rect, RichText, Sense, Shape, Stroke, StrokeKind, Vec2, pos2, vec2};
 
+mod buildings;
 mod explain;
 mod lanes;
 
+pub use buildings::{DrawnBridge, DrawnBuilding, bridge_card};
 pub use explain::{banner, caption, caption_text, lane_toggles, legend, legend_text, lens_bar};
 pub use lanes::{DrawnLane, colour_of};
 
 use crate::Framing;
 use crate::city::{self, iso, iso_bounds};
-use crate::graph::{DistrictKind, Group, Item, ItemKind, Node, ProjectMap};
+use crate::graph::{Declares, DistrictKind, Group, Item, ItemKind, Node, NodeKind, ProjectMap};
 use crate::layout::TITLE;
 use crate::view::{Pivot, View, fit, turn_at};
-use crate::{LaneId, LaneKind, Lanes, Lens};
+use crate::{Bridge, Form, LaneId, LaneKind, Lanes, Lens, Trim};
 
 /// One frame of the map as drawn.
 pub struct Drawn {
@@ -40,6 +42,14 @@ pub struct Drawn {
     pub view: View,
     /// The towers drawn, back to front.
     pub towers: Vec<DrawnTower>,
+    /// The buildings drawn, by their bases, back to front.
+    pub buildings: Vec<DrawnBuilding>,
+    /// The skybridges drawn.
+    pub bridges: Vec<DrawnBridge>,
+    /// The cables drawn.
+    pub cables: Vec<Cable>,
+    /// The skybridge under the pointer, if any.
+    pub bridge_hovered: Option<crate::Bridge>,
     /// How far the ground was dragged this frame, at the layout's scale.
     pub dragged: Vec2,
     /// The space the map was drawn in. Names placed past its edge make the
@@ -47,9 +57,12 @@ pub struct Drawn {
     pub panel: Rect,
     /// Every district drawn, with the outline it was drawn in.
     pub districts: Vec<(PathBuf, Outline)>,
-    /// In the folders lens, every folder drawn as a ring, and whether its
-    /// name is written on it.
-    pub rings: Vec<(PathBuf, bool)>,
+    /// In the folders lens, every folder drawn by its outline, and whether
+    /// its name is written on it.
+    pub folders: Vec<(PathBuf, bool)>,
+    /// Every block, folder and district drawn by its outline; the outline
+    /// itself is the network's, not copied every frame.
+    pub outlines: Vec<PathBuf>,
     /// Every lane drawn.
     pub lanes: Vec<DrawnLane>,
     /// The lane clicked, if any.
@@ -105,7 +118,8 @@ pub struct DrawnTower {
     pub path: PathBuf,
     pub colour: Color32,
     /// Where each floor went on screen, the ground floor first; far out, where
-    /// the floors are no longer told apart, one span up the tower's middle.
+    /// the floors are no longer told apart, and for a terrace or a monument
+    /// until close enough to read its lines, one span up the tower's middle.
     pub floors: Vec<Span>,
     /// The screen rectangle its building covers.
     pub outline: Rect,
@@ -147,6 +161,49 @@ const PANEL: Color32 = Color32::from_rgb(0x0d, 0x11, 0x17);
 const LINE_STRONG: Color32 = Color32::from_rgb(0x34, 0x50, 0x6a);
 const FLOW: Color32 = Color32::from_rgb(0x5e, 0xf6, 0xff);
 const ATTENTION_SOFT: Color32 = Color32::from_rgb(0x3a, 0x36, 0x08);
+
+/// The colours of the crowns, one per interface, and the fill of a crown.
+const CROWN_HUES: [Color32; 5] = [
+    Color32::from_rgb(0x5e, 0xf6, 0xff),
+    Color32::from_rgb(0xb2, 0x6b, 0xff),
+    Color32::from_rgb(0xff, 0xb3, 0x5c),
+    Color32::from_rgb(0x4a, 0xa8, 0xff),
+    Color32::from_rgb(0xff, 0x5c, 0xa8),
+];
+const CROWN_FILL: Color32 = Color32::from_rgb(0x0b, 0x2a, 0x2e);
+
+/// The paving of a forecourt, and the colour of a mast's head.
+const PAVING: Color32 = Color32::from_rgb(0x14, 0x1a, 0x22);
+const CABLE: Color32 = Color32::from_rgb(0xb2, 0x6b, 0xff);
+
+/// The colours of the buildings of files that are not code, by kind; a
+/// contract, an example of secrets and an image are drawn in [`FLOW`], a
+/// build file in [`DIM`]; and the fill of a sealed vault.
+const DOCUMENT: Color32 = Color32::from_rgb(0x4a, 0xa8, 0xff);
+const CONFIGURATION: Color32 = Color32::from_rgb(0xff, 0xb3, 0x5c);
+const SPECIFICATION: Color32 = Color32::from_rgb(0xb2, 0x6b, 0xff);
+const INFRASTRUCTURE: Color32 = Color32::from_rgb(0xff, 0x9f, 0x1c);
+const SECRETS: Color32 = Color32::from_rgb(0xff, 0x3b, 0x5c);
+const GENERATED: Color32 = Color32::from_rgb(0x2c, 0x3b, 0x4a);
+const SCHEMA: Color32 = Color32::from_rgb(0x34, 0x50, 0x6a);
+const VAULT: Color32 = Color32::from_rgb(0x16, 0x05, 0x0a);
+
+/// The colour the buildings of a node of `kind` are drawn in; `None` for
+/// code, which keeps its district's.
+fn kind_colour(kind: NodeKind) -> Option<Color32> {
+    match kind {
+        NodeKind::Code => None,
+        NodeKind::Document => Some(DOCUMENT),
+        NodeKind::Configuration => Some(CONFIGURATION),
+        NodeKind::Specification => Some(SPECIFICATION),
+        NodeKind::Infrastructure => Some(INFRASTRUCTURE),
+        NodeKind::Build => Some(DIM),
+        NodeKind::Contract | NodeKind::SecretsExample | NodeKind::Image => Some(FLOW),
+        NodeKind::Secrets => Some(SECRETS),
+        NodeKind::Generated => Some(GENERATED),
+        NodeKind::Schema => Some(SCHEMA),
+    }
+}
 
 /// The colours of the districts, in the order the map lists them; an eighth
 /// district takes the first colour again.
@@ -289,6 +346,9 @@ fn brackets(shapes: &mut Vec<Shape>, rect: Rect, colour: Color32) {
     }
 }
 
+/// How far from a skybridge's top, on screen, a pointer still points at it.
+const BRIDGE_REACH: f32 = 6.0;
+
 /// How far from a line's points, on screen, a pointer still hits the line.
 const PICK_REACH: f32 = 3.0;
 
@@ -297,18 +357,21 @@ const PICK_REACH: f32 = 3.0;
 const TOKENS_FROM: f32 = 0.8;
 
 /// Below this scale a tower's floors are no longer told apart: it is drawn
-/// as its box with a lit front, and picked by its middle.
+/// as its box with a lit front, and picked by its middle. Its building keeps
+/// its form, spire and beacon; doors, courtyard, forecourt, masts, cables,
+/// crowns and the wires and pipes on the ground are left out with the
+/// floors, and a skybridge is drawn in one piece.
 const BOXES_BELOW: f32 = 0.5;
 
 /// How brightly a far-out tower's front is lit, against a line's.
 const BOX_FACE: f32 = 0.6;
 
-/// How much wider than its name a folder ring is on screen before the name
+/// How much wider than its name a folder outline is on screen before the name
 /// is written on it.
 const NAME_ROOM: f32 = 1.5;
 
-/// The size of a folder ring's name.
-const RING_NAME: f32 = 11.0;
+/// The size of a folder outline's name.
+const FOLDER_NAME: f32 = 11.0;
 
 /// The colour of the district at `index` in the map's list.
 fn district_colour(index: usize) -> Color32 {
@@ -329,7 +392,7 @@ struct Painter<'a> {
     colour: Color32,
     plaza: Option<Pos2>,
     labels: Vec<Labelled<'a>>,
-    towers: Vec<(&'a Item, Color32)>,
+    towers: Vec<Standing<'a>>,
     /// The ground of every block drawn, the node it stands for, and how high
     /// it is raised.
     blocks: Vec<(Rect, &'a Path, f32)>,
@@ -351,11 +414,31 @@ struct Painter<'a> {
     /// The district whose name was dragged this frame, how far on screen,
     /// and whether the drag ended.
     name_dragged: Option<(PathBuf, Vec2, bool)>,
-    /// Whether folders are drawn as rings (the folders lens): a ring inside
-    /// the ring of the folder holding it, blocks without avenues.
-    rings: bool,
-    /// Every folder ring named this frame, and whether its name is written.
-    ring_names: Vec<(PathBuf, bool)>,
+    /// Whether folders are drawn by their outlines (the folders lens): an
+    /// outline inside the outline of the folder holding it, blocks without
+    /// avenues.
+    folders: bool,
+    /// Every folder outline named this frame, and whether its name is
+    /// written.
+    folder_names: Vec<(PathBuf, bool)>,
+    /// The outline of every block, folder and district, once worked out.
+    outlines: Option<&'a std::collections::HashMap<PathBuf, Vec<Pos2>>>,
+    /// The blocks, folders and districts drawn by their outlines this frame.
+    outlines_drawn: Vec<PathBuf>,
+    /// What each building shows of itself and where each item stands in
+    /// one, once worked out.
+    buildings: Option<&'a crate::Buildings>,
+    /// The skybridges between the buildings, once worked out.
+    bridges: &'a [Bridge],
+    /// Whether the cables from the masts are shown.
+    cables: bool,
+    /// The cables drawn this frame.
+    cables_drawn: Vec<Cable>,
+    /// The skybridge pointed at this frame, if any.
+    bridge_hovered: Option<crate::Bridge>,
+    /// The billboard of each image on a block of its own: the node, its
+    /// ground and how high it is raised.
+    billboards: Vec<(&'a Path, Rect, f32)>,
 }
 
 /// A name to put on the map: the ground it names, how it is written, the
@@ -363,14 +446,14 @@ struct Painter<'a> {
 type Labelled<'a> = (Rect, Naming, &'a str, &'a Path, f32);
 
 /// How a name is written: a district's in its colour along its front,
-/// always; a folder ring's on its front once the ring has room for it; a
-/// block with code on it just below its front edge, quietly and only close
-/// enough to read. Folders below a district that are not rings, and blocks
-/// without code, are named for the accessibility tree only.
+/// always; a folder outline's on its front once the outline has room for
+/// it; a block with code on it just below its front edge, quietly and only
+/// close enough to read. Folders below a district drawn without an outline,
+/// and blocks without code, are named for the accessibility tree only.
 #[derive(Clone, Copy)]
 enum Naming {
     District(Color32),
-    Ring,
+    FolderOutline,
     Folder,
     /// A block, and whether it has code on it.
     Block(bool),
@@ -399,6 +482,8 @@ pub struct ViewOptions<'a> {
     pub picked: Option<&'a LaneId>,
     /// The map's lanes, worked out once for it; no lane is drawn without.
     pub network: Option<&'a crate::Network>,
+    /// Whether a cable runs from each mast to the building it calls.
+    pub cables: bool,
 }
 
 /// A click on a lane: the lane, and with Cmd held the tower at its far end
@@ -422,6 +507,7 @@ pub fn project(ui: &mut egui::Ui, map: &ProjectMap, options: ViewOptions<'_>) ->
         lanes: shown,
         picked,
         network,
+        cables,
     } = options;
     let panel = ui.available_rect_before_wrap();
     let view = fit(framing, panel);
@@ -449,8 +535,16 @@ pub fn project(ui: &mut egui::Ui, map: &ProjectMap, options: ViewOptions<'_>) ->
         cycles: &map.cycles,
         arranging: map.lens == Lens::Custom,
         name_dragged: None,
-        rings: map.lens == Lens::Folders,
-        ring_names: Vec::new(),
+        folders: map.lens == Lens::Folders,
+        folder_names: Vec::new(),
+        outlines: network.map(|network| &network.buildings.outlines),
+        outlines_drawn: Vec::new(),
+        buildings: network.map(|network| &network.buildings),
+        bridges: network.map_or(&[], |network| &network.buildings.bridges),
+        cables,
+        cables_drawn: Vec::new(),
+        bridge_hovered: None,
+        billboards: Vec::new(),
     };
     orbits(ui, map, &view);
     let mut outlines = Vec::new();
@@ -490,12 +584,12 @@ pub fn project(ui: &mut egui::Ui, map: &ProjectMap, options: ViewOptions<'_>) ->
     roads(ui, map, &view);
     // The quiet names of folders and blocks lie under the ground's sense, so
     // a click on a tower standing over a name reaches the tower; the names of
-    // districts, and of folder rings written on them, lie over it.
+    // districts, and of folder outlines written on them, lie over it.
     let (districts, quiet): (Vec<_>, Vec<_>) = std::mem::take(&mut painter.labels)
         .into_iter()
-        .partition(|(area, naming, name, _, lift)| match naming {
+        .partition(|(area, naming, name, path, lift)| match naming {
             Naming::District(_) => true,
-            Naming::Ring => painter.ring_has_room(*area, name, *lift),
+            Naming::FolderOutline => painter.outline_has_room(*area, path, name, *lift),
             Naming::Folder | Naming::Block(_) => false,
         });
     for (area, naming, name, path, lift) in quiet {
@@ -564,7 +658,7 @@ pub fn project(ui: &mut egui::Ui, map: &ProjectMap, options: ViewOptions<'_>) ->
     let mut shapes = Vec::new();
     lanes::draw(&mut frame, LaneKind::Imports, &view, time, &mut shapes);
     ui.painter().extend(shapes);
-    let (towers, hovered) = painter.towers(ui, pointer);
+    let (towers, buildings, bridges, hovered) = painter.towers(ui, pointer);
     let mut shapes = Vec::new();
     lanes::draw(&mut frame, LaneKind::Calls, &view, time, &mut shapes);
     ui.painter().extend(shapes);
@@ -615,17 +709,17 @@ pub fn project(ui: &mut egui::Ui, map: &ProjectMap, options: ViewOptions<'_>) ->
             .iter()
             .find(|(area, _, lift)| area.contains(view.to_ground_at(at, *lift)))
             .map(|(_, path, _)| path.to_path_buf());
-        // In the folders lens a click on a ring's open ground selects the
+        // In the folders lens a click on a folder's open ground selects the
         // innermost folder holding it; a district's open ground is empty
         // ground.
-        let ring = || {
+        let folder = || {
             let chain = map.at(view.to_ground(at));
             match chain.as_slice() {
-                [_district, .., folder] if painter.rings => Some(folder.to_path_buf()),
+                [_district, .., folder] if painter.folders => Some(folder.to_path_buf()),
                 _ => None,
             }
         };
-        match tower.or(block).or_else(ring) {
+        match tower.or(block).or_else(folder) {
             Some(path) => painter.clicked = Some(path),
             None => ground_clicked = true,
         }
@@ -646,10 +740,15 @@ pub fn project(ui: &mut egui::Ui, map: &ProjectMap, options: ViewOptions<'_>) ->
         hovered,
         view,
         towers,
+        buildings,
+        bridges,
+        cables: painter.cables_drawn,
+        bridge_hovered: painter.bridge_hovered,
         dragged,
         panel,
         districts: outlines,
-        rings: painter.ring_names,
+        folders: painter.folder_names,
+        outlines: painter.outlines_drawn,
         lane_hovered: frame.hovered.map(|i| frame.lanes[i].id.clone()),
         lanes: frame.lanes,
         lane_clicked,
@@ -700,8 +799,8 @@ fn roads(ui: &egui::Ui, map: &ProjectMap, view: &View) {
     for (up, down, kind) in &map.roads {
         let (a, b) = (map.districts[*up].area, map.districts[*down].area);
         let dir = (b.center() - a.center()).normalized();
-        let start = a.center() + dir * a.width() / 2.0;
-        let end = b.center() - dir * b.width() / 2.0;
+        let start = a.center() + dir * round(a).width() / 2.0;
+        let end = b.center() - dir * round(b).width() / 2.0;
         let line = [view.to_screen(start, 0.0), view.to_screen(end, 0.0)];
         ui.painter().line_segment(line, Stroke::new(9.0, NIGHT));
         ui.painter().line_segment(line, Stroke::new(6.0, ROAD));
@@ -781,9 +880,10 @@ impl<'a> Painter<'a> {
     /// is shown (`inside`), it is the folder view, or there is no folder view.
     /// Outside the folder view the city stays, faded, and its names are not
     /// put on the map. A district is a plaza: a round ground faintly tinted in
-    /// its colour with a dashed edge. In the folders lens a deeper folder is
-    /// a finer dashed ring in that colour; elsewhere it has no ground of its
-    /// own, only its name. Returns whether it is shown, which is whether what
+    /// its colour with a dashed edge; in the folders lens its ground follows
+    /// its outline. In the folders lens a deeper folder is a finer dashed
+    /// outline in that colour; elsewhere it has no ground of its own, only
+    /// its name. Returns whether it is shown, which is whether what
     /// it holds is shown.
     fn ground(
         &mut self,
@@ -796,13 +896,18 @@ impl<'a> Painter<'a> {
     ) -> bool {
         let shown = inside || self.folder_view.is_none_or(|folder| folder == path);
         let fade = if shown { 1.0 } else { OUTSIDE };
+        let by_outline = self.folders && (!district || self.outline == Outline::Plaza);
+        if by_outline && self.outline_of(path).is_some() {
+            self.outlines_drawn.push(path.to_path_buf());
+        }
         if district {
             let ring = match self.outline {
+                Outline::Plaza if self.folders => self.round(area, path, self.lift),
                 Outline::Plaza | Outline::Orbit | Outline::Membrane | Outline::Own => {
-                    self.view.ring(area, self.lift)
+                    self.view.ring(round(area), self.lift)
                 }
                 Outline::Step => self.view.corners(area, self.lift),
-                Outline::Hexagon => self.view.polygon(area, 6, self.lift),
+                Outline::Hexagon => self.view.polygon(round(area), 6, self.lift),
             };
             let fill = self.colour.gamma_multiply(0.03 * fade);
             ui.painter()
@@ -823,7 +928,7 @@ impl<'a> Painter<'a> {
                     ui.painter().add(Shape::line(closed.clone(), membrane));
                     let ring = Stroke::new(1.8, self.colour.gamma_multiply(0.5 * fade));
                     ui.painter().add(Shape::line(closed, ring));
-                    let inner = Rect::from_center_size(area.center(), area.size() * 0.94);
+                    let inner = round(area).scale_from_center(0.94);
                     let mut inner = self.view.ring(inner, self.lift);
                     inner.push(inner[0]);
                     let thin = Stroke::new(1.0, self.colour.gamma_multiply(0.25 * fade));
@@ -831,7 +936,7 @@ impl<'a> Painter<'a> {
                 }
                 Outline::Orbit => {
                     ui.painter().add(Shape::line(closed, solid));
-                    let inner = Rect::from_center_size(area.center(), area.size() * 0.88);
+                    let inner = round(area).scale_from_center(0.88);
                     let mut inner = self.view.ring(inner, self.lift);
                     inner.push(inner[0]);
                     ui.painter()
@@ -840,7 +945,7 @@ impl<'a> Painter<'a> {
             }
             self.plaza = Some(area.center());
             if !shown {
-                let front = Rect::from_points(&self.view.ring(area, self.lift)).center_bottom();
+                let front = Rect::from_points(&self.round(area, path, self.lift)).center_bottom();
                 ui.painter().text(
                     front,
                     egui::Align2::CENTER_BOTTOM,
@@ -850,19 +955,19 @@ impl<'a> Painter<'a> {
                 );
             }
         }
-        if !district && self.rings {
-            let mut ring = self.view.ring(area, self.lift);
-            ring.push(ring[0]);
+        if !district && self.folders {
+            let mut outline = self.round(area, path, self.lift);
+            outline.push(outline[0]);
             let edge = Stroke::new(1.0, self.colour.gamma_multiply(0.3 * fade));
             ui.painter()
-                .extend(Shape::dashed_line(&ring, edge, 4.0, 4.0));
+                .extend(Shape::dashed_line(&outline, edge, 4.0, 4.0));
         }
         if !shown {
             return false;
         }
-        let naming = match (district, self.rings) {
+        let naming = match (district, self.folders) {
             (true, _) => Naming::District(self.colour),
-            (false, true) => Naming::Ring,
+            (false, true) => Naming::FolderOutline,
             (false, false) => Naming::Folder,
         };
         self.labels.push((area, naming, name, path, self.lift));
@@ -874,8 +979,8 @@ impl<'a> Painter<'a> {
     fn nodes(&mut self, ui: &egui::Ui, nodes: &'a [Node], shown: bool) {
         let fade = if shown { 1.0 } else { OUTSIDE };
         for node in nodes {
-            // In the folders lens the rings say which folder a block is in.
-            if let Some(plaza) = self.plaza.filter(|_| !self.rings) {
+            // In the folders lens the outlines say which folder a block is in.
+            if let Some(plaza) = self.plaza.filter(|_| !self.folders) {
                 let avenue = [
                     self.view.to_screen(plaza, self.lift),
                     self.view.to_screen(node.area.center(), self.lift),
@@ -893,11 +998,15 @@ impl<'a> Painter<'a> {
             } else {
                 (GROUND.gamma_multiply(0.85), self.colour.gamma_multiply(0.3))
             };
+            let outline = self.outline_of(&node.path);
             ui.painter().add(Shape::convex_polygon(
-                self.view.corners(node.area, self.lift),
+                self.plotted(outline, node.area, self.lift),
                 fill.gamma_multiply(fade),
                 Stroke::new(1.0, edge.gamma_multiply(fade)),
             ));
+            if outline.is_some() {
+                self.outlines_drawn.push(node.path.clone());
+            }
             if self.cycles.contains(&node.path) {
                 // An import cycle: a warning, dashed and glowing, and said.
                 let mut edge = self.view.corners(node.area.expand(2.0), self.lift);
@@ -932,34 +1041,101 @@ impl<'a> Painter<'a> {
                     self.blocks.push((node.area, &node.path, self.lift));
                 }
             }
-            for item in &node.items {
-                let colour = match item.kind {
-                    ItemKind::Test => TEST_COLOUR,
-                    _ => self
-                        .homes
-                        .get(&item.path)
-                        .map_or(self.colour, |home| district_colour(*home)),
+            let kind = kind_colour(node.kind);
+            let mut home = home_of(self.homes);
+            // Where the items of the block stand, looked up once a block.
+            let stands = self
+                .buildings
+                .and_then(|buildings| Some((buildings, buildings.stands.get(&node.path)?)));
+            for (index, item) in node.items.iter().enumerate() {
+                let colour = match (item.kind, kind) {
+                    (ItemKind::Test, _) => TEST_COLOUR,
+                    (_, Some(kind)) => kind,
+                    _ => home(item).map_or(self.colour, district_colour),
                 };
-                self.towers.push((item, colour.gamma_multiply(fade)));
+                let stand = stands.and_then(|(buildings, stands)| {
+                    let stand = (*stands.get(index)?)?;
+                    let base = node.items.get(stand.base)?;
+                    Some((stand, base, buildings.trims.get(stand.trim)?))
+                });
+                self.towers.push(Standing {
+                    item,
+                    colour: colour.gamma_multiply(fade),
+                    base: stand.map_or(item, |(_, base, _)| base),
+                    is_base: stand.is_none_or(|(stand, _, _)| stand.base == index),
+                    top: stand.is_some_and(|(stand, _, _)| stand.top),
+                    trim: stand.map(|(_, _, trim)| trim),
+                    order: (0.0, 0.0),
+                });
             }
+            // What lies on the ground between the buildings of a kind: the
+            // wires between cabinets, a customs house's border and roads.
+            let colour = kind.unwrap_or(self.colour).gamma_multiply(fade);
+            let mut ground = Vec::new();
+            match node.kind {
+                // Far out the wires are left out with the floors.
+                NodeKind::Configuration if self.view.scale() >= BOXES_BELOW => {
+                    let cabinets = node
+                        .items
+                        .iter()
+                        .filter(|i| i.declaration.part_of.is_none());
+                    let centres: Vec<Pos2> = cabinets.map(|i| i.area.center()).collect();
+                    for pair in centres.windows(2) {
+                        buildings::wire(
+                            &self.view,
+                            &mut ground,
+                            (pair[0], self.lift),
+                            (pair[1], self.lift),
+                            colour,
+                        );
+                    }
+                }
+                NodeKind::Contract => {
+                    for item in &node.items {
+                        buildings::border(&self.view, &mut ground, item.area, self.lift, colour);
+                    }
+                }
+                NodeKind::Image if node.items.is_empty() => {
+                    self.billboards.push((&node.path, node.area, self.lift));
+                }
+                _ => {}
+            }
+            ui.painter().extend(ground);
         }
     }
 
     /// Draws the queued towers, the farthest first so nearer towers stand in
-    /// front of them, and reports each as drawn, with the tower one of whose
-    /// lines is under `pointer`. Towers in front of the tower pointed at, or
-    /// else the selected one, turn to glass where they would hide it. Far out
-    /// a floor is one point at its indentation; close enough, one point per
-    /// token.
+    /// front of them and the tiers of a building above it, and reports each
+    /// tower and building as drawn, with the tower one of whose lines is
+    /// under `pointer`. Towers in front of the tower pointed at, or else the
+    /// selected one, turn to glass where they would hide it, but not the
+    /// tiers of its own building. Far out a floor is one point at its
+    /// indentation; close enough, one point per token. Skybridges are drawn
+    /// in pieces among the towers, each at its own depth, so a tower in
+    /// front of a piece hides it; so are the cables, when shown.
     fn towers(
         &mut self,
         ui: &egui::Ui,
         pointer: Option<Pos2>,
-    ) -> (Vec<DrawnTower>, Option<PathBuf>) {
-        let mut towers = std::mem::take(&mut self.towers);
+    ) -> (
+        Vec<DrawnTower>,
+        Vec<DrawnBuilding>,
+        Vec<DrawnBridge>,
+        Option<PathBuf>,
+    ) {
         let view = self.view;
         let depth = |item: &Item| depth(&view, item);
-        towers.sort_by(|(one, _), (other, _)| depth(one).total_cmp(&depth(other)));
+        // The items of a building are drawn together at the depth of its
+        // base, so what it stands on goes first.
+        let mut towers = std::mem::take(&mut self.towers);
+        for tower in &mut towers {
+            tower.order = (depth(tower.base), depth(tower.item));
+        }
+        towers.sort_by(|one, other| {
+            (one.order.0.total_cmp(&other.order.0))
+                .then(one.order.1.total_cmp(&other.order.1))
+                .then(one.item.base.total_cmp(&other.item.base))
+        });
         let scale = self.view.scale();
         let boxes = scale < BOXES_BELOW;
         let tokens = scale >= TOKENS_FROM;
@@ -968,12 +1144,25 @@ impl<'a> Painter<'a> {
         } else {
             1.8
         };
+        // Close enough, a floor is its line, written along the wall with one
+        // character per column, so each letter stands where its point stood.
+        let advance = ui.fonts_mut(|fonts| fonts.glyph_width(&egui::FontId::monospace(1.0), '0'));
+        let font = city::COLUMN * scale / advance.max(f32::EPSILON);
+        let letters = (font >= LETTERS_FROM).then_some(font);
+        // Only code and the bays of a library show their lines from afar;
+        // other buildings only close enough to read them, a vault never.
+        let shows_floors = |tower: &Standing| match tower.form() {
+            Form::Tower | Form::Skyscraper | Form::Library => true,
+            Form::Vault { .. } => false,
+            _ => letters.is_some(),
+        };
         let mut drawn: Vec<DrawnTower> = towers
             .iter()
-            .map(|(item, colour)| DrawnTower {
+            .map(|tower| (tower, tower.item))
+            .map(|(tower, item)| DrawnTower {
                 path: item.path.clone(),
-                colour: *colour,
-                floors: if boxes {
+                colour: tower.colour,
+                floors: if boxes || !shows_floors(tower) {
                     vec![self.middle(item)]
                 } else {
                     (0..item.floors.len())
@@ -1000,20 +1189,103 @@ impl<'a> Painter<'a> {
             .position(|tower| Some(tower.path.as_path()) == focus)
         {
             let hidden = drawn[index].outline;
-            for tower in &mut drawn[index + 1..] {
-                tower.glass = tower.outline.intersects(hidden);
+            let own = towers[index].base;
+            for (standing, tower) in towers.iter().zip(&mut drawn).skip(index + 1) {
+                tower.glass = tower.outline.intersects(hidden) && !std::ptr::eq(standing.base, own);
             }
         }
+        let mut built = Vec::new();
 
-        // Close enough, a floor is its line, written along the wall with one
-        // character per column, so each letter stands where its point stood.
-        let advance = ui.fonts_mut(|fonts| fonts.glyph_width(&egui::FontId::monospace(1.0), '0'));
-        let font = city::COLUMN * scale / advance.max(f32::EPSILON);
-        let letters = (font >= LETTERS_FROM).then_some(font);
+        // Far out a building keeps its form, spire and beacon; its doors,
+        // courtyard, forecourt, masts, cables and crowns are left out, and a
+        // skybridge is drawn in one piece.
+        let details = !boxes;
+        // The skybridges between buildings, cut into pieces, the farthest
+        // first.
+        let bridges = self.bridges;
+        let mut pieces: Vec<Piece> = bridges
+            .iter()
+            .enumerate()
+            .flat_map(|(index, bridge)| {
+                let ends = ((bridge.start, bridge.z), (bridge.end, bridge.z));
+                let cut = if details {
+                    crate::buildings::pieces(ends.0, ends.1)
+                } else {
+                    vec![[ends.0, ends.1]]
+                };
+                cut.into_iter()
+                    .map(move |ends| Piece::of(&view, Overlay::Bridge(index), ends))
+            })
+            .collect();
+        // How high the masts of `item` stand: on its roof, or in the cellar
+        // hanging from its bottom.
+        let mast_z = |item: &Item, hangs: bool| {
+            if hangs {
+                item.base - city::reach(item)
+            } else {
+                city::height(item)
+            }
+        };
+        // The cables from the tips of the masts shown to the roofs of the
+        // buildings they call; with a selection, only its own.
+        let mut cables: Vec<Cable> = Vec::new();
+        for tower in towers.iter().filter(|_| self.cables && details) {
+            let (item, base) = (tower.item, &tower.base.path);
+            let hangs = city::in_cellar(item);
+            let Some(trim) = tower.trim.filter(|_| {
+                hangs == self.underground
+                    && tower.top
+                    && self
+                        .selected
+                        .is_none_or(|selected| base.starts_with(selected))
+            }) else {
+                continue;
+            };
+            let n = trim.masts.len();
+            for (i, mast) in trim.masts.iter().enumerate() {
+                let tip = crate::buildings::mast(item.area, mast_z(item, hangs), i, n, hangs);
+                let overlay = Overlay::Cable(cables.len());
+                cables.push((base.clone(), mast.target.clone()));
+                pieces.extend(
+                    crate::buildings::pieces(tip, mast.roof)
+                        .into_iter()
+                        .map(|ends| Piece::of(&view, overlay, ends)),
+                );
+            }
+        }
+        // The billboards of the images, each where its block is.
+        let billboards = std::mem::take(&mut self.billboards);
+        for (index, (_, area, lift)) in billboards.iter().enumerate() {
+            let ends = [(area.min, *lift), (area.max, *lift)];
+            pieces.push(Piece::of(&view, Overlay::Billboard(index), ends));
+        }
+        pieces.sort_by(|a, b| a.depth.total_cmp(&b.depth));
+        // The pieces of each skybridge drawn: how many towers were drawn
+        // before it, and its middle on screen.
+        let mut laid: Vec<Vec<(usize, Pos2)>> = vec![Vec::new(); bridges.len()];
+        let mut next = pieces.iter().peekable();
+        let above = if self.underground {
+            ABOVE_UNDERGROUND
+        } else {
+            1.0
+        };
+        let mut lay = |piece: &Piece, before: usize, shapes: &mut Vec<Shape>| {
+            piece.draw(&view, shapes, above);
+            if let Overlay::Bridge(index) = piece.overlay {
+                laid[index].push((before, piece.middle));
+            }
+        };
+
         let turn = self.facing.map_or(0.0, |(_, turn)| turn);
         let clip = ui.painter().clip_rect();
         let mut shapes = Vec::new();
-        for ((item, _), tower) in towers.iter().zip(drawn.iter_mut()) {
+        // The buildings whose ground works, a hall or a plinth, are drawn.
+        let mut founded = std::collections::HashSet::new();
+        for (index, (standing, tower)) in towers.iter().zip(drawn.iter_mut()).enumerate() {
+            let item = standing.item;
+            while let Some(piece) = next.next_if(|piece| piece.depth < depth(item)) {
+                lay(piece, index, &mut shapes);
+            }
             let focused = Some(item.path.as_path()) == focus;
             let mut lit = if focused { FOCUSED } else { 1.0 };
             // Written walls crowd each other: the one being read stands out.
@@ -1034,10 +1306,116 @@ impl<'a> Painter<'a> {
                 _ => 1.0,
             };
             tower.light = lit;
+            let (base, trim, is_base) = (standing.base, standing.trim, standing.is_base);
+            let spire = item.declaration.declares == Declares::EntryPoint;
+            let form = standing.form();
+            // Masts stand above the ground in the city, and hang from a
+            // tower in the cellar only underground.
+            let hangs = city::in_cellar(item);
+            let masts = trim
+                .filter(|_| details && hangs == self.underground)
+                .map_or(0, |trim| trim.masts.len());
+            let forecourt = trim
+                .filter(|_| details)
+                .and_then(|trim| crate::buildings::forecourt(trim.callers));
+            let courtyard = details && trim.is_some_and(|trim| trim.courtyard);
+            let doors = trim
+                .filter(|_| details)
+                .map_or(0, |trim| trim.doors.min(buildings::DOORS));
+            let crowns = trim
+                .filter(|trim| details && standing.top && !trim.crowns.is_empty())
+                .map(|trim| &trim.crowns);
+            if let Some(trim) = trim.filter(|_| is_base) {
+                let houses = match form {
+                    Form::Terrace => crate::buildings::houses(item).to_vec(),
+                    _ => Vec::new(),
+                };
+                built.push(DrawnBuilding {
+                    path: item.path.clone(),
+                    form,
+                    tiers: trim.tiers.clone(),
+                    crowns: if details {
+                        trim.crowns.clone()
+                    } else {
+                        Vec::new()
+                    },
+                    houses,
+                    spire,
+                    doors,
+                    courtyard,
+                    forecourt: forecourt.is_some(),
+                    masts: vec![hangs; masts],
+                });
+            }
             if !clip.intersects(tower.outline) {
                 continue;
             }
-            self.body(&mut shapes, item, tower.colour, lit, turn);
+            let colour = tower.colour;
+            // On the ground around its base: a forecourt in front and a
+            // courtyard behind.
+            if is_base {
+                if let Some(deep) = forecourt {
+                    buildings::forecourt(&view, &mut shapes, item, deep, colour, lit);
+                }
+                if courtyard {
+                    buildings::courtyard(&view, &mut shapes, item, lit);
+                }
+            }
+            // What a building stands on goes with its first item drawn.
+            if let Some(ground) = trim
+                .and_then(|trim| trim.foundation)
+                .filter(|_| founded.insert(&base.path))
+            {
+                match form {
+                    Form::Library => {
+                        buildings::library_hall(&view, &mut shapes, ground, item.base, colour, lit);
+                    }
+                    _ => buildings::plinth(&view, &mut shapes, ground, item.base, colour, lit),
+                }
+            }
+            match form {
+                Form::Terrace if is_base => {
+                    let houses = crate::buildings::houses(item);
+                    buildings::terrace(&view, &mut shapes, item, houses, colour, lit);
+                }
+                Form::Monument if is_base => {
+                    buildings::monument(&view, &mut shapes, item, colour, lit)
+                }
+                Form::Vault { glass } => buildings::vault(&view, &mut shapes, item, glass, lit),
+                Form::Ghost | Form::Slab => {
+                    buildings::outline(&view, &mut shapes, item, form, colour, lit)
+                }
+                _ => self.body(&mut shapes, item, colour, lit, turn),
+            }
+            match form {
+                Form::Depot => buildings::depot(&view, &mut shapes, item, colour, lit),
+                Form::CustomsHouse => {
+                    buildings::upper_storey(&view, &mut shapes, item, colour, lit)
+                }
+                Form::Plant if is_base && details => {
+                    buildings::pipes(&view, &mut shapes, item, colour, lit)
+                }
+                _ => {}
+            }
+            // The top of its building wears the crowns; an entry point its
+            // spire.
+            if let Some(crowns) = crowns {
+                let roof = city::height(item);
+                buildings::crowns(&view, &mut shapes, item.area, roof, crowns, lit);
+            }
+            if spire {
+                buildings::spire(&view, &mut shapes, item, lit);
+            }
+            if is_base && doors > 0 {
+                buildings::doors(&view, &mut shapes, item, doors, lit);
+            }
+            if masts > 0 && standing.top {
+                let z = mast_z(item, hangs);
+                buildings::masts(&view, &mut shapes, item.area, z, masts, hangs, colour, lit);
+            }
+            if !shows_floors(standing) {
+                continue;
+            }
             if boxes {
                 // Its lines, too close to tell apart, light its front.
                 let [front, _, _] = self.solid(item);
@@ -1079,6 +1457,47 @@ impl<'a> Painter<'a> {
                 }
             }
         }
+        for piece in next {
+            lay(piece, drawn.len(), &mut shapes);
+        }
+        built.extend(billboards.iter().map(|(path, _, _)| DrawnBuilding {
+            path: path.to_path_buf(),
+            form: Form::Billboard,
+            tiers: Vec::new(),
+            crowns: Vec::new(),
+            houses: Vec::new(),
+            spire: false,
+            doors: 0,
+            courtyard: false,
+            forecourt: false,
+            masts: Vec::new(),
+        }));
+        // A skybridge pointed at, where no tower is, is lit and says what it
+        // joins.
+        let over_bridge = pointer.filter(|_| hovered.is_none()).and_then(|at| {
+            bridges.iter().find(|bridge| {
+                let top = bridge.z + buildings::BRIDGE_DEPTH / 2.0;
+                let span = Span {
+                    start: self.view.to_screen(bridge.start, top),
+                    end: self.view.to_screen(bridge.end, top),
+                };
+                span.distance(at) <= BRIDGE_REACH
+            })
+        });
+        if let Some(bridge) = over_bridge {
+            buildings::light_bridge(&self.view, &mut shapes, bridge);
+        }
+        self.bridge_hovered = over_bridge.cloned();
+        let bridges = bridges
+            .iter()
+            .zip(laid)
+            .map(|(bridge, pieces)| DrawnBridge {
+                from: bridge.from.clone(),
+                to: bridge.to.clone(),
+                z: bridge.z,
+                pieces,
+            })
+            .collect();
         // Brackets at the corners of the selected tower, and fainter ones
         // around the one pointed at.
         for (tower, colour) in [
@@ -1090,15 +1509,19 @@ impl<'a> Painter<'a> {
             }
         }
         ui.painter().extend(shapes);
-        if let (Some(at), Some((item, _))) = (
+        if let (Some(at), Some(tower)) = (
             pointer,
             towers
                 .iter()
-                .find(|(item, _)| Some(item.path.as_path()) == hovered.as_deref()),
+                .find(|tower| Some(tower.item.path.as_path()) == hovered.as_deref()),
         ) {
-            tip(ui, at, item);
+            tip(ui, at, tower.item);
         }
-        (drawn, hovered)
+        if let (Some(at), Some(bridge)) = (pointer, over_bridge) {
+            buildings::bridge_tip(ui, at, bridge);
+        }
+        self.cables_drawn = cables;
+        (drawn, built, bridges, hovered)
     }
 
     /// The corners of `item`'s box on screen: its front face, and the side
@@ -1209,11 +1632,49 @@ impl<'a> Painter<'a> {
             .into()
     }
 
-    /// Whether the ring around `area`, raised by `lift`, is wide enough on
-    /// screen for `name` to be written on it.
-    fn ring_has_room(&self, area: Rect, name: &str, lift: f32) -> bool {
-        let bounds = Rect::from_points(&self.view.ring(area, lift));
-        bounds.width() > NAME_ROOM * name_width(name, RING_NAME)
+    /// Whether the outline of the folder at `path` on `area`, raised by
+    /// `lift`, is wide enough on screen for `name` to be written on it.
+    fn outline_has_room(&self, area: Rect, path: &Path, name: &str, lift: f32) -> bool {
+        let bounds = Rect::from_points(&self.round(area, path, lift));
+        bounds.width() > NAME_ROOM * name_width(name, FOLDER_NAME)
+    }
+
+    /// The outline of the element at `path`, round what it holds, if the
+    /// network is worked out.
+    fn outline_of(&self, path: &Path) -> Option<&'a [Pos2]> {
+        let outline = self.outlines?.get(path)?;
+        (outline.len() >= 3).then_some(outline.as_slice())
+    }
+
+    /// On screen, raised by `lift`: in the folders lens the outline of the
+    /// folder or district at `path` on `area`, and until the network is
+    /// worked out, and in every other lens, the circle around `area`.
+    fn round(&self, area: Rect, path: &Path, lift: f32) -> Vec<Pos2> {
+        match self.outline_of(path).filter(|_| self.folders) {
+            Some(outline) => outline
+                .iter()
+                .map(|p| self.view.to_screen(*p, lift))
+                .collect(),
+            None => self.view.ring(round(area), lift),
+        }
+    }
+
+    /// On screen, raised by `lift`: the outline of the block at `path` on
+    /// `area`, or until the network is worked out its rectangle.
+    fn plot(&self, area: Rect, path: &Path, lift: f32) -> Vec<Pos2> {
+        self.plotted(self.outline_of(path), area, lift)
+    }
+
+    /// On screen, raised by `lift`: `outline`, or without one the rectangle
+    /// `area`.
+    fn plotted(&self, outline: Option<&[Pos2]>, area: Rect, lift: f32) -> Vec<Pos2> {
+        match outline {
+            Some(outline) => outline
+                .iter()
+                .map(|p| self.view.to_screen(*p, lift))
+                .collect(),
+            None => self.view.corners(area, lift),
+        }
     }
 
     /// Writes `name` on the ground `area` as `naming` says, outlines that
@@ -1228,7 +1689,9 @@ impl<'a> Painter<'a> {
         lift: f32,
     ) {
         let bounds = match naming {
-            Naming::District(_) | Naming::Ring => Rect::from_points(&self.view.ring(area, lift)),
+            Naming::District(_) | Naming::FolderOutline => {
+                Rect::from_points(&self.round(area, path, lift))
+            }
             Naming::Folder | Naming::Block(_) => Rect::from_points(&self.view.corners(area, lift)),
         };
         let strip = TITLE.min(bounds.height());
@@ -1248,22 +1711,23 @@ impl<'a> Painter<'a> {
                 let at = Rect::from_center_size(front.center(), vec2(width, front.height()));
                 (at, RichText::new(name).strong().size(size).color(colour))
             }
-            // On the front of its ring, once the ring has room for it; until
-            // then named for the accessibility tree, and clickable, only.
-            Naming::Ring => {
-                let width = name_width(name, RING_NAME);
-                let written = self.ring_has_room(area, name, lift);
-                self.ring_names.push((path.to_path_buf(), written));
+            // On the front of its outline, once the outline has room for it;
+            // until then named for the accessibility tree, and clickable,
+            // only.
+            Naming::FolderOutline => {
+                let width = name_width(name, FOLDER_NAME);
+                let written = self.outline_has_room(area, path, name, lift);
+                self.folder_names.push((path.to_path_buf(), written));
                 let colour = if written {
                     INK.gamma_multiply(0.75)
                 } else {
                     Color32::TRANSPARENT
                 };
                 let at = Rect::from_center_size(
-                    pos2(bounds.center().x, bounds.max.y - RING_NAME),
-                    vec2(width, RING_NAME + 6.0),
+                    pos2(bounds.center().x, bounds.max.y - FOLDER_NAME),
+                    vec2(width, FOLDER_NAME + 6.0),
                 );
-                (at, RichText::new(name).size(RING_NAME).color(colour))
+                (at, RichText::new(name).size(FOLDER_NAME).color(colour))
             }
             // Folders below a district and blocks without code are ground,
             // not landmarks: named for the accessibility tree only.
@@ -1317,7 +1781,8 @@ impl<'a> Painter<'a> {
         if self.selected == Some(path) {
             let stroke = ui.visuals().selection.stroke;
             let outline = match naming {
-                Naming::Ring => self.view.ring(area, lift),
+                Naming::District(_) | Naming::FolderOutline => self.round(area, path, lift),
+                Naming::Block(_) => self.plot(area, path, lift),
                 _ => self.view.corners(area, lift),
             };
             ui.painter().add(Shape::closed_line(outline, stroke));
@@ -1330,9 +1795,84 @@ impl<'a> Painter<'a> {
     }
 }
 
+/// The square around the circle around the ground `area`: a district or
+/// folder drawn round is drawn in it.
+fn round(area: Rect) -> Rect {
+    Rect::from_center_size(area.center(), Vec2::splat(area.size().length()))
+}
+
 /// How wide `name` is on screen at `size`, with a little room either side.
 fn name_width(name: &str, size: f32) -> f32 {
     name.chars().count() as f32 * size * 0.62 + 16.0
+}
+
+/// A cable drawn: from the base of the building whose mast it leaves, to
+/// the base of the building it calls.
+pub type Cable = (PathBuf, PathBuf);
+
+/// What a piece drawn between the buildings belongs to: a skybridge, a
+/// cable or a billboard, by its index among those drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Overlay {
+    Bridge(usize),
+    Cable(usize),
+    Billboard(usize),
+}
+
+/// A tower queued to be drawn, with the building it stands in: the base of
+/// that building, whether the tower is the base and whether its top, what
+/// the building shows of itself, and the depths it is drawn in order of.
+struct Standing<'a> {
+    item: &'a Item,
+    colour: Color32,
+    base: &'a Item,
+    is_base: bool,
+    top: bool,
+    trim: Option<&'a Trim>,
+    order: (f32, f32),
+}
+
+impl Standing<'_> {
+    fn form(&self) -> Form {
+        self.trim.map_or(Form::Tower, |trim| trim.form)
+    }
+}
+
+/// A piece of something drawn between the buildings, with its ends on the
+/// ground and their heights, how far back it lies, as a tower's
+/// [`depth`], and where its middle is on screen.
+struct Piece {
+    overlay: Overlay,
+    ends: [(Pos2, f32); 2],
+    depth: f32,
+    middle: Pos2,
+}
+
+impl Piece {
+    fn of(view: &View, overlay: Overlay, ends: [(Pos2, f32); 2]) -> Piece {
+        let [(a, za), (b, zb)] = ends;
+        let ground = a + (b - a) / 2.0;
+        Piece {
+            overlay,
+            ends,
+            depth: view.to_screen(ground, 0.0).y,
+            middle: view.to_screen(ground, (za + zb) / 2.0),
+        }
+    }
+
+    /// Draws the piece, a skybridge `above` as bright as the city above the
+    /// ground; a cable is shown only where its masts are, so at full light.
+    fn draw(&self, view: &View, shapes: &mut Vec<Shape>, above: f32) {
+        let [(a, z), (b, _)] = self.ends;
+        match self.overlay {
+            Overlay::Bridge(_) => buildings::bridge(view, shapes, (a, b), z, above),
+            Overlay::Cable(_) => buildings::cable(view, shapes, self.ends),
+            Overlay::Billboard(_) => {
+                let ground = Rect::from_two_pos(a, self.ends[1].0);
+                buildings::billboard(view, shapes, ground, z, above);
+            }
+        }
+    }
 }
 
 /// How far back `item` stands as `view` sees it: lower on screen is nearer,
@@ -1375,13 +1915,11 @@ pub fn minimap(ui: &mut egui::Ui, map: &ProjectMap, view: &View, panel: Rect) ->
     let mut clicked = None;
     for (index, district) in map.districts.iter().enumerate() {
         let colour = district_colour(index);
+        let mut home = home_of(&map.homes);
         for item in crate::graph::items(district) {
             let fill = match item.kind {
                 ItemKind::Test => TEST_COLOUR,
-                _ => map
-                    .homes
-                    .get(&item.path)
-                    .map_or(colour, |home| district_colour(*home)),
+                _ => home(item).map_or(colour, district_colour),
             };
             let point = to_minimap(item.area.center());
             painter.rect_filled(
@@ -1473,7 +2011,7 @@ pub fn inside(
     painter.rect_filled(panel, 0.0, NIGHT.gamma_multiply(0.86));
     let colour = match item.kind {
         ItemKind::Test => TEST_COLOUR,
-        _ => district_colour_of(map, &item.path),
+        _ => district_colour_of(map, item),
     };
     let left = panel.min.x + 40.0;
     let file = map.find(item.path.parent()?).map_or("", |found| found.name);
@@ -1571,12 +2109,38 @@ pub fn inside(
     clicked
 }
 
-/// The colour of the district the element at `path` lies in: the innermost
-/// district whose path holds it.
-fn district_colour_of(map: &ProjectMap, path: &Path) -> Color32 {
-    if let Some(home) = map.homes.get(path) {
+/// The district each item keeps the colour of, by `homes`: that of the file
+/// it stands with. Items come file by file, so the file last looked up is
+/// kept.
+fn home_of(
+    homes: &std::collections::BTreeMap<PathBuf, usize>,
+) -> impl FnMut(&Item) -> Option<usize> {
+    let mut last: Option<(PathBuf, Option<usize>)> = None;
+    move |item| {
+        if homes.is_empty() {
+            return None;
+        }
+        let file = item.standing_file()?;
+        match &last {
+            // Compared as bytes: as paths, component by component, it
+            // costs as much as the lookup it saves.
+            Some((seen, home)) if seen.as_os_str() == file.as_os_str() => *home,
+            _ => {
+                let home = homes.get(file).copied();
+                last = Some((file.to_path_buf(), home));
+                home
+            }
+        }
+    }
+}
+
+/// The colour of the district `item` keeps: its home's, else that of the
+/// innermost district whose path holds it.
+fn district_colour_of(map: &ProjectMap, item: &Item) -> Color32 {
+    if let Some(home) = item.standing_file().and_then(|file| map.homes.get(file)) {
         return district_colour(*home);
     }
+    let path = &item.path;
     map.districts
         .iter()
         .enumerate()
@@ -1614,6 +2178,7 @@ mod tests {
             }],
             area: Rect::NOTHING,
             base: 0.0,
+            declaration: Default::default(),
         };
         let files = ["catalog/a.rs", "orders/b.rs"].map(PathBuf::from);
         let items = BTreeMap::from(files.clone().map(|file| {
@@ -1623,7 +2188,14 @@ mod tests {
         let strategy = Directories {
             prefix: default_prefix_rule(),
         };
-        let map = ProjectMap::of_code("shop", Path::new("/p/shop"), &files, &strategy, items);
+        let map = ProjectMap::of_code(
+            "shop",
+            Path::new("/p/shop"),
+            &files,
+            &strategy,
+            items,
+            &Default::default(),
+        );
         let framing = Framing {
             area: map.extent,
             fill: 1.0,
@@ -1647,6 +2219,7 @@ mod tests {
                     lanes: Lanes::default(),
                     picked: None,
                     network: None,
+                    cables: false,
                 },
             )
             .towers;
@@ -1697,12 +2270,20 @@ mod tests {
             floors: (1..=3).map(floor).collect(),
             area: Rect::NOTHING,
             base: 0.0,
+            declaration: Default::default(),
         };
         let strategy = Directories {
             prefix: default_prefix_rule(),
         };
         let items = BTreeMap::from([(file.clone(), vec![item])]);
-        let map = ProjectMap::of_code("shop", Path::new("/p/shop"), &[file], &strategy, items);
+        let map = ProjectMap::of_code(
+            "shop",
+            Path::new("/p/shop"),
+            &[file],
+            &strategy,
+            items,
+            &Default::default(),
+        );
         // Framed as a part of a far larger city: far out.
         let framing = Framing {
             area: map.extent.expand(map.extent.width() * 200.0),
@@ -1726,6 +2307,7 @@ mod tests {
                     lanes: Lanes::default(),
                     picked: None,
                     network: None,
+                    cables: false,
                 },
             )
             .towers;
@@ -1736,5 +2318,106 @@ mod tests {
         assert_eq!(tower.floors.len(), 1, "one span, not one per floor");
         let middle = tower.floors[0].start + (tower.floors[0].end - tower.floors[0].start) / 2.0;
         assert_eq!(pick(&towers, middle, false), Some(path));
+    }
+
+    #[test]
+    fn far_out_a_building_leaves_its_doors_and_masts_out() {
+        use std::collections::BTreeMap;
+
+        use crate::graph::{Declaration, Floor, Item, ItemKind};
+
+        let root = Path::new("/p/shop");
+        let item = |file: &str, name: &str, public: bool, part_of: Option<&str>| Item {
+            name: name.to_owned(),
+            path: root.join(file).join(name),
+            kind: ItemKind::Function,
+            tests: false,
+            floors: vec![Floor {
+                number: 1,
+                text: "fn f() {}".to_owned(),
+                indent: 0,
+                width: 9,
+                tokens: Vec::new(),
+                calls: Vec::new(),
+                imports: Vec::new(),
+            }],
+            area: Rect::NOTHING,
+            base: 0.0,
+            declaration: Declaration {
+                public,
+                part_of: part_of.map(|base| root.join(file).join(base)),
+                ..Default::default()
+            },
+        };
+        // A type with a public and a private method, the private one calling
+        // into another file: a door, a courtyard and a mast.
+        let mut close = item("catalog/a.rs", "close", false, Some("Shop"));
+        close.floors[0].calls = vec![root.join("orders/b.rs/f")];
+        let files = ["catalog/a.rs", "orders/b.rs"].map(PathBuf::from);
+        let items = BTreeMap::from([
+            (
+                files[0].clone(),
+                vec![
+                    item("catalog/a.rs", "Shop", true, None),
+                    item("catalog/a.rs", "open", true, Some("Shop")),
+                    close,
+                ],
+            ),
+            (files[1].clone(), vec![item("orders/b.rs", "f", true, None)]),
+        ]);
+        let strategy = Directories {
+            prefix: default_prefix_rule(),
+        };
+        let map = ProjectMap::of_code("shop", root, &files, &strategy, items, &Default::default());
+        let network = crate::Network::of(&map);
+        let shop = root.join("catalog/a.rs/Shop");
+        let drawn = |grow: f32| {
+            let framing = Framing {
+                area: map.extent.expand(map.extent.width() * grow),
+                fill: 1.0,
+                closest: 1.0,
+                headroom: 0.0,
+            };
+            let ctx = egui::Context::default();
+            let mut buildings = Vec::new();
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                buildings = project(
+                    ui,
+                    &map,
+                    ViewOptions {
+                        framing,
+                        selected: None,
+                        folder_view: None,
+                        pivot: None,
+                        underground: false,
+                        lanes: Lanes::default(),
+                        picked: None,
+                        network: Some(&network),
+                        cables: true,
+                    },
+                )
+                .buildings;
+            });
+            output.textures_delta.clear();
+            buildings
+                .into_iter()
+                .find(|building| building.path == shop)
+                .expect("drawn")
+        };
+
+        let near = drawn(0.0);
+        assert_eq!(near.form, Form::Skyscraper);
+        assert_eq!(near.doors, 1, "{near:?}");
+        assert!(near.courtyard, "{near:?}");
+        assert_eq!(near.masts.len(), 1, "{near:?}");
+
+        // Framed as a part of a far larger city: far out.
+        let far = drawn(200.0);
+        assert_eq!(far.form, Form::Skyscraper, "the form stays");
+        assert_eq!(far.doors, 0, "{far:?}");
+        assert!(!far.courtyard, "{far:?}");
+        assert!(!far.forecourt, "{far:?}");
+        assert!(far.masts.is_empty(), "{far:?}");
+        assert!(far.crowns.is_empty(), "{far:?}");
     }
 }

@@ -2,10 +2,13 @@
 //! where the engineer put them (ADR-0006). A district grows to keep a block
 //! moved out of it.
 
-use egui::{Rect, Vec2, vec2};
+use egui::vec2;
 
 use crate::graph::{self, ProjectMap};
 use crate::layout;
+
+/// How far a district reaches past a block moved to its edge.
+const MARGIN: f32 = 10.0;
 
 /// `folders` with its arrangement applied.
 pub(crate) fn arranged(folders: &ProjectMap) -> ProjectMap {
@@ -22,28 +25,17 @@ pub(crate) fn arranged(folders: &ProjectMap) -> ProjectMap {
         if let Some(offset) = by(&district.path) {
             layout::translate(district, offset);
         }
-        let centre = district.area.center();
-        let before = district.area.width() / 2.0;
-        let mut radius = before;
+        let mut area = district.area;
         for node in graph::nodes_mut(std::slice::from_mut(district)) {
             if let Some(offset) = by(&node.path) {
                 node.area = node.area.translate(offset);
                 for item in &mut node.items {
                     item.area = item.area.translate(offset);
                 }
-            }
-            for corner in [
-                node.area.left_top(),
-                node.area.right_top(),
-                node.area.left_bottom(),
-                node.area.right_bottom(),
-            ] {
-                radius = radius.max((corner - centre).length() + 10.0);
+                area = area.union(node.area.expand(MARGIN));
             }
         }
-        if radius > before {
-            district.area = Rect::from_center_size(centre, Vec2::splat(2.0 * radius));
-        }
+        district.area = area;
     }
     map.extent = map.ground();
     map

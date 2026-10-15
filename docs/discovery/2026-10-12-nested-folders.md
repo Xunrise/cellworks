@@ -55,6 +55,11 @@ the layout were checked as images before each run.
 - Ring names are clickable over the ground only once written; an unwritten name would otherwise take clicks meant
   for the towers standing over it.
 
+## Later
+
+- STORY-068 grew blocks, folders and districts like towns and drew each round what it holds: a folder ring is now
+  a folder outline, and folders are no longer packed along a spiral. The record above stays as it was found.
+
 ## Open
 
 - Text towers in the relationship lenses stand in the outskirts: they import and call nothing.

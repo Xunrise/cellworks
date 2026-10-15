@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use egui::Rect;
 
-use crate::graph::{District, DistrictKind, Group, Node, SubDistrict};
+use crate::graph::{District, DistrictKind, Group, Node, NodeKind, SubDistrict};
 use crate::rules::PrefixRule;
 
 /// Decides how a project is cut into districts.
@@ -220,6 +220,7 @@ fn nodes(root: &Path, folder: &Folder) -> Vec<Node> {
                 path: root.join(path),
                 items: Vec::new(),
                 area: Rect::NOTHING,
+                kind: NodeKind::Code,
             }
         })
         .collect()

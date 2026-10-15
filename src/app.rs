@@ -18,7 +18,7 @@ use std::sync::mpsc::Receiver;
 
 use cellworks_code_analysis::{CodeAnalysisEvent, GitCli, GitListing, start_load};
 use cellworks_map::View;
-use cellworks_map::ui::{Drawn, DrawnLane, DrawnTower, Outline};
+use cellworks_map::ui::{Drawn, DrawnBridge, DrawnBuilding, DrawnLane, DrawnTower, Outline};
 use cellworks_map::{Lens, ProjectMap, default_prefix_rule, prefix_rule};
 use cellworks_navigation::{Moved, Navigation};
 use cellworks_workspace::ui::UniverseClick;
@@ -63,14 +63,25 @@ pub struct CellworksApp {
     tree_open: bool,
     /// The towers the last frame drew.
     towers: Vec<DrawnTower>,
+    /// The buildings the last frame drew.
+    buildings: Vec<DrawnBuilding>,
+    /// The skybridges the last frame drew.
+    bridges: Vec<DrawnBridge>,
+    /// The cables the last frame drew, from base to base.
+    cables: Vec<(std::path::PathBuf, std::path::PathBuf)>,
+    /// The skybridge the pointer was over in the last frame.
+    bridge_hovered: Option<cellworks_map::Bridge>,
     /// Where the last frame saw the map from.
     view: Option<View>,
     /// Whether this frame's view is underground: turned so, or Shift held.
     underground: bool,
     /// The districts the last frame drew, with their outlines.
     districts: Vec<(std::path::PathBuf, Outline)>,
-    /// The folder rings the last frame drew, and whether each was named.
-    rings: Vec<(std::path::PathBuf, bool)>,
+    /// The folder outlines the last frame drew, and whether each was named.
+    folders: Vec<(std::path::PathBuf, bool)>,
+    /// The blocks, folders and districts the last frame drew by their
+    /// outlines.
+    outlines: Vec<std::path::PathBuf>,
     /// The lanes the last frame drew, and the one under the pointer.
     lanes: Vec<DrawnLane>,
     lane_hovered: Option<cellworks_map::LaneId>,
@@ -97,6 +108,8 @@ struct Keys {
     /// U turns the view underground or back; Shift shows it while held.
     underground: bool,
     held_underground: bool,
+    /// M shows or hides the cables from the masts.
+    cables: bool,
     /// Inside a tower: j less k, a floor down or up.
     lines: isize,
     /// L: the next lens.
@@ -125,10 +138,15 @@ impl CellworksApp {
                 show_ignored: false,
                 tree_open: false,
                 towers: Vec::new(),
+                buildings: Vec::new(),
+                bridges: Vec::new(),
+                cables: Vec::new(),
+                bridge_hovered: None,
                 view: None,
                 underground: false,
                 districts: Vec::new(),
-                rings: Vec::new(),
+                folders: Vec::new(),
+                outlines: Vec::new(),
                 lanes: Vec::new(),
                 lane_hovered: None,
             },
@@ -142,10 +160,15 @@ impl CellworksApp {
                 show_ignored: false,
                 tree_open: false,
                 towers: Vec::new(),
+                buildings: Vec::new(),
+                bridges: Vec::new(),
+                cables: Vec::new(),
+                bridge_hovered: None,
                 view: None,
                 underground: false,
                 districts: Vec::new(),
-                rings: Vec::new(),
+                folders: Vec::new(),
+                outlines: Vec::new(),
                 lanes: Vec::new(),
                 lane_hovered: None,
             },
@@ -165,10 +188,15 @@ impl CellworksApp {
             show_ignored: false,
             tree_open: false,
             towers: Vec::new(),
+            buildings: Vec::new(),
+            bridges: Vec::new(),
+            cables: Vec::new(),
+            bridge_hovered: None,
             view: None,
             underground: false,
             districts: Vec::new(),
-            rings: Vec::new(),
+            folders: Vec::new(),
+            outlines: Vec::new(),
             lanes: Vec::new(),
             lane_hovered: None,
         }
@@ -221,6 +249,27 @@ impl CellworksApp {
         &self.towers
     }
 
+    /// The buildings the last frame drew, by their bases, back to front.
+    pub fn buildings(&self) -> &[DrawnBuilding] {
+        &self.buildings
+    }
+
+    /// The skybridges the last frame drew.
+    pub fn bridges(&self) -> &[DrawnBridge] {
+        &self.bridges
+    }
+
+    /// The cables the last frame drew: from the base of the building whose
+    /// mast it leaves to the base of the building it calls.
+    pub fn cables(&self) -> &[(std::path::PathBuf, std::path::PathBuf)] {
+        &self.cables
+    }
+
+    /// The skybridge the pointer was over in the last frame, if any.
+    pub fn bridge_hovered(&self) -> Option<&cellworks_map::Bridge> {
+        self.bridge_hovered.as_ref()
+    }
+
     /// The lanes the last frame drew.
     pub fn lanes(&self) -> &[DrawnLane] {
         &self.lanes
@@ -236,10 +285,30 @@ impl CellworksApp {
         &self.districts
     }
 
-    /// The folders the last frame drew as rings, and whether the name of each
-    /// was written on it.
-    pub fn rings(&self) -> &[(std::path::PathBuf, bool)] {
-        &self.rings
+    /// The folders the last frame drew by their outlines, and whether the
+    /// name of each was written on it.
+    pub fn folders(&self) -> &[(std::path::PathBuf, bool)] {
+        &self.folders
+    }
+
+    /// The blocks, folders and districts the last frame drew by their
+    /// outlines, each with its outline on the ground.
+    ///
+    /// The outlines are the network's, worked out once per map; they are
+    /// copied out only when asked, not every frame.
+    pub fn outlines(&self) -> Vec<(std::path::PathBuf, Vec<egui::Pos2>)> {
+        let Some(outlines) = self
+            .opened
+            .as_ref()
+            .and_then(|opened| opened.network())
+            .map(|network| &network.buildings.outlines)
+        else {
+            return Vec::new();
+        };
+        self.outlines
+            .iter()
+            .filter_map(|path| Some((path.clone(), outlines.get(path)?.clone())))
+            .collect()
     }
 
     /// Where the last frame saw the open project's map from.
@@ -361,6 +430,9 @@ impl eframe::App for CellworksApp {
 pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     if app.opened.is_none() {
         app.towers.clear();
+        app.buildings.clear();
+        app.bridges.clear();
+        app.cables.clear();
     }
     let Keys {
         enter,
@@ -376,6 +448,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         lines,
         underground,
         held_underground,
+        cables,
         lens,
         import_lanes,
         call_lanes,
@@ -405,6 +478,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             import_lanes: plain && pressed(egui::Key::G),
             call_lanes: plain && pressed(egui::Key::A),
             held_underground: input.modifiers.shift_only(),
+            cables: plain && pressed(egui::Key::M),
             lines: if plain {
                 towards(egui::Key::K, egui::Key::J)
             } else {
@@ -437,13 +511,16 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         if opened.flying(now) {
             ui.ctx().request_repaint();
         }
-        opened.prepare_lanes();
+        opened.prepare_network();
     }
     if fit && app.opened.is_some() {
         app.navigation.fit();
     }
     if underground {
         app.navigation.toggle_underground();
+    }
+    if cables {
+        app.navigation.toggle_cables();
     }
     app.underground = app.navigation.is_underground() || held_underground;
     if cycle && let Some(map) = mapped(&app.opened) {
@@ -582,12 +659,20 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 .inner;
             let Some(drawn) = drawn else {
                 app.towers.clear();
+                app.buildings.clear();
+                app.bridges.clear();
+                app.cables.clear();
                 app.view = None;
                 return;
             };
             app.towers = drawn.towers;
+            app.buildings = drawn.buildings;
+            app.bridges = drawn.bridges;
+            app.cables = drawn.cables;
+            app.bridge_hovered = drawn.bridge_hovered;
             app.districts = drawn.districts;
-            app.rings = drawn.rings;
+            app.folders = drawn.folders;
+            app.outlines = drawn.outlines;
             app.lanes = drawn.lanes;
             app.lane_hovered = drawn.lane_hovered;
             if let Some(floor) = floor {
@@ -728,6 +813,7 @@ fn project(
                 lanes: opened.lanes(),
                 picked: navigation.picked_lane(),
                 network: opened.network(),
+                cables: navigation.shows_cables(),
             },
         )),
     }

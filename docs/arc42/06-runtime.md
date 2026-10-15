@@ -23,6 +23,9 @@ sequenceDiagram
 ```
 
 - The UI thread never waits for a loader; until the graph arrives the project shows its loading state.
+- The map's network (its lanes and what each building shows: doors, masts, skybridges, outlines) is worked out once
+  per map on a background thread, like the map of a new lens; frames only draw it, and until it arrives the city
+  stands without them.
 - A jump into a project that is still loading is applied after the first fit.
 - A failing loader marks only its own project as failed.
 

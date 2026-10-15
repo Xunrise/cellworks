@@ -1,27 +1,33 @@
-//! The city layout: every district a round plaza, every folder a ring
-//! inside the ring of the folder holding it, the districts packed around
-//! each other.
+//! The city layout: every district a town around a free plaza, every folder
+//! a quarter of the folder holding it, the districts beside each other.
 //!
-//! A block is a node: its towers stand in rows on it ([`city::place`]); a node
-//! without code is a low, narrow block. Inside a folder its rings and blocks
-//! are packed largest first, along a spiral out from the middle, and the
-//! ring is centred on whichever point needs the smaller ring: the middle of
-//! what it holds, or the largest of them. A district keeps a free plaza at
-//! its centre; a district's own blocks of only tests lie in its cellar under
-//! the plaza and take no ground.
+//! A block is a node: its buildings stand on it like a town
+//! ([`city::place`]); a node without code is a low, narrow block. At every
+//! level the same arrangement places what a folder holds ([`arrange`]):
+//! blocks and folders whose code reaches each other (calls and imports into
+//! the other's files) stand together, a folder's documents gather in one
+//! quarter, and districts settle beside the districts their code reaches. A
+//! district keeps a free plaza at its centre, its ground reaching as far on
+//! every side of it; a district's own blocks of only tests lie in its cellar
+//! under the plaza and take no ground.
 //!
-//! Invariants: no two blocks overlap; no two rings of one folder overlap; no
-//! two district circles overlap (their squares, `District::area`, may at the
-//! corners); every block lies inside its folder's ring, and every ring
-//! inside the ring of the folder holding it. A folder's `area` is the square
-//! around its ring.
+//! Invariants: every block holds its buildings, whole, whichever files their
+//! parts are written in; no two blocks, no two folders of one folder and no
+//! two districts overlap; every block lies inside its folder's area, and
+//! every folder inside the area of the folder holding it. A district's plaza
+//! is the centre of its area.
 //!
 //! Pure geometry: `egui::{Rect, Vec2, Pos2}` only, no widget.
 
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+
 use egui::{Pos2, Rect, Vec2, pos2, vec2};
 
+use crate::arrange::{self, Piece, arrange, seed};
 use crate::city;
-use crate::graph::{District, Group, Node};
+use crate::graph::{self, District, Group, Node, NodeKind};
+use crate::lens::cluster::{Weights, link};
 
 /// The strip a name takes on screen at most.
 pub(crate) const TITLE: f32 = 22.0;
@@ -32,89 +38,262 @@ const BARE_BLOCK: Vec2 = vec2(24.0, 6.0);
 /// The narrowest block of a node with code.
 const NARROWEST_BLOCK: f32 = 48.0;
 
-/// The plaza left free at a district's centre, the space between blocks and
-/// rings, and the margin from the outermost of them to the district's edge.
+/// The half-width of the plaza left free at a district's centre, the
+/// streets between blocks and folders, and the margin from the outermost of
+/// them to the district's edge.
 const PLAZA: f32 = 14.0;
 const BLOCK_GAP: f32 = 14.0;
 const DISTRICT_MARGIN: f32 = 10.0;
 
-/// The margin from the outermost block or ring of a folder to its ring.
-const RING_MARGIN: f32 = 8.0;
+/// The margin from the outermost block or folder of a folder to its edge.
+const FOLDER_MARGIN: f32 = 8.0;
 
-/// The space between districts.
+/// The streets between districts.
 const DISTRICT_GAP: f32 = 60.0;
 
-/// Lays out every district and returns the project's extent.
-pub(crate) fn lay_out(districts: &mut [District]) -> Rect {
-    let radii: Vec<f32> = districts.iter_mut().map(lay_out_district).collect();
-    let centres = spiral(&radii, 0.0, DISTRICT_GAP);
+/// How strongly two documents of one folder are bound, so they gather.
+const LIBRARY: f32 = 4.0;
+
+/// For each node, how often its code reaches each other node: the calls and
+/// imports of its items into the items standing there.
+type Reaches = HashMap<PathBuf, BTreeMap<PathBuf, f32>>;
+
+/// What the layout knows of the whole project while it lays out a part of
+/// it: how often each node reaches each other, and the project's root, which
+/// the seeds of folders and blocks are taken relative to, so a project lays
+/// out the same wherever it lies.
+struct Known<'a> {
+    reaches: Reaches,
+    root: &'a Path,
+}
+
+/// What a laid-out block, folder or district is to the one holding it: the
+/// piece it stands as, the nodes it holds, how often its code reaches each
+/// node, and whether it is a document.
+struct Part {
+    piece: Piece,
+    held: Vec<PathBuf>,
+    reaches: BTreeMap<PathBuf, f32>,
+    document: bool,
+}
+
+impl Part {
+    /// `parts` together as one piece of `size`, as high as the highest.
+    fn merged(size: Vec2, path: &Path, root: &Path, parts: Vec<Part>) -> Part {
+        let mut held = Vec::new();
+        let mut reaches = BTreeMap::new();
+        let mut height: f32 = 0.0;
+        for part in parts {
+            held.extend(part.held);
+            height = height.max(part.piece.height);
+            for (node, n) in part.reaches {
+                *reaches.entry(node).or_default() += n;
+            }
+        }
+        Part {
+            piece: piece(size, height, path, root),
+            held,
+            reaches,
+            document: false,
+        }
+    }
+}
+
+/// The piece of the folder or block at `path` in the project at `root`.
+fn piece(size: Vec2, height: f32, path: &Path, root: &Path) -> Piece {
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    Piece {
+        size,
+        weight: 0.0,
+        room: 0.0,
+        height,
+        seed: seed(relative.as_os_str().as_encoded_bytes()),
+    }
+}
+
+/// Lays out every district of the project at `root` and returns the
+/// project's extent.
+pub(crate) fn lay_out(districts: &mut [District], root: &Path) -> Rect {
+    let known = Known {
+        reaches: reaches(districts),
+        root,
+    };
+    let parts: Vec<Part> = districts
+        .iter_mut()
+        .map(|district| lay_out_district(district, &known))
+        .collect();
+    let street = (DISTRICT_GAP / 2.0, DISTRICT_GAP / 2.0);
+    let corners = settle(&parts, None, street);
     let mut extent = Rect::NOTHING;
-    for (district, centre) in districts.iter_mut().zip(centres) {
-        translate(district, centre.to_vec2());
+    for (district, corner) in districts.iter_mut().zip(corners) {
+        let offset = corner - district.area.min;
+        translate(district, offset);
         extent = extent.union(district.area);
     }
     extent
 }
 
-/// Lays `district` out around the origin and returns its radius.
-fn lay_out_district(district: &mut District) -> f32 {
+/// How often the code of each node of `districts` reaches each other node.
+fn reaches(districts: &[District]) -> Reaches {
+    let nodes: Vec<&Node> = districts.iter().flat_map(graph::nodes).collect();
+    let node_of: HashMap<&Path, &Path> = nodes
+        .iter()
+        .flat_map(|node| {
+            node.items
+                .iter()
+                .map(|i| (i.path.as_path(), node.path.as_path()))
+        })
+        .collect();
+    nodes
+        .iter()
+        .map(|node| {
+            let mut reached: BTreeMap<PathBuf, f32> = BTreeMap::new();
+            let targets = node
+                .items
+                .iter()
+                .flat_map(|i| &i.floors)
+                .flat_map(|f| f.calls.iter().chain(&f.imports));
+            for target in targets {
+                if let Some(other) = node_of.get(target.as_path())
+                    && *other != node.path
+                {
+                    *reached.entry(other.to_path_buf()).or_default() += 1.0;
+                }
+            }
+            (node.path.clone(), reached)
+        })
+        .collect()
+}
+
+/// Where each of `parts` stands, by its corner, after `first` if given:
+/// each beside what its code reaches most, a folder's documents together.
+fn settle(parts: &[Part], first: Option<Piece>, street: (f32, f32)) -> Vec<Pos2> {
+    let skip = usize::from(first.is_some());
+    let index: HashMap<&Path, usize> = parts
+        .iter()
+        .enumerate()
+        .flat_map(|(i, part)| part.held.iter().map(move |node| (node.as_path(), i + skip)))
+        .collect();
+    let mut affinity = Weights::new();
+    for (i, part) in parts.iter().enumerate() {
+        for (node, n) in &part.reaches {
+            if let Some(&j) = index.get(node.as_path()) {
+                link(&mut affinity, i + skip, j, *n);
+            }
+        }
+    }
+    let documents: Vec<usize> = (0..parts.len()).filter(|i| parts[*i].document).collect();
+    for (k, a) in documents.iter().enumerate() {
+        for b in &documents[k + 1..] {
+            link(&mut affinity, a + skip, b + skip, LIBRARY);
+        }
+    }
+    let pieces: Vec<Piece> = first
+        .into_iter()
+        .chain(parts.iter().map(|part| part.piece))
+        .collect();
+    arrange(&pieces, &affinity, street)
+}
+
+/// Lays `district` out and returns it as a part: a plaza first, what the
+/// district holds around it, its area reaching as far on every side of the
+/// plaza.
+fn lay_out_district(district: &mut District, known: &Known) -> Part {
     let (mut cellar, mut ground): (Vec<&mut Node>, Vec<&mut Node>) =
         district.nodes.iter_mut().partition(|node| tests_only(node));
-    let cellar_radii: Vec<f32> = cellar.iter_mut().map(|node| block(node)).collect();
-    for (node, centre) in cellar.iter_mut().zip(spiral(&cellar_radii, 0.0, BLOCK_GAP)) {
-        move_node(node, centre);
-    }
-
-    let mut radii: Vec<f32> = district
+    let mut parts: Vec<Part> = district
         .sub_districts
         .iter_mut()
         .map(|sub| {
-            let r = ring(&mut sub.groups, &mut sub.nodes);
-            sub.area = square(Pos2::ZERO, r);
-            r
+            let part = folder(&mut sub.groups, &mut sub.nodes, &sub.path, known);
+            sub.area = Rect::from_min_size(Pos2::ZERO, part.piece.size);
+            part
         })
         .collect();
-    radii.extend(ground.iter_mut().map(|node| block(node)));
-    let centres = largest_first(&radii, PLAZA);
-    let (at_subs, at_blocks) = centres.split_at(district.sub_districts.len());
-    for (sub, centre) in district.sub_districts.iter_mut().zip(at_subs) {
-        let offset = centre.to_vec2();
+    parts.extend(ground.iter_mut().map(|node| block(node, known)));
+    let plaza = Piece {
+        size: Vec2::splat(2.0 * PLAZA),
+        weight: f32::INFINITY,
+        ..piece(Vec2::ZERO, 0.0, &district.path, known.root)
+    };
+    let corners = settle(&parts, Some(plaza), (BLOCK_GAP, BLOCK_GAP / 2.0));
+    let centre = Rect::from_min_size(corners[0], plaza.size).center();
+    let (at_subs, at_blocks) = corners[1..].split_at(district.sub_districts.len());
+    let mut extent = Rect::from_center_size(centre, plaza.size);
+    for (sub, corner) in district.sub_districts.iter_mut().zip(at_subs) {
+        let offset = *corner - sub.area.min;
         sub.area = sub.area.translate(offset);
         shift_groups(&mut sub.groups, offset);
         shift_nodes(&mut sub.nodes, offset);
+        extent = extent.union(sub.area);
     }
-    for (node, centre) in ground.iter_mut().zip(at_blocks) {
-        move_node(node, *centre);
+    for (node, corner) in ground.iter_mut().zip(at_blocks) {
+        let offset = *corner - node.area.min;
+        shift_nodes(std::slice::from_mut(*node), offset);
+        extent = extent.union(node.area);
     }
-    let radius = reach(&centres, &radii, Pos2::ZERO).max(PLAZA) + DISTRICT_MARGIN;
-    district.area = square(Pos2::ZERO, radius);
-    radius
+    let cellar_radii: Vec<f32> = cellar
+        .iter_mut()
+        .map(|node| block(node, known).piece.size.length() / 2.0)
+        .collect();
+    for (node, at) in cellar.iter_mut().zip(spiral(&cellar_radii, 0.0, BLOCK_GAP)) {
+        move_node(node, centre + at.to_vec2());
+    }
+    district.area = arrange::about(extent, centre).expand(DISTRICT_MARGIN);
+    let mut part = Part::merged(district.area.size(), &district.path, known.root, parts);
+    for node in &cellar {
+        part.held.push(node.path.clone());
+    }
+    part
 }
 
-/// Lays out a folder's own `groups` and `nodes` around the origin, each
-/// group as a ring of its own, and returns the radius of the folder's ring.
-fn ring(groups: &mut [Group], nodes: &mut [Node]) -> f32 {
-    let mut radii: Vec<f32> = groups
+/// Lays out a folder's own `groups` and `nodes` from the origin, each group
+/// a folder of its own, and returns the folder at `path` as a part.
+fn folder(groups: &mut [Group], nodes: &mut [Node], path: &Path, known: &Known) -> Part {
+    let mut parts: Vec<Part> = groups
         .iter_mut()
         .map(|group| {
-            let r = ring(&mut group.groups, &mut group.nodes);
-            group.area = square(Pos2::ZERO, r);
-            r
+            let part = folder(&mut group.groups, &mut group.nodes, &group.path, known);
+            group.area = Rect::from_min_size(Pos2::ZERO, part.piece.size);
+            part
         })
         .collect();
-    radii.extend(nodes.iter_mut().map(block));
-    let centres = centred(largest_first(&radii, 0.0), &radii);
-    let (at_groups, at_nodes) = centres.split_at(groups.len());
-    for (group, centre) in groups.iter_mut().zip(at_groups) {
-        let offset = centre.to_vec2();
+    parts.extend(nodes.iter_mut().map(|node| block(node, known)));
+    let corners = settle(&parts, None, (BLOCK_GAP * 0.6, BLOCK_GAP * 0.6));
+    let extent = parts
+        .iter()
+        .zip(&corners)
+        .fold(Rect::NOTHING, |e, (part, corner)| {
+            e.union(Rect::from_min_size(*corner, part.piece.size))
+        });
+    let origin = if extent.is_finite() {
+        extent.min
+    } else {
+        Pos2::ZERO
+    };
+    let inward = Vec2::splat(FOLDER_MARGIN) - origin.to_vec2();
+    let (at_groups, at_nodes) = corners.split_at(groups.len());
+    for (group, corner) in groups.iter_mut().zip(at_groups) {
+        let offset = *corner - group.area.min + inward;
         group.area = group.area.translate(offset);
         shift_groups(&mut group.groups, offset);
         shift_nodes(&mut group.nodes, offset);
     }
-    for (node, centre) in nodes.iter_mut().zip(at_nodes) {
-        move_node(node, *centre);
+    for (node, corner) in nodes.iter_mut().zip(at_nodes) {
+        let offset = *corner - node.area.min + inward;
+        shift_nodes(std::slice::from_mut(node), offset);
     }
-    reach(&centres, &radii, Pos2::ZERO) + RING_MARGIN
+    let size = if extent.is_finite() {
+        extent.size()
+    } else {
+        Vec2::ZERO
+    };
+    Part::merged(
+        size + Vec2::splat(2.0 * FOLDER_MARGIN),
+        path,
+        known.root,
+        parts,
+    )
 }
 
 /// Whether every tower on `node` belongs to the tests.
@@ -122,17 +301,28 @@ fn tests_only(node: &Node) -> bool {
     !node.items.is_empty() && node.items.iter().all(city::in_cellar)
 }
 
-/// Places the towers of `node` on its block at the origin, and returns the
-/// radius of the circle around the block, the block left in `node.area`
-/// until it is moved into place.
-fn block(node: &mut Node) -> f32 {
+/// Places the buildings of `node` on its block at the origin, the block left
+/// in `node.area` until it is moved into place, and returns the block as a
+/// part.
+fn block(node: &mut Node, known: &Known) -> Part {
     let size = if node.items.is_empty() {
         BARE_BLOCK
     } else {
-        city::place(&mut node.items, NARROWEST_BLOCK)
+        city::place(&mut node.items, node.kind, NARROWEST_BLOCK)
     };
     node.area = Rect::from_min_size(Pos2::ZERO, size);
-    size.length() / 2.0
+    let height = node
+        .items
+        .iter()
+        .filter(|item| !city::in_cellar(item))
+        .map(city::height)
+        .fold(0.0, f32::max);
+    Part {
+        piece: piece(size, height, &node.path, known.root),
+        held: vec![node.path.clone()],
+        reaches: known.reaches.get(&node.path).cloned().unwrap_or_default(),
+        document: node.kind == NodeKind::Document,
+    }
 }
 
 /// Moves `node` and its towers so its block is centred on `centre`.
@@ -141,65 +331,10 @@ fn move_node(node: &mut Node, centre: Pos2) {
     shift_nodes(std::slice::from_mut(node), offset);
 }
 
-/// The square around the circle of `radius` at `centre`.
-fn square(centre: Pos2, radius: f32) -> Rect {
-    Rect::from_center_size(centre, Vec2::splat(2.0 * radius))
-}
-
-/// How far from `at` the farthest of the circles of `radii` at `centres`
-/// reaches.
-fn reach(centres: &[Pos2], radii: &[f32], at: Pos2) -> f32 {
-    centres
-        .iter()
-        .zip(radii)
-        .map(|(centre, r)| (*centre - at).length() + r)
-        .fold(0.0, f32::max)
-}
-
-/// Centres for circles of `radii`, in the given order, placed along the
-/// spiral largest first: with no `hole` the largest stands in the middle,
-/// the smaller ones around it.
-fn largest_first(radii: &[f32], hole: f32) -> Vec<Pos2> {
-    let mut order: Vec<usize> = (0..radii.len()).collect();
-    order.sort_by(|a, b| radii[*b].total_cmp(&radii[*a]));
-    let sorted: Vec<f32> = order.iter().map(|&i| radii[i]).collect();
-    let mut centres = vec![Pos2::ZERO; radii.len()];
-    for (i, centre) in order.into_iter().zip(spiral(&sorted, hole, BLOCK_GAP)) {
-        centres[i] = centre;
-    }
-    centres
-}
-
-/// `centres` moved so that the circles of `radii` need the smallest ring of
-/// the two around them: one centred on their middle, or on the largest.
-fn centred(centres: Vec<Pos2>, radii: &[f32]) -> Vec<Pos2> {
-    let middle = centres
-        .iter()
-        .zip(radii)
-        .fold(Rect::NOTHING, |area, (centre, r)| {
-            area.union(square(*centre, *r))
-        })
-        .center();
-    let largest = centres
-        .iter()
-        .zip(radii)
-        .max_by(|a, b| a.1.total_cmp(b.1))
-        .map_or(Pos2::ZERO, |(centre, _)| *centre);
-    let at = if reach(&centres, radii, middle) < reach(&centres, radii, largest) {
-        middle
-    } else {
-        largest
-    };
-    centres
-        .into_iter()
-        .map(|centre| centre - at.to_vec2())
-        .collect()
-}
-
 /// Centres for circles of `radii`, in order, along a spiral out from the
 /// origin: each takes the first place on the spiral where it keeps `gap` from
 /// every circle placed before it. With no `hole`, the first sits at the
-/// origin.
+/// origin. The cellar's blocks hang under a plaza so.
 fn spiral(radii: &[f32], hole: f32, gap: f32) -> Vec<Pos2> {
     const TURN: f32 = 0.3;
     const GROWTH: f32 = 0.6;
@@ -349,22 +484,15 @@ mod tests {
     }
 
     #[test]
-    fn no_two_blocks_or_districts_overlap_and_every_folder_holds_what_it_holds() {
+    fn no_two_blocks_folders_or_districts_overlap_and_every_folder_holds_what_it_holds() {
         let map = map_of(&generated_files(400));
         let holdings = holdings(&map);
-        let mut pending: Vec<&crate::graph::Node> = Vec::new();
-        for district in &map.districts {
-            pending.extend(&district.nodes);
-            for sub in &district.sub_districts {
-                pending.extend(&sub.nodes);
-                let mut groups: Vec<&Group> = sub.groups.iter().collect();
-                while let Some(group) = groups.pop() {
-                    pending.extend(&group.nodes);
-                    groups.extend(&group.groups);
-                }
-            }
-        }
-        let blocks: Vec<Rect> = pending.iter().map(|node| node.area).collect();
+        let blocks: Vec<Rect> = map
+            .districts
+            .iter()
+            .flat_map(graph::nodes)
+            .map(|node| node.area)
+            .collect();
 
         assert_eq!(blocks.len(), 400);
         for (i, one) in blocks.iter().enumerate() {
@@ -374,9 +502,8 @@ mod tests {
         }
         for (i, one) in map.districts.iter().enumerate() {
             for other in &map.districts[i + 1..] {
-                let apart = (one.area.center() - other.area.center()).length();
                 assert!(
-                    apart > (one.area.width() + other.area.width()) / 2.0,
+                    disjoint(one.area, other.area),
                     "{:?} {:?}",
                     one.area,
                     other.area
@@ -385,104 +512,88 @@ mod tests {
         }
         assert!(holdings.len() > 10, "the generated tree was too small");
         for (folder, held) in holdings {
-            for inner in held {
+            for (i, inner) in held.iter().enumerate() {
                 assert!(
-                    folder.contains_rect(inner),
+                    folder.contains_rect(*inner),
                     "{inner:?} is outside {folder:?}"
                 );
+                for other in &held[i + 1..] {
+                    assert!(disjoint(*inner, *other), "{inner:?} overlaps {other:?}");
+                }
             }
         }
     }
 
-    /// A circle: its centre and radius. A folder's is its ring; a block's
-    /// the circle around it.
-    type Circle = (Pos2, f32);
+    #[test]
+    fn a_districts_plaza_is_the_centre_of_its_area_and_left_free() {
+        let map = map_of(&generated_files(200));
 
-    fn ring_of(area: Rect) -> Circle {
-        (area.center(), area.width() / 2.0)
-    }
-
-    fn around(block: Rect) -> Circle {
-        (block.center(), block.size().length() / 2.0)
-    }
-
-    /// Each folder's ring with the rings and blocks it holds directly.
-    fn rings(map: &ProjectMap) -> Vec<(Circle, Vec<Circle>)> {
-        fn inner(groups: &[Group], nodes: &[crate::graph::Node]) -> Vec<Circle> {
-            let rings = groups.iter().map(|g| ring_of(g.area));
-            rings.chain(nodes.iter().map(|n| around(n.area))).collect()
-        }
-        fn walk(group: &Group, into: &mut Vec<(Circle, Vec<Circle>)>) {
-            into.push((ring_of(group.area), inner(&group.groups, &group.nodes)));
-            for g in &group.groups {
-                walk(g, into);
-            }
-        }
-        let mut all = Vec::new();
         for district in &map.districts {
-            for sub in &district.sub_districts {
-                all.push((ring_of(sub.area), inner(&sub.groups, &sub.nodes)));
-                for group in &sub.groups {
-                    walk(group, &mut all);
-                }
-            }
-        }
-        all
-    }
-
-    #[test]
-    fn every_ring_lies_in_the_ring_holding_it_and_apart_from_its_siblings() {
-        let map = map_of(&generated_files(400));
-        let rings = rings(&map);
-
-        assert!(rings.len() > 10, "the generated tree was too small");
-        for ((centre, radius), held) in &rings {
-            for (i, (inner, r)) in held.iter().enumerate() {
-                let out = (*inner - *centre).length() + r;
+            let plaza = Rect::from_center_size(district.area.center(), Vec2::splat(2.0 * PLAZA));
+            let subs = district.sub_districts.iter().map(|s| s.area);
+            for held in subs.chain(district.nodes.iter().map(|n| n.area)) {
                 assert!(
-                    out <= radius + 1e-3,
-                    "{inner:?} reaches {out} past {radius}"
+                    disjoint(plaza, held),
+                    "{held:?} stands on the plaza {plaza:?}"
                 );
-                for (other, other_r) in &held[i + 1..] {
-                    assert!(
-                        (*inner - *other).length() >= r + other_r,
-                        "{inner:?} and {other:?} overlap"
-                    );
-                }
             }
         }
     }
 
     #[test]
-    fn the_largest_stands_in_the_middle() {
-        let radii = [3.0, 20.0, 5.0];
+    fn blocks_whose_code_reaches_each_other_stand_together() {
+        // a.rs calls into c.rs; b.rs reaches nothing.
+        let files: Vec<PathBuf> = ["src/x/a.rs", "src/x/b.rs", "src/x/c.rs", "src/x/d.rs"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        let item = |file: &str, name: &str, calls: Vec<PathBuf>| crate::Item {
+            name: name.to_owned(),
+            path: PathBuf::from(format!("/p/shop/{file}/{name}")),
+            kind: crate::ItemKind::Function,
+            tests: false,
+            floors: vec![crate::Floor {
+                number: 1,
+                text: String::new(),
+                indent: 0,
+                width: 40,
+                tokens: Vec::new(),
+                calls,
+                imports: Vec::new(),
+            }],
+            area: Rect::NOTHING,
+            base: 0.0,
+            declaration: Default::default(),
+        };
+        let callee = PathBuf::from("/p/shop/src/x/c.rs/f");
+        let items: BTreeMap<PathBuf, Vec<crate::Item>> = [
+            (
+                "src/x/a.rs",
+                vec![item("src/x/a.rs", "f", vec![callee.clone(); 5])],
+            ),
+            ("src/x/b.rs", vec![item("src/x/b.rs", "f", Vec::new())]),
+            ("src/x/c.rs", vec![item("src/x/c.rs", "f", Vec::new())]),
+            ("src/x/d.rs", vec![item("src/x/d.rs", "f", Vec::new())]),
+        ]
+        .into_iter()
+        .map(|(file, items)| (PathBuf::from(file), items))
+        .collect();
+        let strategy = Directories {
+            prefix: default_prefix_rule(),
+        };
+        let map = ProjectMap::of_code(
+            "shop",
+            Path::new("/p/shop"),
+            &files,
+            &strategy,
+            items,
+            &BTreeMap::new(),
+        );
+        let at = |file: &str| map.find(&Path::new("/p/shop").join(file)).unwrap().area;
+        let apart = |a: Rect, b: Rect| (a.center() - b.center()).length();
 
-        let centres = largest_first(&radii, 0.0);
-
-        assert_eq!(centres[1], Pos2::ZERO);
-        assert!(centres[0] != Pos2::ZERO && centres[2] != Pos2::ZERO);
-    }
-
-    #[test]
-    fn a_ring_centres_on_whichever_point_needs_the_smaller_ring() {
-        // One large circle and a small one beside it: centred on the large,
-        // the ring reaches the small one's far side; centred on the middle of
-        // both, it would reach farther past the large one.
-        let radii = [50.0, 5.0];
-        let centres = vec![Pos2::ZERO, pos2(70.0, 0.0)];
-
-        let moved = centred(centres.clone(), &radii);
-        let needed = reach(&moved, &radii, Pos2::ZERO);
-
-        let middle = Rect::from_min_max(pos2(-50.0, -50.0), pos2(75.0, 50.0)).center();
-        let on_middle = reach(&centres, &radii, middle);
-        let on_largest = reach(&centres, &radii, Pos2::ZERO);
-        assert!((needed - on_middle.min(on_largest)).abs() < 1e-3);
-
-        // Two equal circles: their middle needs the smaller ring.
-        let radii = [10.0, 10.0];
-        let moved = centred(vec![Pos2::ZERO, pos2(30.0, 0.0)], &radii);
-        assert!((reach(&moved, &radii, Pos2::ZERO) - 25.0).abs() < 1e-3);
+        let (a, b, c) = (at("src/x/a.rs"), at("src/x/b.rs"), at("src/x/c.rs"));
+        assert!(apart(a, c) < apart(b, c), "a {a:?} b {b:?} c {c:?}");
     }
 
     #[test]
