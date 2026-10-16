@@ -1,0 +1,67 @@
+name: SDLC pipeline
+# The watchdog finds a story's runs by this title.
+run-name: "sdlc #${{ inputs.issue || github.event.issue.number || 'watchdog' }}"
+
+# Calls The-Factory's one pipeline at the pinned version: from the
+# sdlc:intent label to the merge into test, in one run that heals itself.
+# The trigger lives here; everything else is the factory's.
+# Move to a new factory version with The-Factory's scripts/upgrade.sh.
+
+on:
+  issues:
+    types: [labeled]
+  # An answer on the issue: `Q-n: ...` to an assumption, or to a held design.
+  issue_comment:
+    types: [created]
+  # A heal, the watchdog, a follow-up issue, or a person restarting a story.
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: The issue to run.
+        required: true
+      resume:
+        description: Keep the story's deadline and heal count, and resume its build.
+        type: boolean
+        default: false
+      adjust:
+        description: Answered assumptions to build to, Q-n ids separated by spaces.
+        default: ''
+  # The watchdog: restarts stories whose run stopped without healing.
+  schedule:
+    - cron: '*/30 * * * *'
+
+jobs:
+  pipeline:
+    # Only what the pipeline acts on starts a run: the label, a dispatch, the
+    # schedule, and a comment from someone with write access on an issue the
+    # pipeline is waiting on.
+    if: >-
+      (github.event_name == 'issues' && github.event.label.name == 'sdlc:intent')
+      || github.event_name == 'workflow_dispatch'
+      || github.event_name == 'schedule'
+      || (github.event_name == 'issue_comment'
+          && github.event.issue.pull_request == null
+          && github.event.comment.user.type != 'Bot'
+          && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+          && (contains(github.event.issue.labels.*.name, 'sdlc:assumptions')
+              || contains(github.event.issue.labels.*.name, 'sdlc:needs-human')))
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: write
+      id-token: write
+      deployments: write   # the deliverables, published per pull request
+    uses: squer-solutions/The-Factory/.github/workflows/sdlc-pipeline.yml@v3.0.0
+    secrets: inherit
+    with:
+      # This product's checks. Keep it the same as the "Verifying your work"
+      # section of CLAUDE.md.
+      verify-command: 'cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace'
+      issue: ${{ inputs.issue }}
+      resume: ${{ inputs.resume == true }}
+      adjust: ${{ inputs.adjust }}
+      # max-hours: 4
+      # max-heal-attempts: 3
+      # node-version: '22'
+      # node-cache-path: package-lock.json

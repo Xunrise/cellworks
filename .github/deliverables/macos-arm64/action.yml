@@ -1,0 +1,50 @@
+name: macos-arm64
+description: The release binary for aarch64-apple-darwin, packed as a tar.gz with its sha256.
+
+inputs:
+  channel:
+    description: pr, test or main.
+    required: true
+  version:
+    description: The version being delivered.
+    required: true
+  sha:
+    description: The commit being delivered.
+    required: true
+
+outputs:
+  status:
+    description: success, failure or skipped.
+    value: ${{ steps.build.outputs.status }}
+  deliverable:
+    description: The directory holding the archive and its checksum.
+    value: ${{ steps.build.outputs.deliverable }}
+
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: aarch64-apple-darwin
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: aarch64-apple-darwin
+    - id: build
+      shell: bash
+      env:
+        TARGET: aarch64-apple-darwin
+        VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        # The binary reports the delivered version (cellworks --version).
+        perl -0pi -e 's/^version = ".*?"/version = "$ENV{VERSION}"/m' Cargo.toml
+        cargo build --release --target "$TARGET"
+        out="$RUNNER_TEMP/dist"
+        name="cellworks-v$VERSION-$TARGET"
+        mkdir -p "$out/$name"
+        cp "target/$TARGET/release/cellworks" README.md "$out/$name/"
+        tar czf "$out/$name.tar.gz" -C "$out" "$name"
+        rm -r "${out:?}/$name"
+        (cd "$out" && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+        echo "status=success" >> "$GITHUB_OUTPUT"
+        echo "deliverable=$out" >> "$GITHUB_OUTPUT"

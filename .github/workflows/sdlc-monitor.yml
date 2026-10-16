@@ -16,5 +16,6 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
-    uses: squer-solutions/The-Factory/.github/workflows/sdlc-monitor.yml@094b1261f4b7b52ba5c642add7a3620688f23c25  # trial of The-Factory PR #31, not a release
+      actions: write   # a proposal starts the next stage on its branch
+    uses: squer-solutions/The-Factory/.github/workflows/sdlc-monitor.yml@v3.0.0
     secrets: inherit

@@ -68,21 +68,40 @@ Detail in `docs/arc42/03-context.md`.
 
 ## Working with the Factory
 
-Implementation runs through The Factory (`squer-solutions/The-Factory`, pinned in `.github/workflows/` and
-`.claude/settings.json`). Design stays in the jarvis docs (`docs/`); a STORY issue labelled `sdlc:intent` starts the
-chain `intent.md` → `spec.md` → `plan.md` → code and tests on a `feature/NNNN-slug` branch, which ends in one pull
-request into `test`. `test` is promoted to `main` by a person; every push to `main` is released.
+Implementation runs through The Factory v3.0.0 (`squer-solutions/The-Factory`, pinned in `.github/workflows/` and
+`.claude/settings.json`). Design stays in the jarvis docs (`docs/`). Run `/factory:guide` before your first change here;
+`/factory:setup` checks the admin setup; `/factory:learn` says where a lesson belongs.
 
-Run `/factory:guide` before your first change here. `/factory:setup` checks the admin setup; `/factory:learn` says
-where a lesson belongs.
+The loop:
+
+1. **Intake** — author the story with `gherkin-story-authoring` (behavior) or `chore-story` (everything else).
+2. **Prototype** on `proto/<slug>` in a throwaway worktree and iterate until the behavior is confirmed.
+3. **`/factory:freeze`** — distills the session into `prototype.md` and `design.md`, settles the planner's questions
+   locally, pushes `proto/<slug>` and labels the issue `sdlc:intent`. Keep the branch until the merge.
+4. **Hands-off** — `sdlc.yml` runs one resumable pipeline (build, checks, deliver, review) to an auto-merge into `test`.
+   Progress is the bot's state comment on the issue; a binary per pull request lands on the release `pr-N`, the rolling
+   `test` prerelease and `vX.Y.Z` on `main` (`.github/deliverables/`). Questions become assumptions, listed on the issue
+   (label `sdlc:assumptions`) and in the pull request under "Decisions made without you".
+5. **`/factory:answer <issue>`** — correct an assumption (or reply `Q-n: <answer>` on the issue); the pipeline rebuilds
+   with it, or opens a follow-up issue after the merge.
+6. **`/feedback <text>`** — anything off-topic found while testing goes to the `feedback` inbox and the session returns to
+   its story; `/feedback triage` drops, folds or promotes the findings.
+
+Prototyping and freezing run locally and need the Jarvis plugins (`more-jarvis` marketplace: jarvis-planning,
+jarvis-tooling, jarvis-execute, jarvis-architecture) installed on your machine, because CI cannot read the private
+`more-jarvis` repository yet: `/plugin marketplace add squer-solutions/more-jarvis`, then enable them.
+
+`test` is promoted to `main` by a person; every push to `main` is released.
 
 - Artifacts live in `sdlc/<issue-number>-<slug>/`. The directory name carries the issue number — the automation
   parses it, so do not rename directories.
 - Never edit an `intent.md` or `spec.md` from a build session. Those are the approved upstream record; if the plan
   needs them changed, say so and stop.
 - When implementation departs from `plan.md`, update `plan.md` in the same commit.
-- The SDLC stage skills, hooks and agents come from the `factory` plugin. Change them in The-Factory, not here.
-- The design stages load `context/05-case/AGENTS.md`, which points at the jarvis docs.
+- The SDLC skills, hooks and agents come from the `factory` plugin. Change them in The-Factory, not here.
+- Do not run cargo checks or watch CI in the main thread: spawn the `check-runner` agent for fmt/clippy/test and the
+  `ci-watcher` agent for pull request checks; both return a digest. Subagents run on sonnet
+  (`CLAUDE_CODE_SUBAGENT_MODEL`), these two on haiku.
 
 ## Verifying your work
 
@@ -94,7 +113,7 @@ SHELLCHECK_OPTS=--exclude=SC2016 actionlint   # zero findings
 ```
 
 Run all of them before reporting any task complete, and paste the output. If a check fails, fix the code, not the
-check. Keep the cargo commands the same as `verify-command` in `.github/workflows/sdlc-build.yml`.
+check. Keep the cargo commands the same as `verify-command` in `.github/workflows/sdlc.yml`.
 
 ## Things Claude gets wrong
 

@@ -16,7 +16,7 @@
 
 | Constraint | Background |
 |---|---|
-| Every push to `main` is released | `.github/workflows/release.yml` publishes a release per push; patch versions bump automatically, minor and major via `Cargo.toml`. |
+| Every push to `main` is released | `.github/workflows/deliver.yml` publishes a release per push (`scripts/version.sh` picks the version); patch versions bump automatically, minor and major via `Cargo.toml`. |
 | Every change is motivated by a story | Gherkin stories for behaviour, chore stories otherwise; tracked as GitHub issues and PRs on `squer-solutions/cellworks`. |
 
 ## 2.3 Conventions

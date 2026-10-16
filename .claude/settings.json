@@ -23,7 +23,7 @@
               "source": "git-subdir",
               "url": "squer-solutions/The-Factory",
               "path": "plugins/factory",
-              "ref": "094b1261f4b7b52ba5c642add7a3620688f23c25"
+              "ref": "v3.0.0"
             }
           }
         ]
@@ -32,5 +32,8 @@
   },
   "enabledPlugins": {
     "factory@the-factory": true
+  },
+  "env": {
+    "CLAUDE_CODE_SUBAGENT_MODEL": "sonnet"
   }
 }
