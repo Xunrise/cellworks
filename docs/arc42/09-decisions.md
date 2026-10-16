@@ -2,7 +2,7 @@
 
 # 9. Architecture Decisions
 
-Index of the architecture decision records in [`docs/adr/`](../adr/index.md).
+Index of the architecture decision records in [`docs/adr/`](../adr/README.md).
 
 - [ADR-0001: Use eframe/egui as the UI framework](../adr/0001-egui-as-ui-framework.md) — Accepted — technology
 - [ADR-0002: One crate per bounded context in a Cargo workspace](../adr/0002-cargo-workspace-crate-per-bounded-context.md) — Accepted — structure

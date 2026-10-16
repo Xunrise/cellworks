@@ -8,8 +8,18 @@ It runs no server and writes nothing to clusters.
 - **Building block:** all crates in `docs/arc42/05-building-blocks.md` (level 2)
 - **Code lives in:** this repository — `src/` (the binary) and `crates/<name>/`
 - **Tech:** Rust 2024, eframe/egui 0.36 (wgpu), tree-sitter, external tools as child processes
-- **Build & test:** `cargo test --workspace`
 - **Talks to:** git, Claude Code transcripts, Neovim, Atlassian remote MCP, kubectl, Terraform files
+
+## How to run
+
+Run from the repository root.
+
+| What | Command |
+| --- | --- |
+| Compile | `cargo build --release` (must stay warning-free) |
+| All tests | `cargo test --workspace` (unit and acceptance tests) |
+| Measurement tests | `cargo test --workspace --release -- --ignored --nocapture` |
+| Lint / format | `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check` |
 
 ## Documents in this folder
 

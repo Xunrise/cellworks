@@ -22,4 +22,4 @@
 ## 2.3 Conventions
 
 Project-wide conventions live in [`CLAUDE.md`](../../CLAUDE.md); per-component conventions under
-[`docs/services/`](../services/index.md).
+[`docs/services/`](../services/README.md).
