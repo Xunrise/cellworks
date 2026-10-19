@@ -31,8 +31,13 @@ waits for a process, a file system walk or the network.
 
 ## 8.5 Paths
 
-Paths are compared case-insensitively on macOS. Projects and files are matched by normalised path, never by the
-spelling they were added with.
+A project or a file is identified by its canonical path — symlinks and `.`/`..` resolved — never by the spelling it
+was added with.
+
+Whether two paths are the *same* folder is the filesystem's answer, not a rule in the code: they are the same when
+the filesystem reports the same file identity (device and inode) for them. A case-insensitive macOS volume therefore
+folds `Alpha` and `alpha` into one project, and a case-sensitive Linux filesystem, where they are two directories,
+keeps two. No `cfg!(target_os)` encodes it. Product owner, 2026-10-08.
 
 ## 8.6 Test strategy
 

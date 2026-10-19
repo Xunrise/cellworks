@@ -1,0 +1,12 @@
+[package]
+name = "cellworks-domain-knowledge"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+cellworks-code-analysis = { path = "../code-analysis" }
+cellworks-map = { path = "../map" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

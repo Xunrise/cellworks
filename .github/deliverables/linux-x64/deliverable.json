@@ -1,0 +1,5 @@
+{
+  "runs-on": "ubuntu-latest",
+  "kind": "files",
+  "channels": ["pr", "test", "main"]
+}

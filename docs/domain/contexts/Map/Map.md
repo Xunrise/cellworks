@@ -20,23 +20,11 @@ Source refs are line numbers of [the prototype findings](../../../discovery/2026
 - View options: lanes between nodes, groups or districts; lane kinds on/off; minimum strength; only around the selection; organize by folder, graph or git changes; git overlay (L83-89).
 - Districts are cut by directories for now; the district strategy is to become swappable (domain context, module, type, language) (product owner, 2026-10-08).
 
-## Tactical model
-
-> Status: not yet discovered
-> The tactical model emerges during implementation. A story adds an
-> entry here only for a new aggregate, a changed aggregate boundary or
-> a new invariant — the code is the rest of the model. Do not
-> pre-populate from the discovery source: tactical choices are made at
-> code time, not at analysis time.
-
-### Aggregates
-_No entries yet._
-
-### Entities (non-aggregate roots)
-_No entries yet._
-
-### Value objects
-_No entries yet._
-
-### Domain services
-_No entries yet._
+## Business decisions
+- An opened project's map is built only by cutting the project's included files with a district strategy and laying
+  them out; its districts, sub-districts, groups and nodes are each identified by the canonical path of their folder
+  or file (STORY-003).
+- No two drawn rectangles overlap, and the only rectangle that contains another is a parent containing its own child
+  (STORY-003).
+- In the directories strategy, a named prefix rule finds a project's district level; it is chosen per project in the
+  settings file, `one-wrapper-folder` by default (STORY-003).

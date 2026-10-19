@@ -21,23 +21,23 @@ Source refs are line numbers of [the prototype findings](../../../discovery/2026
 - A jump into a project still loading applies after its first fit; a jump to a node hidden by the folder view opens the folder view containing it; switching projects closes the folder view (L230-233).
 - The keyboard belongs to whatever has focus; map keys act only otherwise (L236).
 
-## Tactical model
+## Business decisions
+Navigation holds what is framed (the Universe, the open project, a folder or a node) and the selection.
+(STORY-004, STORY-007, STORY-006, STORY-008)
 
-> Status: not yet discovered
-> The tactical model emerges during implementation. A story adds an
-> entry here only for a new aggregate, a changed aggregate boundary or
-> a new invariant — the code is the rest of the model. Do not
-> pre-populate from the discovery source: tactical choices are made at
-> code time, not at analysis time.
-
-### Aggregates
-_No entries yet._
-
-### Entities (non-aggregate roots)
-_No entries yet._
-
-### Value objects
-_No entries yet._
-
-### Domain services
-_No entries yet._
+- The layer follows from what is framed: a folder is the Directory layer, a node the File layer.
+- Enter moves the frame to the selection.
+- A framed folder is its folder view: only the folder and what it holds are shown, and a framed node shows the folder
+  view of the folder holding it.
+- Esc has one step per layer: from a node to its folder view with the node still selected, from a folder view to the
+  whole project with the folder's district selected.
+- A jump frames the folder holding its target and selects the target.
+- The selection is a path read on the current layer, so the district of a project's top-level files, which has the
+  project's own path, is never mistaken for the project.
+- Zooming moves the view; the layer is locked by default. Once it follows the zoom, zooming also moves the layer: the
+  whole project in view is the Project layer with the selection's district selected, and the innermost shown element
+  under the zoom point that spans at least half the view is framed, a node also selected.
+- Enter, Esc and a jump drop the zoom and frame what they move to; locking or unlocking changes neither the layer, the
+  selection nor the view.
+- The tree lists what the current layer holds (the districts on the Project layer, the folder view's contents below
+  it), and its highlighted row is the selection, so the tree and the map never disagree.

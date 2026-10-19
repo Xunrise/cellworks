@@ -1,0 +1,36 @@
+[package]
+name = "cellworks"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "A native desktop map of an engineer's projects, code, agent sessions, tickets, infrastructure and data"
+publish = false
+
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+# Versions shared by more than one crate live here; a member refers to them
+# with `workspace = true`.
+[workspace.dependencies]
+eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "wayland", "x11"] }
+egui = "0.36"
+egui_kittest = { version = "0.36", default-features = false }
+tempfile = "3"
+toml = "1"
+
+[dependencies]
+cellworks-agent-sessions = { path = "crates/agent-sessions" }
+cellworks-code-analysis = { path = "crates/code-analysis" }
+cellworks-domain-knowledge = { path = "crates/domain-knowledge" }
+cellworks-map = { path = "crates/map" }
+cellworks-navigation = { path = "crates/navigation" }
+cellworks-sources = { path = "crates/sources" }
+cellworks-workspace = { path = "crates/workspace" }
+eframe = { workspace = true }
+egui = { workspace = true }
+
+[dev-dependencies]
+egui_kittest = { workspace = true }
+tempfile = { workspace = true }
+toml = { workspace = true }

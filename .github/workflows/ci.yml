@@ -10,7 +10,8 @@ on:
   # labeled and unlabeled re-run the checks when sdlc:break-glass is applied
   # or removed, and record its use.
   pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    # edited: adding the Intent trailer to the description re-runs the check.
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
   # An approval re-runs the separation-of-duties check on pull requests into
   # main.
   pull_request_review:
@@ -31,7 +32,7 @@ permissions:
 
 jobs:
   checks:
-    uses: squer-solutions/The-Factory/.github/workflows/sdlc-checks.yml@094b1261f4b7b52ba5c642add7a3620688f23c25  # trial of The-Factory PR #31, not a release
+    uses: squer-solutions/The-Factory/.github/workflows/sdlc-checks.yml@v3.0.0
     secrets: inherit
     # Reviews and issue timelines for separation of duties, comments for
     # break-glass, the change record and architecture drift, and the runs
@@ -62,6 +63,10 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Without debug info the test binaries, each linking egui and wgpu, fit
+    # the runner's disk; with it the linker ran out of room (a bus error).
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - uses: actions/checkout@v6
       # The workspace arrives with the first story; until then there is

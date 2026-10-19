@@ -29,7 +29,9 @@ flowchart TB
   bin --> ag
   bin --> src
   bin --> dk
+  bin --> code
   bin --> ws
+  bin --> map
   nav --> map
   nav --> ed
   code --> map
@@ -45,15 +47,16 @@ Two relationships of the context map are not crate dependencies: CodeAnalysis �
 projects) and AgentSessions → Workspace (session folders become projects, writes trigger rescans). As crate
 dependencies they would form a cycle through `map → workspace`, so the binary wires them: it takes the events from
 `code-analysis` and `agent-sessions` and calls `workspace`. Sources → Navigation ("show code") is a lane to a node in
-another project and needs no crate dependency either.
+another project and needs no crate dependency either. The binary also depends on `map` directly: it holds the opened
+project's map and calls the Map's painter from the frame loop it owns.
 
 | Crate | Context | Responsibility | Interface it offers |
 |---|---|---|---|
-| `workspace` | [Workspace](../domain/contexts/Workspace/Workspace.md) | Knows the projects: discovery, project identity (path or `jira:`/`otc:`/`data:` prefix, case-insensitive paths on macOS), settings, rescan requests. | Project registry, project identity, settings, rescan events. |
-| `map` | [Map](../domain/contexts/Map/Map.md) | Owns the generic graph (districts, sub-districts, groups, nodes, items, lanes), the district strategy, the layout physics and the level-of-detail rendering of the map. | The graph as a published language for loaders; a loader trait; layout and paint of a graph; camera. |
+| `workspace` | [Workspace](../domain/contexts/Workspace/Workspace.md) | Knows the projects: discovery, project identity (path or `jira:`/`otc:`/`data:` prefix, case-insensitive paths on macOS), settings, rescan requests, and the custom arrangement of each project ([ADR-0006](../adr/0006-custom-arrangement-store.md)). | Project registry, project identity, settings, rescan events, arrangement store. |
+| `map` | [Map](../domain/contexts/Map/Map.md) | Owns the generic graph (districts, sub-districts, groups, nodes, items, lanes), the district strategy, the layout physics and the level-of-detail rendering of the map; chooses the building each item stands as from its declaration and its node's kind: tower, skyscraper, terrace, monument, library hall, switchboard, courthouse, plant, depot, customs house, vault, ghost, slab or billboard. | The graph as a published language for loaders; a loader trait; layout and paint of a graph; camera. |
 | `navigation` | [Navigation](../domain/contexts/Navigation/Navigation.md) | Layers, selection, movement modes, Enter/Esc, folder views, item menu, palette, tree, history; routes keyboard focus. | Input handling over a graph; navigation commands. |
-| `code-analysis` | [CodeAnalysis](../domain/contexts/CodeAnalysis/CodeAnalysis.md) | Scans code projects with tree-sitter ([ADR-0004](../adr/0004-tree-sitter-for-code-analysis.md)) and git ([ADR-0003](../adr/0003-external-tools-as-child-processes.md)) into a graph. | A loader for code projects; file and function facts for DomainKnowledge. |
-| `domain-knowledge` | [DomainKnowledge](../domain/contexts/DomainKnowledge/DomainKnowledge.md) | Parses context cells and links them to code by glossary terms. | A loader contribution of cells and cell-reference lanes. |
+| `code-analysis` | [CodeAnalysis](../domain/contexts/CodeAnalysis/CodeAnalysis.md) | Scans code projects with tree-sitter ([ADR-0004](../adr/0004-tree-sitter-for-code-analysis.md)) and git ([ADR-0003](../adr/0003-external-tools-as-child-processes.md)) into a graph; says what each declaration is (an enum, a constant, an entry point, its visibility, what it is part of, implements and holds) and tells every file by its kind; a file no parser reads is read as text, in the parts its kind has (sections, keys, scenarios, blocks), else one tower of its lines; secrets keep only the width of each line. | A loader for code projects; file and function facts for DomainKnowledge. |
+| `domain-knowledge` | [DomainKnowledge](../domain/contexts/DomainKnowledge/DomainKnowledge.md) | Parses context cells and links them to code by glossary terms; reads the bounded contexts and the context map for the cells lens. | A loader contribution of cells and cell-reference lanes; the context cells and roads of the cells lens. |
 | `sources` | [Sources](../domain/contexts/Sources/Sources.md) | Loaders for Jira (Atlassian MCP, OAuth), infrastructure (Terraform, kubectl) and data structures. | Loaders for `jira:`, `otc:` and `data:` projects. |
 | `agent-sessions` | [AgentSessions](../domain/contexts/AgentSessions/AgentSessions.md) | Discovers sessions from transcripts, places them on the graph, and creates and steers sessions. | Session list and events; session drawing over the map. |
 | `editing` | [Editing](../domain/contexts/Editing/Editing.md) | Embedded Neovim: grid, input, auto-save, pop-out windows. | Open a file at a line; editor focus. |
