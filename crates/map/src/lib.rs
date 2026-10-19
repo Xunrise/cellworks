@@ -14,6 +14,7 @@ pub mod city;
 mod contexts;
 mod districts;
 mod graph;
+mod history;
 mod lanes;
 mod layout;
 mod lens;
@@ -33,6 +34,7 @@ pub use graph::{
     CoChange, Declaration, Declares, District, DistrictKind, Element, Floor, Found, Group, Item,
     ItemKind, Node, NodeKind, ProjectMap, SubDistrict, Token,
 };
+pub use history::{Commit, LineHistory};
 pub use lanes::{LaneId, LaneKind, Lanes, Network};
 pub use lens::{Flight, Lens, relens};
 pub use rules::{PREFIX_RULES, PrefixRule, default_prefix_rule, prefix_rule};
@@ -86,6 +88,7 @@ impl ProjectMap {
             districts,
             extent: Rect::NOTHING,
             co_changes: Vec::new(),
+            history: LineHistory::default(),
             lens: Lens::Folders,
             homes: BTreeMap::new(),
             hub: None,

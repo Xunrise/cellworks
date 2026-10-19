@@ -172,6 +172,7 @@ fn an_empty_layer_shows_an_empty_tree_not_the_previous_one() {
         }],
         extent: area,
         co_changes: Vec::new(),
+        history: Default::default(),
         lens: Default::default(),
         homes: Default::default(),
         hub: None,

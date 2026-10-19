@@ -11,7 +11,10 @@
 //! kind has: a document's sections, a configuration's keys, a feature
 //! file's scenarios; else one tower of its lines. With ignored files switched on,
 //! the folder is walked into hidden folders too, only `.git` folders are left
-//! out, and a large ignored folder stays closed: one node with its file count. [`load`] is an ordinary blocking function and
+//! out, and a large ignored folder stays closed: one node with its file count.
+//! In a git repository, every visible file is blamed and joined to the pull
+//! request and the stories its commit names, into `ProjectMap::history`.
+//! [`load`] is an ordinary blocking function and
 //! [`start_load`] is the thread around it.
 
 mod closed;
@@ -19,6 +22,7 @@ mod co_change;
 mod event;
 mod files;
 mod git;
+mod history;
 mod kinds;
 mod plain;
 mod rust;
@@ -37,7 +41,9 @@ pub use git::{GitCli, GitListing, GitUnavailable};
 /// Blocking: called on the background thread [`start_load`] spawns, and
 /// directly from a test. [`CodeAnalysisEvent::ProjectMapped`] comes last, and
 /// not at all when the project folder itself cannot be read. With `ignored`,
-/// git-ignored files and hidden folders are on the map too.
+/// git-ignored files and hidden folders are on the map too. Per-line history
+/// is read the same way co-change is: nothing fetched from GitHub, empty
+/// when the folder is not a repository or the log fails.
 pub fn load(
     root: &Path,
     name: &str,
@@ -120,6 +126,15 @@ pub fn load(
     if is_repository && let Ok(commits) = git.history(root) {
         map.co_changes = co_change::co_changes(root, &files, &commits);
     }
+    // Per-line provenance: nothing is fetched from GitHub, the same as
+    // above, and a failing log leaves it empty the same way.
+    // ponytail: blaming every visible file adds about 1s on this repository
+    // and grows linearly with file count; blame lazily per opened district
+    // if that ever becomes the ceiling.
+    if is_repository && let Ok(logged) = git.log(root) {
+        let blamed = git.blame(root, &files);
+        map.history = history::join(root, logged, blamed);
+    }
     events.push(CodeAnalysisEvent::ProjectMapped {
         project,
         map: Box::new(map),
@@ -153,11 +168,13 @@ pub fn start_load(
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::collections::BTreeMap;
     use std::fs;
 
     use cellworks_map::default_prefix_rule;
 
     use super::*;
+    use crate::git::LoggedCommit;
 
     /// A recorded answer from git, and whether it was asked.
     struct Recorded {
@@ -178,6 +195,27 @@ mod tests {
         fn visible_files(&self, _: &Path) -> Result<Vec<PathBuf>, GitUnavailable> {
             self.asked.set(true);
             self.answer.clone()
+        }
+    }
+
+    /// A recorded listing that also answers `log` and `blame`.
+    struct WithHistory {
+        files: Vec<PathBuf>,
+        commits: Vec<LoggedCommit>,
+        blamed: BTreeMap<PathBuf, Vec<Option<String>>>,
+    }
+
+    impl GitListing for WithHistory {
+        fn visible_files(&self, _: &Path) -> Result<Vec<PathBuf>, GitUnavailable> {
+            Ok(self.files.clone())
+        }
+
+        fn log(&self, _: &Path) -> Result<Vec<LoggedCommit>, GitUnavailable> {
+            Ok(self.commits.clone())
+        }
+
+        fn blame(&self, _: &Path, _: &[PathBuf]) -> BTreeMap<PathBuf, Vec<Option<String>>> {
+            self.blamed.clone()
         }
     }
 
@@ -374,5 +412,67 @@ mod tests {
             .expect("the read thread reports");
 
         assert!(matches!(reported, CodeAnalysisEvent::ProjectMapped { .. }));
+    }
+
+    #[test]
+    fn each_floor_knows_its_commit_pull_request_and_stories() {
+        let tree = tree(&["a.txt"]);
+        // `load` only asks git for history inside a repository.
+        fs::create_dir(tree.path().join(".git")).expect("create .git");
+        fs::write(tree.path().join("a.txt"), "first\nsecond\n").expect("write a.txt");
+        let mut blamed = BTreeMap::new();
+        blamed.insert(PathBuf::from("a.txt"), vec![Some("c1".to_owned()), None]);
+        let git = WithHistory {
+            files: vec![PathBuf::from("a.txt")],
+            commits: vec![LoggedCommit {
+                sha: "c1".to_owned(),
+                time: 1000,
+                message: "feat: a thing (#9)\n\nRefs: STORY-4".to_owned(),
+            }],
+            blamed,
+        };
+
+        let events = read(tree.path(), &git);
+
+        let map = map_of(&events);
+        let node = tree.path().join("a.txt");
+        let items = map.items_of(&node).expect("a.txt has items");
+        let tower = &items[0];
+        // Looked up from the loaded map's own item, not a hand-built path: a
+        // mismatch in how `history.lines` keys its files would make this (and
+        // every real lookup) silently find nothing, while still passing any
+        // test that hard-codes the expected path instead.
+        let file = tower
+            .declaration
+            .part_of
+            .as_deref()
+            .unwrap_or(&tower.path)
+            .parent()
+            .expect("a file");
+
+        let first = map
+            .history
+            .of_line(file, tower.floors[0].number)
+            .expect("line 1 has a commit");
+        assert_eq!(first.sha, "c1");
+        assert_eq!(first.pull_request, Some(9));
+        assert_eq!(first.stories, vec!["STORY-004".to_owned()]);
+        assert_eq!(
+            map.history.of_line(file, tower.floors[1].number),
+            None,
+            "line 2 is uncommitted"
+        );
+        assert_eq!(map.history.commits.len(), 1);
+    }
+
+    #[test]
+    fn a_folder_without_git_has_no_history() {
+        let tree = tree(&["a.txt"]);
+
+        let events = read(tree.path(), &Recorded::listing(&[]));
+
+        let map = map_of(&events);
+        assert!(map.history.commits.is_empty());
+        assert!(map.history.lines.is_empty());
     }
 }
