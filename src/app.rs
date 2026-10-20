@@ -16,6 +16,8 @@
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
+use cellworks_agent_sessions::ui::{DrawnSession, SessionsView};
+use cellworks_agent_sessions::{Session, SessionSources};
 use cellworks_code_analysis::{CodeAnalysisEvent, GitCli, GitListing, start_details, start_load};
 use cellworks_map::View;
 use cellworks_map::ui::{Drawn, DrawnBridge, DrawnBuilding, DrawnLane, DrawnTower, Outline};
@@ -112,6 +114,14 @@ pub struct CellworksApp {
     /// Where recently opened projects are kept, and the thread keeping them;
     /// none, none are kept.
     recent: Option<(RecentStore, RecentKeeper)>,
+    /// Every running Claude Code session on the machine, and the sidebar and
+    /// overlay's own view model (STORY-030).
+    sessions: SessionsView,
+    /// The sessions the last frame drew over the city.
+    drawn_sessions: Vec<DrawnSession>,
+    /// The open project's own git common dir, cached by its root so it is
+    /// read from disk once per project, not every frame.
+    common_dir_cache: Option<(std::path::PathBuf, Option<std::path::PathBuf>)>,
 }
 
 /// What the keyboard and the pointer asked for in one frame.
@@ -143,6 +153,9 @@ struct Keys {
     call_lanes: bool,
     zoom: f32,
     pointer: Option<egui::Pos2>,
+    /// `[` / `]`: step to the previous / next session in this city.
+    session_prev: bool,
+    session_next: bool,
 }
 
 impl CellworksApp {
@@ -166,6 +179,12 @@ impl CellworksApp {
                 project_details: Vec::new(),
                 auto_detail: true,
                 recent: Some(kept_recent(RecentStore::beside(&sources.settings_file))),
+                sessions: match SessionSources::for_this_user() {
+                    Some(session_sources) => SessionsView::watching(session_sources),
+                    None => SessionsView::none(),
+                },
+                drawn_sessions: Vec::new(),
+                common_dir_cache: None,
                 universe: Universe::scanning(&sources),
                 events: Some(start_scan(sources)),
                 opened: None,
@@ -195,6 +214,12 @@ impl CellworksApp {
                 project_details: Vec::new(),
                 auto_detail: true,
                 recent: None,
+                sessions: match SessionSources::for_this_user() {
+                    Some(session_sources) => SessionsView::watching(session_sources),
+                    None => SessionsView::none(),
+                },
+                drawn_sessions: Vec::new(),
+                common_dir_cache: None,
                 universe: Universe::without_home(),
                 events: None,
                 opened: None,
@@ -230,6 +255,9 @@ impl CellworksApp {
             project_details: Vec::new(),
             auto_detail: false,
             recent: None,
+            sessions: SessionsView::none(),
+            drawn_sessions: Vec::new(),
+            common_dir_cache: None,
             universe,
             events: Some(events),
             opened: None,
@@ -301,6 +329,15 @@ impl CellworksApp {
         }
     }
 
+    /// The same app, showing `sessions` instead of watching the machine's
+    /// real ones. No background watch is ever started — a test seam.
+    pub fn with_sessions(self, sessions: Vec<Session>) -> CellworksApp {
+        CellworksApp {
+            sessions: SessionsView::with_sessions(sessions),
+            ..self
+        }
+    }
+
     /// Reads the branch and file count of the project selected in the
     /// launcher, once. Git runs only in a project the engineer selected (or
     /// opened), never in the rest of those discovered.
@@ -325,6 +362,7 @@ impl CellworksApp {
     /// Takes whatever the scan, the host probes and the project details have
     /// sent so far. Never waits.
     pub fn apply_pending(&mut self) {
+        self.sessions.drain();
         if let Some(events) = &self.events {
             for event in self.universe.drain(events) {
                 self.launcher.apply(event);
@@ -438,6 +476,16 @@ impl CellworksApp {
         self.lane_hovered.as_ref()
     }
 
+    /// Every running session on the machine, as the sidebar lists them.
+    pub fn sessions(&self) -> &[Session] {
+        self.sessions.sessions()
+    }
+
+    /// The sessions the last frame drew over the city.
+    pub fn sessions_drawn(&self) -> &[DrawnSession] {
+        &self.drawn_sessions
+    }
+
     /// The districts the last frame drew, with the outline of each.
     pub fn districts(&self) -> &[(std::path::PathBuf, Outline)] {
         &self.districts
@@ -490,6 +538,24 @@ impl CellworksApp {
     /// The opened project's map, once it has arrived.
     fn map(&self) -> Option<&ProjectMap> {
         mapped(&self.opened)
+    }
+
+    /// The open project's own git common dir, read once per project (git's
+    /// files are cheap to read but there is no reason to do it every frame)
+    /// and cached by its root.
+    fn city_common_dir(&mut self) -> Option<std::path::PathBuf> {
+        let root = self.map()?.root.clone();
+        let stale = match &self.common_dir_cache {
+            Some((cached_root, _)) => *cached_root != root,
+            None => true,
+        };
+        if stale {
+            self.common_dir_cache =
+                Some((root.clone(), cellworks_agent_sessions::common_dir(&root)));
+        }
+        self.common_dir_cache
+            .as_ref()
+            .and_then(|(_, common)| common.clone())
     }
 
     /// The universe's project whose folder is `path`.
@@ -614,6 +680,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         app.bridges.clear();
         app.cables.clear();
     }
+    let typing = app.sessions.search_focused(ui);
     let Keys {
         enter,
         esc,
@@ -634,6 +701,8 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         call_lanes,
         zoom,
         pointer,
+        session_prev,
+        session_next,
     } = ui.input(|input| {
         let plain = input.modifiers.is_none();
         let pressed = |key| input.key_pressed(key);
@@ -641,33 +710,40 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         Keys {
             enter: pressed(egui::Key::Enter),
             esc: pressed(egui::Key::Escape),
-            ignored: plain && pressed(egui::Key::I),
-            lock: plain && pressed(egui::Key::Z),
-            tree: plain && pressed(egui::Key::E),
+            ignored: !typing && plain && pressed(egui::Key::I),
+            lock: !typing && plain && pressed(egui::Key::Z),
+            tree: !typing && plain && pressed(egui::Key::E),
             rows: towards(egui::Key::ArrowUp, egui::Key::ArrowDown),
             columns: towards(egui::Key::ArrowLeft, egui::Key::ArrowRight),
-            turn: match (pressed(egui::Key::Q), input.modifiers.shift_only()) {
-                (false, _) => 0,
-                (true, false) => 1,
-                (true, true) => 3,
-            },
-            fit: plain && pressed(egui::Key::F),
-            cycle: plain && pressed(egui::Key::Tab),
-            underground: plain && pressed(egui::Key::U),
-            lens: plain && pressed(egui::Key::L),
-            import_lanes: plain && pressed(egui::Key::G),
-            call_lanes: plain && pressed(egui::Key::A),
-            held_underground: input.modifiers.shift_only(),
-            cables: plain && pressed(egui::Key::M),
-            lines: if plain {
-                towards(egui::Key::K, egui::Key::J)
-            } else {
+            turn: if typing {
                 0
+            } else {
+                match (pressed(egui::Key::Q), input.modifiers.shift_only()) {
+                    (false, _) => 0,
+                    (true, false) => 1,
+                    (true, true) => 3,
+                }
+            },
+            fit: !typing && plain && pressed(egui::Key::F),
+            cycle: plain && pressed(egui::Key::Tab),
+            underground: !typing && plain && pressed(egui::Key::U),
+            lens: !typing && plain && pressed(egui::Key::L),
+            import_lanes: !typing && plain && pressed(egui::Key::G),
+            call_lanes: !typing && plain && pressed(egui::Key::A),
+            held_underground: input.modifiers.shift_only(),
+            cables: !typing && plain && pressed(egui::Key::M),
+            lines: if typing || !plain {
+                0
+            } else {
+                towards(egui::Key::K, egui::Key::J)
             },
             zoom: input.zoom_delta() * (input.smooth_scroll_delta.y / SCROLL_PER_E).exp(),
             pointer: input.pointer.hover_pos(),
+            session_prev: !typing && plain && pressed(egui::Key::OpenBracket),
+            session_next: !typing && plain && pressed(egui::Key::CloseBracket),
         }
     });
+    let common_dir = app.city_common_dir();
     if turn != 0
         && let Some(opened) = &mut app.opened
         && let Some(centre) = opened.turn(turn)
@@ -759,7 +835,9 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     if lock {
         app.navigation.toggle_lock();
     }
-    if esc && app.navigation.esc(mapped(&app.opened)) == Some(Moved::Closed) {
+    if esc && app.sessions.deselect() {
+        // handled: a session selection is cleared before anything else.
+    } else if esc && app.navigation.esc(mapped(&app.opened)) == Some(Moved::Closed) {
         app.opened = None;
     }
     if enter
@@ -826,33 +904,54 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                     app.navigation.select(path);
                 }
             }
-            let (drawn, minimap, floor) = egui::CentralPanel::default()
-                .frame(egui::Frame::central_panel(ui.style()).inner_margin(0.0))
-                .show(ui, |ui| {
-                    let drawn = project(ui, opened, &app.navigation, app.underground);
-                    let (Some(shown), ProjectState::Mapped(map)) = (&drawn, opened.state()) else {
-                        return (drawn, None, None);
-                    };
-                    let minimap = cellworks_map::ui::minimap(ui, map, &shown.view, shown.panel);
-                    if let Some(hints) = app.navigation.hints(map) {
-                        cellworks_navigation::ui::hints(ui, shown.panel, &hints);
-                    }
-                    cellworks_map::ui::caption(ui, shown.panel, opened.lens());
-                    if let Some(age) = opened.switched_at().map(|at| ui.input(|i| i.time) - at) {
-                        cellworks_map::ui::banner(ui, shown.panel, opened.lens(), age);
-                    }
-                    cellworks_map::ui::legend(ui, shown.panel, opened.lanes());
-                    let floor = app.navigation.inside().and_then(|(item, floor)| {
-                        cellworks_map::ui::inside(ui, map, item, floor, shown.panel)
-                    });
-                    (drawn, minimap, floor)
-                })
-                .inner;
+            let mut sidebar_centre: Option<egui::Pos2> = None;
+            if app.sessions.has_sources()
+                && let Some(map) = mapped(&app.opened)
+            {
+                if let Some((_, centre)) = egui::Panel::left("sessions")
+                    .exact_size(300.0)
+                    .show(ui, |ui| {
+                        app.sessions.sidebar(ui, map, common_dir.as_deref())
+                    })
+                    .inner
+                {
+                    sidebar_centre = centre;
+                }
+            }
+            let sessions_view = &mut app.sessions;
+            let (drawn, minimap, floor, (sessions_drawn, session_clicked)) =
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::central_panel(ui.style()).inner_margin(0.0))
+                    .show(ui, |ui| {
+                        let drawn = project(ui, opened, &app.navigation, app.underground);
+                        let (Some(shown), ProjectState::Mapped(map)) = (&drawn, opened.state())
+                        else {
+                            return (drawn, None, None, (Vec::new(), None));
+                        };
+                        let minimap = cellworks_map::ui::minimap(ui, map, &shown.view, shown.panel);
+                        if let Some(hints) = app.navigation.hints(map) {
+                            cellworks_navigation::ui::hints(ui, shown.panel, &hints);
+                        }
+                        cellworks_map::ui::caption(ui, shown.panel, opened.lens());
+                        if let Some(age) = opened.switched_at().map(|at| ui.input(|i| i.time) - at)
+                        {
+                            cellworks_map::ui::banner(ui, shown.panel, opened.lens(), age);
+                        }
+                        cellworks_map::ui::legend(ui, shown.panel, opened.lanes());
+                        let sessions_result =
+                            sessions_view.paint(ui, map, common_dir.as_deref(), &shown.view);
+                        let floor = app.navigation.inside().and_then(|(item, floor)| {
+                            cellworks_map::ui::inside(ui, map, item, floor, shown.panel)
+                        });
+                        (drawn, minimap, floor, sessions_result)
+                    })
+                    .inner;
             let Some(drawn) = drawn else {
                 app.towers.clear();
                 app.buildings.clear();
                 app.bridges.clear();
                 app.cables.clear();
+                app.drawn_sessions = Vec::new();
                 app.view = None;
                 return;
             };
@@ -860,6 +959,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             app.buildings = drawn.buildings;
             app.bridges = drawn.bridges;
             app.cables = drawn.cables;
+            app.drawn_sessions = sessions_drawn;
             app.bridge_hovered = drawn.bridge_hovered;
             app.districts = drawn.districts;
             app.folders = drawn.folders;
@@ -911,7 +1011,20 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 let centre = found.area.center();
                 app.navigation.centre_on(visible, centre);
             }
-            if let Some(click) = drawn.lane_clicked {
+            if (session_prev || session_next)
+                && let Some(map) = mapped(&app.opened)
+                && let Some(centre) = app.sessions.step(map, common_dir.as_deref(), session_next)
+            {
+                app.navigation.centre_on(visible, centre);
+            }
+            if let Some(centre) = sidebar_centre {
+                app.navigation.centre_on(visible, centre);
+            }
+            if session_clicked.is_some() {
+                // The session's own selection already happened inside
+                // `SessionsView::paint`; this branch only exists to pre-empt
+                // the tower/lane/ground click below.
+            } else if let Some(click) = drawn.lane_clicked {
                 match (click.travel, mapped(&app.opened)) {
                     // Travelling along a lane: the view frames its far end.
                     (Some(far), Some(map)) => app.navigation.jump(map, far),

@@ -54,16 +54,17 @@ tools; there is no SLA.
 
 - **Protocol:** the `claude` CLI as a child process ([ADR-0010](../adr/0010-claude-code-background-sessions.md)). `claude --bg -n <name> "<task>"` starts a background
   session and prints its short id; `claude agents --json` lists every interactive and background session with its id,
-  session id, working directory, name, status (busy, idle) and state (working, done, blocked); `claude attach <id>`
+  session id, working directory, name, status (busy, idle) and state (working, done, waiting, blocked); `claude attach <id>`
   opens a session in a pseudo-terminal; `claude stop <id>` stops it, and `claude --resume <sessionId> --bg "<prompt>"`
   continues a stopped one. Transcripts are JSON lines under `~/.claude/projects/**/*.jsonl`, tailed read-only.
 - **Data:** file reads and writes from the `Read`, `Edit`, `Write`, `MultiEdit` and `NotebookEdit` tool calls in the
-  transcript; pull request URLs from the result of a `gh pr create` call; session state from `claude agents --json`.
+  transcript and in the subagent transcripts `<sessionId>/subagents/*.jsonl`; reads from the existing file paths named in
+  `Bash`, `Grep` and `Glob` calls; pull request URLs from the result of a `gh pr create` call; session state from `claude agents --json`.
 - **Auth:** the user's own Claude Code login; Cellworks never handles its credentials. `claude` runs with a clean
   environment, because a child that inherits a host's Claude environment fails to authenticate.
 - **Quirks:** neither the transcript format nor `claude agents --json` is a published contract; both can change with
   Claude Code releases, so parse tolerantly and ignore unknown events and fields. Waiting for approval shows only in
-  `claude agents --json`. Reads through Bash (`cat`, `grep`) are not file events. Sessions often touch files outside
+  `claude agents --json`. Reads through Bash are seen only as file paths named in the command. Sessions often touch files outside
   their working directory. `--resume` on a session that is still running starts a copy under a new id.
 
 ### git

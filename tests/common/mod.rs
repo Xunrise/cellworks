@@ -203,19 +203,14 @@ pub fn map(harness: &Harness<'_, CellworksApp>) -> ProjectMap {
     }
 }
 
-/// The project "shop" as a city: the crates "catalog" and "orders". The
-/// file "catalog/pricing.rs" holds "discount" (12 lines, its third line
-/// indented deeper than its second, its fourth calling "round_price"),
-/// "round_price" and "total" (40 lines). The block is a skyline: the taller
-/// "total" stands on a row behind the shorter "discount", and is wide enough
-/// to reach out behind it; most lines of "total" are short. "catalog/mod.rs"
-/// holds only `use` statements.
-pub fn shop_city() -> (Tree, Harness<'static, CellworksApp>) {
-    shop_city_with("")
-}
-
-/// [`shop_city`] with `more` written at the end of "catalog/pricing.rs".
-pub fn shop_city_with(more: &str) -> (Tree, Harness<'static, CellworksApp>) {
+/// Builds the folder tree [`shop_city`] describes, without opening it:
+/// "catalog" and "orders". The file "catalog/pricing.rs" holds "discount"
+/// (12 lines, its third line indented deeper than its second, its fourth
+/// calling "round_price"), "round_price" and "total" (40 lines). The block
+/// is a skyline: the taller "total" stands on a row behind the shorter
+/// "discount", and is wide enough to reach out behind it; most lines of
+/// "total" are short. "catalog/mod.rs" holds only `use` statements.
+fn shop_tree_sources(more: &str) -> Tree {
     let pad = |line: &str, width: usize| format!("{line:<width$}// padding", width = width - 10);
     let mut discount = vec![
         "fn discount(price: u32) -> u32 {".to_owned(),
@@ -241,16 +236,78 @@ pub fn shop_city_with(more: &str) -> (Tree, Harness<'static, CellworksApp>) {
         .map(|lines| lines.join("\n"))
         .collect::<Vec<_>>()
         .join("\n\n");
-    let tree = Tree::sources(
+    Tree::sources(
         "shop",
         &[
             ("catalog/pricing.rs", &format!("{pricing}{more}")),
             ("catalog/mod.rs", "use std::fmt;\nuse std::io;\n"),
             ("orders/order.rs", "fn place() {\n    let order = 1;\n}\n"),
         ],
-    );
+    )
+}
+
+/// The project "shop" as a city: see [`shop_tree_sources`] for its shape.
+pub fn shop_city() -> (Tree, Harness<'static, CellworksApp>) {
+    shop_city_with("")
+}
+
+/// [`shop_city`] with `more` written at the end of "catalog/pricing.rs".
+pub fn shop_city_with(more: &str) -> (Tree, Harness<'static, CellworksApp>) {
+    let tree = shop_tree_sources(more);
     let harness = open(&tree, None, Recorded::listing(&[]));
     (tree, harness)
+}
+
+/// Like [`shop_city`], but "shop" is a real git checkout (a `.git` folder,
+/// not just a bare project), so sessions can be placed in its city and a
+/// second checkout can be built as one of its worktrees with
+/// [`shop_worktree`].
+pub fn shop_tree() -> (Tree, Harness<'static, CellworksApp>) {
+    let tree = shop_tree_sources("");
+    fs::create_dir(tree.root.join(".git")).expect("create .git");
+    // A `.git` folder makes `load` trust git over walking the folder (see
+    // `cellworks_code_analysis::load`), so the recorded listing must name
+    // the same files `shop_tree_sources` writes, or the map comes up empty.
+    let git = Recorded::listing(&["catalog/pricing.rs", "catalog/mod.rs", "orders/order.rs"]);
+    let harness = open(&tree, None, git);
+    (tree, harness)
+}
+
+/// A second checkout of the "shop" repository at `tree`, sharing its common
+/// dir as a worktree would: a `.git` FILE with `gitdir: <...>` pointing at a
+/// private git-dir under `tree.root`'s own `.git/worktrees/<name>`, with a
+/// `commondir` file resolving back to `tree.root`'s own `.git`. Returns the
+/// new checkout's root folder (not opened as a project - its files are
+/// never read by Cellworks, only named by a session's events).
+pub fn shop_worktree(tree: &Tree, name: &str, branch: &str) -> PathBuf {
+    let private_git_dir = tree.root.join(".git/worktrees").join(name);
+    fs::create_dir_all(&private_git_dir).expect("create the worktree's private git dir");
+    fs::write(
+        private_git_dir.join("HEAD"),
+        format!("ref: refs/heads/{branch}\n"),
+    )
+    .expect("write the worktree's HEAD");
+    fs::write(private_git_dir.join("commondir"), "../..\n").expect("write commondir");
+
+    let checkout_root = tree
+        .root
+        .parent()
+        .expect("the tree has a parent folder")
+        .join(name);
+    fs::create_dir_all(&checkout_root).expect("create the worktree's checkout folder");
+    fs::write(
+        checkout_root.join(".git"),
+        format!("gitdir: {}\n", private_git_dir.display()),
+    )
+    .expect("write the worktree's .git file");
+    checkout_root
+}
+
+/// The common dir of `tree`'s "shop" repository, the same value
+/// `cellworks_agent_sessions` would compute for it and for any of its
+/// worktrees.
+pub fn shop_common_dir(tree: &Tree) -> PathBuf {
+    fs::canonicalize(tree.root.join(".git")).expect("the .git folder exists")
 }
 
 /// The drawn tower at `path`.
