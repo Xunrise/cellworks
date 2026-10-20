@@ -16,15 +16,15 @@
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
-use cellworks_code_analysis::{CodeAnalysisEvent, GitCli, GitListing, start_load};
+use cellworks_code_analysis::{CodeAnalysisEvent, GitCli, GitListing, start_details, start_load};
 use cellworks_map::View;
 use cellworks_map::ui::{Drawn, DrawnBridge, DrawnBuilding, DrawnLane, DrawnTower, Outline};
 use cellworks_map::{Lens, ProjectMap, default_prefix_rule, prefix_rule};
 use cellworks_navigation::{Moved, Navigation};
-use cellworks_workspace::ui::UniverseClick;
+use cellworks_workspace::ui::LauncherAction;
 use cellworks_workspace::{
-    ArrangementKeeper, ArrangementStore, Project, ScanState, Sources, Universe, WorkspaceEvent,
-    start_scan,
+    ArrangementKeeper, ArrangementStore, HostProbe, Launcher, Project, ProjectId, RecentKeeper,
+    RecentStore, ScanState, Sources, SshProbe, Universe, WorkspaceEvent, start_probes, start_scan,
 };
 
 use crate::opened::{OpenedNotice, OpenedProject, ProjectState};
@@ -88,6 +88,30 @@ pub struct CellworksApp {
     /// Where custom arrangements are kept, and the thread keeping them;
     /// none, none are kept.
     arrangements: Option<(ArrangementStore, ArrangementKeeper)>,
+    /// The launcher's own view model: search, pick, selection, host states and
+    /// project details, read off the frame loop.
+    launcher: Launcher,
+    /// How a remote host's reachability is decided (STORY-078).
+    probe: Arc<dyn HostProbe + Send + Sync>,
+    /// Where the host probes report, once started.
+    probed: Option<Receiver<WorkspaceEvent>>,
+    /// Whether a host probe is still running.
+    probing: bool,
+    /// The reads of a selected project's branch and file count still
+    /// running, by project; one per project, started when the engineer
+    /// selects it.
+    project_details: Vec<(std::path::PathBuf, Receiver<CodeAnalysisEvent>)>,
+    /// Whether the host probes may start on their own once the scan
+    /// reports, and a selected project's details be read. False from
+    /// [`CellworksApp::over`], so a test that never asks for this story's git
+    /// or ssh behaviour can never trigger either by accident;
+    /// [`CellworksApp::start`] and the `with_probe`/`with_git` builders turn
+    /// it on, matching the design's "`over()` starts neither probes nor
+    /// details".
+    auto_detail: bool,
+    /// Where recently opened projects are kept, and the thread keeping them;
+    /// none, none are kept.
+    recent: Option<(RecentStore, RecentKeeper)>,
 }
 
 /// What the keyboard and the pointer asked for in one frame.
@@ -130,6 +154,18 @@ impl CellworksApp {
         match Sources::for_this_user() {
             Some(sources) => CellworksApp {
                 arrangements: Some(kept(ArrangementStore::beside(&sources.settings_file))),
+                launcher: Launcher::new(
+                    sources
+                        .projects_folder
+                        .parent()
+                        .map(std::path::Path::to_path_buf),
+                ),
+                probe: Arc::new(SshProbe),
+                probed: None,
+                probing: false,
+                project_details: Vec::new(),
+                auto_detail: true,
+                recent: Some(kept_recent(RecentStore::beside(&sources.settings_file))),
                 universe: Universe::scanning(&sources),
                 events: Some(start_scan(sources)),
                 opened: None,
@@ -152,6 +188,13 @@ impl CellworksApp {
             },
             None => CellworksApp {
                 arrangements: None,
+                launcher: Launcher::new(None),
+                probe: Arc::new(SshProbe),
+                probed: None,
+                probing: false,
+                project_details: Vec::new(),
+                auto_detail: true,
+                recent: None,
                 universe: Universe::without_home(),
                 events: None,
                 opened: None,
@@ -180,6 +223,13 @@ impl CellworksApp {
     pub fn over(universe: Universe, events: Receiver<WorkspaceEvent>) -> CellworksApp {
         CellworksApp {
             arrangements: None,
+            launcher: Launcher::new(None),
+            probe: Arc::new(SshProbe),
+            probed: None,
+            probing: false,
+            project_details: Vec::new(),
+            auto_detail: false,
+            recent: None,
             universe,
             events: Some(events),
             opened: None,
@@ -203,9 +253,17 @@ impl CellworksApp {
     }
 
     /// The same app asking `git` about repositories instead of the real git,
-    /// so a test never runs it.
+    /// so a test never runs it. Also turns on the host probes and the
+    /// selected project's details (`auto_detail`) — a test that calls this without also
+    /// calling `with_probe`, and whose fixture names a remote host, still
+    /// reaches the real `ssh`; call `with_probe` too whenever the fixture has
+    /// one.
     pub fn with_git(self, git: Arc<dyn GitListing + Send + Sync>) -> CellworksApp {
-        CellworksApp { git, ..self }
+        CellworksApp {
+            git,
+            auto_detail: true,
+            ..self
+        }
     }
 
     /// The same app, keeping custom arrangements in `store`.
@@ -216,19 +274,119 @@ impl CellworksApp {
         }
     }
 
-    /// Takes whatever the scan and the read have sent so far. Never waits.
+    /// The same app, deciding a remote host's reachability with `probe`
+    /// instead of the real `ssh`, so a test never runs it. Also turns on
+    /// `auto_detail`, as `with_git` does.
+    pub fn with_probe(self, probe: Arc<dyn HostProbe + Send + Sync>) -> CellworksApp {
+        CellworksApp {
+            probe,
+            auto_detail: true,
+            ..self
+        }
+    }
+
+    /// The same app, with its launcher showing `home` as `~`.
+    pub fn with_home(self, home: std::path::PathBuf) -> CellworksApp {
+        CellworksApp {
+            launcher: Launcher::new(Some(home)),
+            ..self
+        }
+    }
+
+    /// The same app, keeping recently opened projects in `store`.
+    pub fn with_recent(self, store: RecentStore) -> CellworksApp {
+        CellworksApp {
+            recent: Some(kept_recent(store)),
+            ..self
+        }
+    }
+
+    /// Reads the branch and file count of the project selected in the
+    /// launcher, once. Git runs only in a project the engineer selected (or
+    /// opened), never in the rest of those discovered.
+    fn request_details(&mut self) {
+        let Some(id) = self.launcher.selected() else {
+            return;
+        };
+        let Some(path) = id.local_path() else {
+            return;
+        };
+        if !self.auto_detail
+            || self.launcher.details_of(id).is_some()
+            || self.project_details.iter().any(|(read, _)| read == path)
+        {
+            return;
+        }
+        let path = path.to_path_buf();
+        let receiver = start_details(vec![path.clone()], Arc::clone(&self.git));
+        self.project_details.push((path, receiver));
+    }
+
+    /// Takes whatever the scan, the host probes and the project details have
+    /// sent so far. Never waits.
     pub fn apply_pending(&mut self) {
         if let Some(events) = &self.events {
-            self.universe.drain(events);
+            for event in self.universe.drain(events) {
+                self.launcher.apply(event);
+            }
         }
+        let starting = match self.universe.scan() {
+            ScanState::Reported(projects) if self.auto_detail && self.probed.is_none() => {
+                let hosts: Vec<String> = projects
+                    .iter()
+                    .filter_map(|project| project.id.host())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect();
+                Some(hosts)
+            }
+            _ => None,
+        };
+        if let Some(hosts) = starting {
+            self.probed = Some(start_probes(hosts, Arc::clone(&self.probe)));
+            self.probing = true;
+        }
+        if let Some(probed) = &self.probed {
+            loop {
+                match probed.try_recv() {
+                    Ok(event) => self.launcher.apply(event),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        self.probing = false;
+                        break;
+                    }
+                }
+            }
+        }
+        let launcher = &mut self.launcher;
+        self.project_details.retain(|(_, details)| {
+            loop {
+                match details.try_recv() {
+                    Ok(CodeAnalysisEvent::DetailsRead {
+                        project,
+                        branch,
+                        files,
+                    }) => launcher.detailed(project, branch, files),
+                    Ok(_) => {}
+                    Err(std::sync::mpsc::TryRecvError::Empty) => return true,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => return false,
+                }
+            }
+        });
         if let Some(opened) = &mut self.opened {
             opened.drain();
             match opened.state() {
                 ProjectState::Mapped(map) => self.navigation.remapped(map),
                 // Nothing left to frame or select: the project, whole.
-                ProjectState::Empty => self
-                    .navigation
-                    .opened(opened.project().id.path().to_owned()),
+                ProjectState::Empty => self.navigation.opened(
+                    opened
+                        .project()
+                        .id
+                        .local_path()
+                        .expect("apply_pending is only reached by a local project")
+                        .to_owned(),
+                ),
                 ProjectState::Reading | ProjectState::Failed => {}
             }
         }
@@ -339,7 +497,7 @@ impl CellworksApp {
         match self.universe.scan() {
             ScanState::Reported(projects) => projects
                 .iter()
-                .find(|project| project.id.path() == path)
+                .find(|project| project.id.local_path() == Some(path))
                 .cloned(),
             _ => None,
         }
@@ -347,7 +505,11 @@ impl CellworksApp {
 
     /// Opens `project` and starts reading it.
     pub fn open(&mut self, project: Project) {
-        let path = project.id.path().to_owned();
+        let path = project
+            .id
+            .local_path()
+            .expect("open is only called with a local project")
+            .to_owned();
         let events = self.read(&project);
         let knowledge =
             cellworks_domain_knowledge::start_read(path.clone(), project.contexts.clone());
@@ -356,6 +518,16 @@ impl CellworksApp {
             .arrangements
             .as_ref()
             .map(|(store, _)| store.start_read(project.id.clone()));
+        self.launcher.opened(project.id.clone());
+        if let Some((_, keeper)) = &self.recent {
+            let ids = self
+                .launcher
+                .recent_row()
+                .into_iter()
+                .map(|project| project.id.clone())
+                .collect();
+            keeper.keep(ids);
+        }
         let mut opened = OpenedProject::reading(project, events);
         opened.know(knowledge);
         if let Some(arranged) = arranged {
@@ -385,7 +557,11 @@ impl CellworksApp {
     fn read(&self, project: &Project) -> Receiver<CodeAnalysisEvent> {
         let rule = project.district_prefix.as_deref().and_then(prefix_rule);
         start_load(
-            project.id.path().to_owned(),
+            project
+                .id
+                .local_path()
+                .expect("read is only called with a local project")
+                .to_owned(),
             project.name.clone(),
             rule.unwrap_or_else(default_prefix_rule),
             Arc::clone(&self.git),
@@ -410,7 +586,11 @@ impl eframe::App for CellworksApp {
         // Asked after `draw`, because the frame that opens a project is the
         // one `draw` opens it in.
         let reading = self.opened.as_ref().is_some_and(OpenedProject::is_reading);
-        if self.universe.scan() == &ScanState::Scanning || reading {
+        if self.universe.scan() == &ScanState::Scanning
+            || reading
+            || self.probing
+            || !self.project_details.is_empty()
+        {
             ui.ctx().request_repaint();
         }
     }
@@ -493,6 +673,14 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         && let Some(centre) = opened.turn(turn)
     {
         app.navigation.turned(centre, turn);
+    }
+    if app.opened.is_none() && rows != 0 {
+        app.launcher.move_selection(rows);
+        app.request_details();
+        match app.launcher.selected().and_then(ProjectId::local_path) {
+            Some(path) => app.navigation.select(path.to_owned()),
+            None => app.navigation.deselect(),
+        }
     }
     let now = ui.input(|input| input.time);
     if lens && let Some(opened) = &mut app.opened {
@@ -585,15 +773,18 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     // frame no longer borrows the opened project.
     let mut bar: (Option<Lens>, (bool, bool)) = (None, (false, false));
     match &app.opened {
-        None => {
-            match cellworks_workspace::ui::universe(ui, &app.universe, app.navigation.selection()) {
-                Some(UniverseClick::Selected(project)) => {
-                    app.navigation.select(project.id.path().to_owned());
+        None => match cellworks_workspace::ui::launcher(ui, &app.universe, &mut app.launcher) {
+            Some(LauncherAction::Selected(project)) => {
+                app.launcher.select(Some(project.id.clone()));
+                app.request_details();
+                match project.id.local_path() {
+                    Some(path) => app.navigation.select(path.to_owned()),
+                    None => app.navigation.deselect(),
                 }
-                Some(UniverseClick::Opened(project)) => app.open(project),
-                None => {}
             }
-        }
+            Some(LauncherAction::Opened(project)) => app.open(project),
+            None => {}
+        },
         Some(opened) => {
             let crumbs = app.navigation.breadcrumb(&opened.project().name, app.map());
             let mode = if app.navigation.is_locked() {
@@ -821,6 +1012,12 @@ fn project(
 
 /// `store`, with a thread keeping what is handed to it.
 fn kept(store: ArrangementStore) -> (ArrangementStore, ArrangementKeeper) {
+    let keeper = store.start_keeping();
+    (store, keeper)
+}
+
+/// `store`, with a thread keeping what is handed to it.
+fn kept_recent(store: RecentStore) -> (RecentStore, RecentKeeper) {
     let keeper = store.start_keeping();
     (store, keeper)
 }

@@ -33,7 +33,7 @@ use std::sync::{Arc, mpsc};
 use cellworks_map::{Directories, NodeKind, PrefixRule, ProjectMap};
 
 pub use event::CodeAnalysisEvent;
-pub use git::{GitCli, GitListing, GitUnavailable};
+pub use git::{GitCli, GitListing, GitUnavailable, LoggedCommit};
 
 /// Reads the project at `root` and maps it, with what its git history says
 /// changed together, and says what it met on the way.
@@ -162,6 +162,43 @@ pub fn start_load(
         }
     });
 
+    receiver
+}
+
+/// Reads `root`'s branch and, only when it is a repository, how many files
+/// git shows — a plain folder has no file count, never zero (requirement 9).
+///
+/// Blocking: called on the background thread [`start_details`] spawns.
+pub fn details(root: &Path, git: &dyn GitListing) -> CodeAnalysisEvent {
+    match git.branch(root) {
+        Ok(branch) => CodeAnalysisEvent::DetailsRead {
+            project: root.to_path_buf(),
+            branch: Some(branch),
+            files: git.visible_files(root).ok().map(|files| files.len()),
+        },
+        Err(_) => CodeAnalysisEvent::DetailsRead {
+            project: root.to_path_buf(),
+            branch: None,
+            files: None,
+        },
+    }
+}
+
+/// Reads the details of every project in `projects` on a thread of its own,
+/// so one slow repository never delays another's report.
+pub fn start_details(
+    projects: Vec<PathBuf>,
+    git: Arc<dyn GitListing + Send + Sync>,
+) -> mpsc::Receiver<CodeAnalysisEvent> {
+    let (sender, receiver) = mpsc::channel();
+    for project in projects {
+        let sender = sender.clone();
+        let git = Arc::clone(&git);
+        std::thread::spawn(move || {
+            // A send that fails is the UI having gone away.
+            let _ = sender.send(details(&project, git.as_ref()));
+        });
+    }
     receiver
 }
 
@@ -393,6 +430,60 @@ mod tests {
             matches!(events.as_slice(),
                 [CodeAnalysisEvent::ProjectFolderSkipped { path, .. }] if path == &gone),
             "{events:?}"
+        );
+    }
+
+    /// A git listing whose branch is fixed, for STORY-078's details: the
+    /// default `branch` of [`GitListing`] returns `Err`, which is exactly
+    /// what a folder that is not a repository looks like to `details`.
+    struct FixedBranch {
+        files: Vec<&'static str>,
+        branch: Result<String, GitUnavailable>,
+    }
+
+    impl GitListing for FixedBranch {
+        fn visible_files(&self, _: &Path) -> Result<Vec<PathBuf>, GitUnavailable> {
+            Ok(self.files.iter().map(PathBuf::from).collect())
+        }
+
+        fn branch(&self, _: &Path) -> Result<String, GitUnavailable> {
+            self.branch.clone()
+        }
+    }
+
+    /// STORY-078, requirement 9: a local project is a git repository exactly
+    /// when its branch reads, and only then does its file count appear — a
+    /// plain folder has no file count rather than zero.
+    #[test]
+    fn details_carry_a_file_count_only_for_a_repository() {
+        let repository = Path::new("/p/shop");
+        let git = FixedBranch {
+            files: vec!["src/a.rs", "src/b.rs"],
+            branch: Ok("main".to_owned()),
+        };
+
+        assert_eq!(
+            details(repository, &git),
+            CodeAnalysisEvent::DetailsRead {
+                project: repository.to_path_buf(),
+                branch: Some("main".to_owned()),
+                files: Some(2),
+            }
+        );
+
+        let folder = Path::new("/p/notes");
+        let git = FixedBranch {
+            files: vec!["notes.txt"],
+            branch: Err(GitUnavailable("not a repository".to_owned())),
+        };
+
+        assert_eq!(
+            details(folder, &git),
+            CodeAnalysisEvent::DetailsRead {
+                project: folder.to_path_buf(),
+                branch: None,
+                files: None,
+            }
         );
     }
 

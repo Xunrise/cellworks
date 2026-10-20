@@ -28,8 +28,9 @@ pub struct LoggedCommit {
 
 /// What git says about a repository.
 ///
-/// The binary passes [`GitCli`]; every test passes a recorded listing, so no
-/// test runs real git.
+/// The binary passes [`GitCli`]; every test of the app passes a recorded
+/// listing. Only `tests/git_cli_against_real_git.rs` runs real git, against
+/// repositories it creates.
 pub trait GitListing {
     /// Paths relative to the repository root that git does not ignore and
     /// that exist in the worktree.
@@ -40,6 +41,12 @@ pub trait GitListing {
     /// knows files knows no history.
     fn history(&self, _repository: &Path) -> Result<Vec<Vec<PathBuf>>, GitUnavailable> {
         Ok(Vec::new())
+    }
+
+    /// The repository's current branch name. The default returns `Err`: a
+    /// listing that only knows files doesn't know a branch.
+    fn branch(&self, _repository: &Path) -> Result<String, GitUnavailable> {
+        Err(GitUnavailable(String::new()))
     }
 
     /// The project's commits, oldest first, each with its id, commit time and
@@ -74,6 +81,9 @@ const LISTED: &[&str] = &[
 
 /// Files still in the index but gone from the worktree.
 const DELETED: &[&str] = &["ls-files", "-z", "--deleted"];
+
+/// The name of the branch currently checked out.
+const BRANCH: &[&str] = &["rev-parse", "--abbrev-ref", "HEAD"];
 
 /// The files of the last 500 commits, each commit opened by a line holding
 /// only the record separator.
@@ -114,6 +124,17 @@ impl GitListing for GitCli {
             return Err(GitUnavailable(message.trim().chars().take(200).collect()));
         }
         Ok(commits(&output.stdout))
+    }
+
+    fn branch(&self, repository: &Path) -> Result<String, GitUnavailable> {
+        let output = command(repository, BRANCH)
+            .output()
+            .map_err(|error| GitUnavailable(format!("git could not be started: {error}")))?;
+        if !output.status.success() {
+            let message = String::from_utf8_lossy(&output.stderr);
+            return Err(GitUnavailable(message.trim().chars().take(200).collect()));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
     }
 
     fn log(&self, repository: &Path) -> Result<Vec<LoggedCommit>, GitUnavailable> {
@@ -193,13 +214,26 @@ fn visible(listed: Vec<PathBuf>, deleted: Vec<PathBuf>) -> Vec<PathBuf> {
 }
 
 /// The child process for one call: fixed arguments, the repository as the
-/// working directory, and no index lock taken from a session working there.
+/// working directory, no index lock taken from a session working there, and
+/// no system git config consulted.
+///
+/// A repository's config can name commands for git to run, so the two that
+/// matter here are switched off: `core.fsmonitor` (run on index refresh) by
+/// `-c`, and the pager by `--no-pager`. `GIT_CONFIG_NOSYSTEM=1` keeps
+/// `/etc/gitconfig` out; the engineer's global config is kept on purpose, so
+/// their `core.excludesFile` and `safe.directory` still apply. The
+/// repository's own `.git/config` is still read for every other key.
+///
+/// Which projects git runs in is decided by the caller (`request_details` in
+/// `src/app.rs`), not here.
 fn command(repository: &Path, arguments: &[&str]) -> Command {
     let mut command = Command::new("git");
     command
+        .args(["--no-pager", "-c", "core.fsmonitor=false"])
         .args(arguments)
         .current_dir(repository)
-        .env("GIT_OPTIONAL_LOCKS", "0");
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_CONFIG_NOSYSTEM", "1");
     command
 }
 
@@ -207,12 +241,8 @@ fn command(repository: &Path, arguments: &[&str]) -> Command {
 /// `git blame --porcelain`; `None` when the blame itself fails (binary,
 /// untracked, gone).
 fn blame_one(repository: &Path, file: &Path) -> Option<Vec<Option<String>>> {
-    let mut command = Command::new("git");
-    command
-        .args(["blame", "--porcelain", "--"])
-        .arg(file)
-        .current_dir(repository)
-        .env("GIT_OPTIONAL_LOCKS", "0");
+    let mut command = command(repository, &["blame", "--porcelain", "--"]);
+    command.arg(file);
     let output = command.output().ok()?;
     output.status.success().then(|| parse_blame(&output.stdout))
 }
@@ -325,6 +355,24 @@ mod tests {
         );
     }
 
+    /// STORY-078, requirement 9: the branch is asked the same way the file
+    /// listing is: the repository as the working directory, never as an
+    /// argument, so a project folder named like an option never reaches
+    /// git's argument vector here either.
+    #[test]
+    fn the_branch_is_asked_in_the_repository_folder() {
+        let repository = Path::new("/projects/--upload-pack=evil");
+
+        let command = command(repository, BRANCH);
+
+        assert_eq!(command.get_program(), "git");
+        assert_eq!(
+            command.get_args().skip(3).collect::<Vec<_>>(),
+            BRANCH.iter().map(OsStr::new).collect::<Vec<_>>()
+        );
+        assert_eq!(command.get_current_dir(), Some(repository));
+    }
+
     #[test]
     fn the_log_lists_commits_oldest_first_with_their_whole_message() {
         let output: &[u8] = b"aaaaaaa1\x1f1000\x1fchore: a (#1)\n\x1e\nbbbbbbb2\x1f2000\x1fsecond change (#5) (#19)\n\nRefs: STORY-7, STORY-003\n\x1e\n";
@@ -386,8 +434,14 @@ summary Uncommitted changes\nfilename file.txt\n\tline four\n";
 
         assert_eq!(command.get_program(), "git");
         assert_eq!(
-            command.get_args().collect::<Vec<_>>(),
+            command.get_args().skip(3).collect::<Vec<_>>(),
             LISTED.iter().map(OsStr::new).collect::<Vec<_>>()
+        );
+        assert!(
+            command
+                .get_args()
+                .all(|argument| !argument.to_string_lossy().contains("/projects")),
+            "the repository path is in no argument"
         );
         assert_eq!(command.get_current_dir(), Some(repository));
         assert!(
@@ -395,5 +449,18 @@ summary Uncommitted changes\nfilename file.txt\n\tline four\n";
                 .get_envs()
                 .any(|(key, value)| key == "GIT_OPTIONAL_LOCKS" && value == Some(OsStr::new("0")))
         );
+    }
+
+    #[test]
+    fn git_is_stopped_from_running_commands_a_repository_names() {
+        let command = command(Path::new("/projects/any"), LISTED);
+
+        assert_eq!(
+            command.get_args().take(3).collect::<Vec<_>>(),
+            ["--no-pager", "-c", "core.fsmonitor=false"].map(OsStr::new)
+        );
+        let envs: Vec<_> = command.get_envs().collect();
+        assert!(envs.contains(&(OsStr::new("GIT_CONFIG_NOSYSTEM"), Some(OsStr::new("1")))));
+        assert!(envs.iter().all(|(key, _)| *key != "GIT_CONFIG_GLOBAL"));
     }
 }

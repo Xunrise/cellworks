@@ -8,7 +8,7 @@ Terms with one identical meaning in two or more contexts.
 |------|------------|--------|----------|-------|
 | Commit | A change git recorded on the project: its id, time and subject, the pull request it was merged by (the last `(#N)` of the subject) and every story its message names. | STORY-018 prototype 2026-10-19; ADR-0008 | CodeAnalysis, Map |  |
 | Lane | A connection drawn between two nodes, groups or districts, with dots flowing from upstream to downstream; it has a lane kind. | prototype-findings L49, L90 | Map, Navigation | theme: belt, pipe |
-| Project | A top-level thing on the map, identified by its path, or by a `jira:`, `otc:` or `data:` prefix for the other project types. | prototype-findings L42, L219 | Map, Navigation, Sources, Workspace | theme: planet, continent |
+| Project | A top-level thing on the map, identified by its path, or by a `jira:`, `otc:` or `data:` prefix for the other project types, or by `host:path` for a remote project, as written and not canonicalized. | prototype-findings L42, L219 | Map, Navigation, Sources, Workspace | theme: planet, continent |
 
 ## Same word, different meaning
 

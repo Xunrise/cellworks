@@ -5,6 +5,12 @@
 //! central panel — the seam STORY-001's own spec said the map canvas would
 //! replace, and which is false the moment the universe draws a project.
 //!
+//! STORY-078 replaced the flat `ui::universe` the frame drew with
+//! `ui::launcher`, which surrounds the same project list with a header, a
+//! locations column and an inspector; a test here asks whether a label is
+//! *among* what the frame drew rather than the whole of it, so the launcher's
+//! own chrome does not make this story's drain-and-render tests fail.
+//!
 //! The frame runs through `cellworks::draw` and an `egui_kittest` harness, so
 //! it needs neither a GPU adapter nor a display, and it never opens a window:
 //! nothing here constructs `CellworksApp` through eframe or touches winit.
@@ -57,9 +63,8 @@ fn the_frame_body_renders_the_workspace_universe() {
     let (sender, receiver) = mpsc::channel();
     let mut app = CellworksApp::over(Universe::scanning(&sources()), receiver);
 
-    assert_eq!(
-        labels(&mut app),
-        vec![SCANNING.to_owned()],
+    assert!(
+        labels(&mut app).contains(&SCANNING.to_owned()),
         "before anything is drained the frame shows the scanning state"
     );
 
@@ -70,10 +75,14 @@ fn the_frame_body_renders_the_workspace_universe() {
         .expect("the app is still listening");
     app.apply_pending();
 
-    assert_eq!(
-        labels(&mut app),
-        vec!["alpha".to_owned()],
-        "once the scan has reported, the frame lists its projects"
+    let shown = labels(&mut app);
+    assert!(
+        shown.contains(&"alpha".to_owned()),
+        "once the scan has reported, the frame lists its projects: {shown:?}"
+    );
+    assert!(
+        !shown.contains(&SCANNING.to_owned()),
+        "and no longer says it is scanning: {shown:?}"
     );
 }
 
@@ -85,7 +94,7 @@ fn draining_an_empty_channel_returns_rather_than_waiting() {
     // The sender is alive and silent: a `recv` here would never return.
     app.apply_pending();
 
-    assert_eq!(labels(&mut app), vec![SCANNING.to_owned()]);
+    assert!(labels(&mut app).contains(&SCANNING.to_owned()));
     drop(sender);
 }
 
@@ -97,9 +106,8 @@ fn a_scan_thread_that_goes_away_before_reporting_leaves_the_scanning_state() {
 
     app.apply_pending();
 
-    assert_eq!(
-        labels(&mut app),
-        vec!["Could not finish scanning for projects.".to_owned()],
+    assert!(
+        labels(&mut app).contains(&"Could not finish scanning for projects.".to_owned()),
         "rather than showing \"Scanning\" for ever"
     );
 }

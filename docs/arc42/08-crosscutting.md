@@ -39,6 +39,8 @@ the filesystem reports the same file identity (device and inode) for them. A cas
 folds `Alpha` and `alpha` into one project, and a case-sensitive Linux filesystem, where they are two directories,
 keeps two. No `cfg!(target_os)` encodes it. Product owner, 2026-10-08.
 
+A remote project is identified by `host:path` as written, never canonicalized or compared by file identity.
+
 ## 8.6 Test strategy
 
 | Level | Scope | Tool | Where |

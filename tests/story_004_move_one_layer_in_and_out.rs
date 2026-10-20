@@ -177,10 +177,15 @@ impl Universe {
     }
 
     /// Every project of the universe is listed in the window.
+    ///
+    /// STORY-078 surrounds the same project list with a header, a locations
+    /// column and an inspector, so a label is asked for rather than the whole
+    /// of what is drawn.
     fn assert_all_projects_shown(&self) {
-        let mut shown = labels(&self.harness);
-        shown.sort();
-        assert_eq!(shown, ["billing", "shop"]);
+        let shown = labels(&self.harness);
+        for name in ["billing", "shop"] {
+            assert!(shown.contains(&name.to_owned()), "{shown:?}");
+        }
         assert!(in_window(self.rect_of("shop")) && in_window(self.rect_of("billing")));
     }
 }

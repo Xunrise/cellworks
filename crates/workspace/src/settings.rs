@@ -21,8 +21,13 @@ use crate::event::WorkspaceEvent;
 /// The folders added by hand.
 const ADDED_FOLDERS: &str = "added_folders";
 
-/// The per-project tables, keyed by the project's absolute path.
+/// The per-project tables, keyed by the project's absolute path. Reused for
+/// the `projects = [...]` key inside a `[hosts."<name>"]` table, which names
+/// the same thing one level down.
 const PROJECTS: &str = "projects";
+
+/// The per-host tables, each naming a remote host and the projects on it.
+const HOSTS: &str = "hosts";
 
 /// A project's district prefix rule, inside its table.
 const DISTRICT_PREFIX: &str = "district_prefix";
@@ -78,6 +83,11 @@ pub(crate) struct AddedFolders {
     /// The same, and the folders, relative to the project, it says implement
     /// each bounded context.
     pub(crate) contexts: Vec<(PathBuf, BTreeMap<String, Vec<PathBuf>>)>,
+    /// Each `[hosts."<name>"]` table that named a safe host, and the remote
+    /// projects it lists, exactly as the settings file wrote them — never
+    /// resolved, never canonicalized (requirement 3: a remote project is never
+    /// read as a local folder).
+    pub(crate) remote: Vec<(String, Vec<PathBuf>)>,
 }
 
 /// Reads the folders `settings_file` adds.
@@ -161,7 +171,55 @@ pub(crate) fn read(settings_file: &Path) -> AddedFolders {
         }
     }
 
+    // A host name that could reach ssh's argument vector is skipped with a
+    // notice, never added as a remote host (requirement 2).
+    let hosts = table.get(HOSTS).and_then(toml::Value::as_table);
+    for (name, settings) in hosts.into_iter().flatten() {
+        if let Some(reason) = unsafe_host_name(name) {
+            added.events.push(WorkspaceEvent::HostSkipped {
+                name: name.clone(),
+                reason: reason.to_owned(),
+            });
+            continue;
+        }
+
+        // Read as written: never resolved, never canonicalized, never
+        // checked to exist (requirement 3).
+        let paths: Vec<PathBuf> = settings
+            .get(PROJECTS)
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(toml::Value::as_str)
+            .map(PathBuf::from)
+            .collect();
+        added.remote.push((name.clone(), paths));
+    }
+
     added
+}
+
+/// Why a host name cannot be trusted to reach ssh safely: an allowlist, not a
+/// denylist of what is known to be dangerous. `--` keeps a name shaped like
+/// an option out of ssh's own argument parsing (see `hosts::SshProbe`), but
+/// ssh then expands the destination for `%h`/`%n` in `ProxyCommand`,
+/// `LocalCommand`, `KnownHostsCommand` and `Match exec`, each run through a
+/// shell — so a character this list did not think to name is not evidence it
+/// is safe. Only letters, digits, `.`, `-` (not leading), `_` and `@` (for a
+/// `user@host` form) are let through.
+fn unsafe_host_name(name: &str) -> Option<&'static str> {
+    if name.is_empty() {
+        Some("the host name is empty")
+    } else if name.starts_with('-') {
+        Some("the host name starts with -")
+    } else if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '@'))
+    {
+        Some("the host name contains a character ssh cannot be trusted with")
+    } else {
+        None
+    }
 }
 
 /// The canonical path of an added folder, or why it is not one.
@@ -374,5 +432,49 @@ mod tests {
 
         assert_eq!(added.folders, vec![canonical(&work)]);
         assert!(added.events.is_empty(), "{:?}", added.events);
+    }
+
+    /// STORY-078, requirement 2: a `[hosts]` table names a remote host and
+    /// the remote projects on it, read as written and never canonicalized —
+    /// a remote project is never read as a local folder.
+    #[test]
+    fn hosts_in_the_settings_file_become_remote_projects() {
+        let tree = TestTree::new();
+        let settings = tree.file(
+            "settings.toml",
+            "[hosts.\"az.wsl\"]\nprojects = [\"~/work/api\"]\n",
+        );
+
+        let added = read(&settings);
+
+        assert_eq!(
+            added.remote,
+            vec![("az.wsl".to_owned(), vec![PathBuf::from("~/work/api")])]
+        );
+        assert!(added.events.is_empty(), "{:?}", added.events);
+    }
+
+    /// STORY-078, requirement 2: a host name that could be read as an ssh
+    /// option is skipped with a notice, rather than ever reaching ssh's
+    /// argument vector.
+    #[test]
+    fn a_host_named_like_an_option_is_skipped() {
+        let tree = TestTree::new();
+        let settings = tree.file(
+            "settings.toml",
+            "[hosts.\"-oProxyCommand=evil\"]\nprojects = [\"~/work/api\"]\n",
+        );
+
+        let added = read(&settings);
+
+        assert!(added.remote.is_empty(), "{:?}", added.remote);
+        assert!(
+            matches!(
+                added.events.as_slice(),
+                [WorkspaceEvent::HostSkipped { name, .. }] if name == "-oProxyCommand=evil"
+            ),
+            "expected one HostSkipped naming the host, got {:?}",
+            added.events
+        );
     }
 }

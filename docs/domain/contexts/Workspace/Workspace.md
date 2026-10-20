@@ -16,3 +16,10 @@ Source refs are line numbers of [the prototype findings](../../../discovery/2026
 - Rescan with ⌘R, and automatically after sessions write files (L222).
 - Rebuild and restart from inside Cellworks; sessions keep running (L223).
 - Paths match regardless of letter case on macOS (L228-229).
+
+## Business decisions
+
+- Remote hosts and their projects come from the hand-edited settings file (`[hosts."<name>"] projects = [...]`); Cellworks never writes it.
+- A host's state (connected or offline) comes from a background ssh reachability probe, run once per launch.
+- Recently opened projects (at most five) are kept in a `recent` file beside the settings file.
+- A remote project is never read, opened or arranged as a local folder.

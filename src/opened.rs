@@ -167,6 +167,8 @@ impl OpenedProject {
             CodeAnalysisEvent::GitExcludesUnavailable { reason, .. } => {
                 self.note(OpenedNotice::GitExcludesUnavailable { reason });
             }
+            // The launcher's own read, never this one's.
+            CodeAnalysisEvent::DetailsRead { .. } => {}
         }
     }
 

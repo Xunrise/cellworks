@@ -16,6 +16,7 @@ flowchart LR
   AT[Atlassian remote MCP]
   K8s[Kubernetes API<br/>via kubectl]
   TF[(Terraform files)]
+  SSH[ssh]
 
   User -->|keyboard, mouse| CW
   CW -->|read, watch| FS
@@ -26,6 +27,7 @@ flowchart LR
   CW -->|OAuth + JSON-RPC over HTTPS| AT
   CW -->|read-only get| K8s
   CW -->|read| TF
+  CW -->|reachability probe| SSH
 ```
 
 | Neighbour | What Cellworks does with it |
@@ -39,6 +41,7 @@ flowchart LR
 | Atlassian remote MCP | Syncs Jira projects. |
 | Kubernetes API | Reads live workloads, read-only. |
 | Terraform files | Reads infrastructure blocks per environment. |
+| ssh | Probes once per launch whether each configured remote host is reachable. |
 
 Out of scope: writing to clusters, any network server run by Cellworks.
 
@@ -95,3 +98,10 @@ tools; there is no SLA.
 - **Protocol:** files read from an infrastructure repository (`otc:<folder>` projects).
 - **Data:** resource blocks grouped per environment.
 - **Auth:** none; no `terraform` command is run.
+
+### ssh
+
+- **Protocol:** the `ssh` CLI, `ssh -o BatchMode=yes -o ConnectTimeout=5 -- <host> true`, run in the background once per launch for each configured host.
+- **Data:** the exit status only; nothing is read from the host.
+- **Auth:** the user's own ssh config and keys; Cellworks never prompts for or handles credentials.
+- **Quirks:** an unreachable or password-only host reads as offline; a missing `ssh` binary marks all hosts offline.

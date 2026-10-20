@@ -245,7 +245,35 @@ fn a_double_click_opens_one_project_and_esc_goes_back() {
     harness.key_press(egui::Key::Escape);
     harness.run();
 
-    assert_eq!(labels(&harness), ["alpha", "beta"]);
+    // STORY-078 surrounds the same project list with a header, a locations
+    // column and an inspector, so a label is asked for rather than the whole
+    // of what is drawn.
+    let shown = labels(&harness);
+    for name in ["alpha", "beta"] {
+        assert!(shown.contains(&name.to_owned()), "{shown:?}");
+    }
+    assert!(
+        !shown.iter().any(|label| label == "catalog"),
+        "the project closed on Esc is no longer shown: {shown:?}"
+    );
+}
+
+/// Requirement 1: the click that selects a project leaves its row where it
+/// was, so the second click of the double-click lands on it and opens it.
+/// The folder's path is wide enough to wrap once anything narrows the list
+/// (STORY-078's inspector appearing on selection did), moving the row below.
+#[test]
+fn a_double_click_opens_a_project_under_a_long_folder_path() {
+    let path =
+        PathBuf::from("/private/var/folders/jw/8nnwftsn3b9_3jpgxvmhq_3m0000gn/T/.tmppqmQOC/shop");
+    let mut harness = harness(app(
+        vec![cellworks_workspace::Project::at(path)],
+        Recorded::listing(&[]),
+    ));
+
+    double_click(&mut harness, "shop");
+
+    assert!(harness.state().opened().is_some(), "{:?}", labels(&harness));
 }
 
 /// Requirements 3 and 4: while git has not answered, frames keep running and

@@ -13,7 +13,10 @@
 mod arrangement;
 mod discovery;
 mod event;
+mod hosts;
+mod launcher;
 mod project;
+mod recent;
 mod registry;
 mod settings;
 pub mod ui;
@@ -27,7 +30,10 @@ use std::sync::mpsc;
 
 pub use arrangement::{Arrangement, ArrangementKeeper, ArrangementStore};
 pub use event::WorkspaceEvent;
+pub use hosts::{HostProbe, SshProbe, start_probes};
+pub use launcher::{HostState, Launcher, Location, Pick, ProjectDetails, ProjectKind};
 pub use project::{Project, ProjectId};
+pub use recent::{RecentKeeper, RecentStore};
 pub use universe::{Notice, NoticeKind, ScanState, Universe};
 
 use settings::Platform;
@@ -90,6 +96,18 @@ pub fn scan(sources: &Sources) -> Vec<WorkspaceEvent> {
     let mut events = discovered.events;
     events.extend(added.events);
     events.extend(unidentified);
+
+    let recent = RecentStore::beside(&sources.settings_file).load();
+    if !recent.is_empty() {
+        events.push(WorkspaceEvent::RecentRead(recent));
+    }
+
+    for (host, paths) in added.remote {
+        for path in paths {
+            projects.push(Project::remote(host.clone(), path));
+        }
+    }
+
     events.push(WorkspaceEvent::ProjectsDiscovered(projects));
     events
 }
@@ -169,7 +187,10 @@ mod tests {
         let projects = projects_of(&scan(&tree.sources()));
 
         assert_eq!(projects.len(), 1, "{projects:?}");
-        assert_eq!(projects[0].id.path(), canonical(&alpha));
+        assert_eq!(
+            projects[0].id.local_path(),
+            Some(canonical(&alpha).as_path())
+        );
     }
 
     #[test]
@@ -240,6 +261,44 @@ mod tests {
 
         scan(&tree.sources());
 
+        assert_eq!(
+            fs::read(&settings).expect("the settings file is still readable"),
+            before,
+            "this story never writes the settings file"
+        );
+    }
+
+    /// STORY-078, requirements 2 and 3: a remote project from the `[hosts]`
+    /// table is appended after the projects found on this Mac, and reading it
+    /// never writes the settings file back — it stays the engineer's,
+    /// hand-edited.
+    #[test]
+    fn remote_projects_follow_the_local_ones_and_the_settings_file_is_untouched() {
+        let tree = TestTree::new();
+        tree.repository("Projects/alpha");
+        let settings = tree.file(
+            "settings.toml",
+            "[hosts.\"az.wsl\"]\nprojects = [\"~/work/api\"]\n",
+        );
+        let before = fs::read(&settings).expect("the settings file is readable");
+
+        let projects = projects_of(&scan(&tree.sources()));
+
+        assert_eq!(
+            projects
+                .iter()
+                .map(|project| project.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "api"],
+            "the remote project follows the local one: {projects:?}"
+        );
+        assert_eq!(projects[1].id.local_path(), None, "{:?}", projects[1].id);
+        assert_eq!(
+            projects[1].id.host(),
+            Some("az.wsl"),
+            "{:?}",
+            projects[1].id
+        );
         assert_eq!(
             fs::read(&settings).expect("the settings file is still readable"),
             before,

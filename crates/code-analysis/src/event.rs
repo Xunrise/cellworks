@@ -27,4 +27,12 @@ pub enum CodeAnalysisEvent {
     /// git could not say which files it ignores, so the project was read with
     /// the hidden-folder rule alone and ignored files may be on the map.
     GitExcludesUnavailable { project: PathBuf, reason: String },
+    /// A project's branch and file count were read, for the launcher's
+    /// inspector. `None` for a field this story leaves unknown: a plain
+    /// folder has no branch and no file count — never zero.
+    DetailsRead {
+        project: PathBuf,
+        branch: Option<String>,
+        files: Option<usize>,
+    },
 }
