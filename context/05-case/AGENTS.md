@@ -27,6 +27,4 @@ The Gherkin scenarios of the story, its context and its epic.
 
 ## Open, and the plan for each
 
-- How Claude Code sessions are driven is undecided
-  (`docs/arc42/04-solution-strategy.md`, section 4.4); a spike story in EPIC-006
-  settles it.
+None.
