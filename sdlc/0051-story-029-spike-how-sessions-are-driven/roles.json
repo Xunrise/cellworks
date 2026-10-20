@@ -1,0 +1,9 @@
+{
+  "agents": ["implementer"],
+  "implementers": [
+    { "step": 1, "count": 1 }
+  ],
+  "why": {
+    "implementer": "One step: take the frozen docs commit; no code or behaviour to test."
+  }
+}

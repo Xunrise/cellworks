@@ -62,8 +62,8 @@ project's map and calls the Map's painter from the frame loop it owns.
 | `editing` | [Editing](../domain/contexts/Editing/Editing.md) | Embedded Neovim: grid, input, auto-save, pop-out windows. | Open a file at a line; editor focus. |
 | `cellworks` (binary) | — | Wires the crates, registers loaders, owns the window and the frame loop. | Command-line entry points, including smoke modes. |
 
-> TODO: depends on the decision about how Claude Code sessions are driven ([chapter 4](04-solution-strategy.md)).
-> The `agent-sessions` crate's way of creating and steering sessions follows from it.
+`agent-sessions` creates and steers sessions through the `claude` CLI as a child process and attaches to them in an
+embedded pseudo-terminal ([ADR-0010](../adr/0010-claude-code-background-sessions.md)).
 
 ## 5.3 Level 3
 

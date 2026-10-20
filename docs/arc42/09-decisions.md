@@ -12,3 +12,4 @@ Index of the architecture decision records in [`docs/adr/`](../adr/README.md).
 - [ADR-0006: Keep the custom arrangement in Cellworks' own data directory](../adr/0006-custom-arrangement-store.md) — Accepted — structure
 - [ADR-0007: Loaders state declarations and file kinds; the map chooses the building](../adr/0007-loaders-state-declarations-map-chooses-building.md) — Accepted — structure
 - [ADR-0008: Per-line provenance from git blame, joined to pull requests and stories by commit message](../adr/0008-per-line-provenance-from-git-blame.md) — Accepted — technology
+- [ADR-0010: Drive Claude Code sessions as Claude Code background sessions](../adr/0010-claude-code-background-sessions.md) — Accepted — integration · AgentSessions

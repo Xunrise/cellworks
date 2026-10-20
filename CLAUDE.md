@@ -50,7 +50,8 @@ the Warhammer 40k words are display theme only. Full model: `docs/domain/`.
 
 Detail in `docs/arc42/03-context.md`.
 
-- Claude Code — sessions observed through transcripts in `~/.claude/projects`; how sessions are driven is still open
+- Claude Code — sessions started as background sessions with `claude --bg` and followed through their transcripts in
+  `~/.claude/projects` and `claude agents --json` ([ADR-0010](docs/adr/0010-claude-code-background-sessions.md))
 - git — status, numstat, branches, worktrees, via the CLI
 - ssh — reachability probe for a remote host (`ssh ... true`)
 - Neovim — embedded with `nvim --embed`
