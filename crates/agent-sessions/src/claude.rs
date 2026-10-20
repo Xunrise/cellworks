@@ -15,6 +15,9 @@ pub trait AgentList: Send + Sync {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Agent {
     pub session_id: String,
+    /// The short id `claude attach`/`claude stop` take; empty when the entry
+    /// carries no usable id, as for an interactive session.
+    pub id: String,
     pub name: String,
     pub cwd: String,
     pub status: String,
@@ -27,15 +30,13 @@ pub struct ClaudeCli;
 
 impl AgentList for ClaudeCli {
     fn list(&self) -> Result<Vec<Agent>, ClaudeUnavailable> {
-        let env_var = |name: &str| std::env::var(name).unwrap_or_default();
+        let mut cmd = std::process::Command::new("claude");
+        cmd.args(["agents", "--json"]).env_clear();
+        for (key, value) in clean_env() {
+            cmd.env(key, value);
+        }
 
-        let output = std::process::Command::new("claude")
-            .args(["agents", "--json"])
-            .env_clear()
-            .env("HOME", env_var("HOME"))
-            .env("PATH", env_var("PATH"))
-            .env("USER", env_var("USER"))
-            .env("TERM", env_var("TERM"))
+        let output = cmd
             .output()
             .map_err(|error| ClaudeUnavailable(format!("failed to run claude: {error}")))?;
 
@@ -86,6 +87,7 @@ pub fn parse_agents(json: &[u8]) -> Vec<Agent> {
 
             Some(Agent {
                 session_id,
+                id: as_str(entry, "id"),
                 name,
                 cwd: as_str(entry, "cwd"),
                 status: as_str(entry, "status"),
@@ -93,6 +95,88 @@ pub fn parse_agents(json: &[u8]) -> Vec<Agent> {
             })
         })
         .collect()
+}
+
+/// The environment every `claude` child process Cellworks spawns gets
+/// (ADR-0010): cleared of everything else, with `TERM` fixed so the embedded
+/// terminal gets predictable capabilities regardless of the user's own.
+pub(crate) fn clean_env() -> [(&'static str, String); 5] {
+    let env_var = |name: &str| std::env::var(name).unwrap_or_default();
+
+    [
+        ("HOME", env_var("HOME")),
+        ("PATH", env_var("PATH")),
+        ("USER", env_var("USER")),
+        ("LANG", env_var("LANG")),
+        ("TERM", "xterm-256color".to_owned()),
+    ]
+}
+
+/// Stops the agent `id` names, via `claude stop <id>`.
+pub(crate) fn stop(claude: &std::path::Path, id: &str) -> Result<(), String> {
+    let mut cmd = std::process::Command::new(claude);
+    cmd.arg("stop").arg(id).env_clear();
+    for (key, value) in clean_env() {
+        cmd.env(key, value);
+    }
+
+    let output = cmd
+        .output()
+        .map_err(|error| format!("failed to run claude stop: {error}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "claude stop exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    Ok(())
+}
+
+/// Resumes `session_id` as a new background session named `name`, via
+/// `claude --resume <session_id> --bg -n <name>`, returning the new session's
+/// copy id parsed out of its combined stdout and stderr.
+pub(crate) fn continue_in_background(
+    claude: &std::path::Path,
+    session_id: &str,
+    name: &str,
+) -> Result<String, String> {
+    let mut cmd = std::process::Command::new(claude);
+    cmd.args(["--resume", session_id, "--bg", "-n", name])
+        .env_clear();
+    for (key, value) in clean_env() {
+        cmd.env(key, value);
+    }
+
+    let output = cmd
+        .output()
+        .map_err(|error| format!("failed to run claude --resume: {error}"))?;
+
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    parse_bg_id(&text).ok_or_else(|| text.trim().chars().take(200).collect())
+}
+
+/// The token (alphanumerics, `-` and `_`; the acceptance test's copy id is
+/// hyphenated) right after the literal "backgrounded" in `output`
+/// (design.md's edge case): `claude --resume ... --bg` prints "backgrounded
+/// · <id> · <name>", punctuation and all; `None` if "backgrounded" never
+/// appears or nothing alphanumeric follows it.
+pub(crate) fn parse_bg_id(output: &str) -> Option<String> {
+    let after = output.split("backgrounded").nth(1)?;
+    let id: String = after
+        .trim_start_matches(|c: char| !c.is_ascii_alphanumeric())
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        .collect();
+
+    if id.is_empty() { None } else { Some(id) }
 }
 
 #[cfg(test)]
@@ -126,6 +210,7 @@ mod tests {
             agents[0],
             Agent {
                 session_id: "sess-1".to_owned(),
+                id: "short-1".to_owned(),
                 name: "pricing-fix".to_owned(),
                 cwd: "/repo".to_owned(),
                 status: "busy".to_owned(),
@@ -158,5 +243,27 @@ mod tests {
     #[test]
     fn json_that_does_not_parse_reads_as_no_agents() {
         assert_eq!(parse_agents(b"not json at all"), Vec::new());
+    }
+
+    /// Pins [`parse_bg_id`] (design.md's edge case): `claude --resume ... --bg`
+    /// prints "started a copy as <id>" then "backgrounded · <id> · <name>";
+    /// the copy's id is the alphanumeric token right after the literal
+    /// "backgrounded", wherever it falls in the output, punctuation and all;
+    /// output that never says "backgrounded" at all yields no id.
+    #[test]
+    fn the_copy_id_is_the_token_after_backgrounded() {
+        assert_eq!(
+            parse_bg_id("started a copy as ab12cd34\nbackgrounded · ab12cd34 · pricing-fix\n"),
+            Some("ab12cd34".to_owned())
+        );
+        assert_eq!(
+            parse_bg_id("...backgrounded · ab12cd34\n"),
+            Some("ab12cd34".to_owned())
+        );
+        assert_eq!(
+            parse_bg_id("error: no job matching docs-run"),
+            None,
+            "no \"backgrounded\" anywhere in the output means no id"
+        );
     }
 }

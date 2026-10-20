@@ -14,6 +14,7 @@ Source refs are line numbers of [the prototype findings](../../../discovery/2026
 
 - Every Claude Code session on the machine appears, found by tailing `~/.claude/projects/**.jsonl` (L113).
 - Animations: movement to files read or written, construction sites for files being created, blocked and approval alerts (L114-117).
-- An agent list in a corner and a session card (L118).
+- An agent list in a corner and a session pane (L118).
+- Only background sessions are attached to, typed into or stopped; interactive sessions are read-only and never stopped from Cellworks; closing the session pane ends only the attach (STORY-081).
 - Real Claude Code CLI sessions, run as Claude Code background sessions: create, attach, detach, answer approvals inline (L119). Sessions keep running when Cellworks restarts (L223).
 - A chat panel or stream-json protocol was rejected in favour of real CLI sessions (L246).

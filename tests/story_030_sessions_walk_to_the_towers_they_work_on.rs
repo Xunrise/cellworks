@@ -70,6 +70,7 @@ fn session_in(
         branch: branch.to_owned(),
         summary: String::new(),
         last_active: Some(0),
+        attach_id: None,
         events,
     }
 }

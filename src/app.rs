@@ -338,6 +338,30 @@ impl CellworksApp {
         }
     }
 
+    /// The same app, showing `sessions` and pointing a session pane at
+    /// `claude` and `transcripts` - a test seam; nothing is watched.
+    pub fn with_pane_sources(
+        self,
+        sessions: Vec<Session>,
+        claude: std::path::PathBuf,
+        transcripts: std::path::PathBuf,
+    ) -> CellworksApp {
+        CellworksApp {
+            sessions: SessionsView::with_sessions_and_sources(sessions, claude, transcripts),
+            ..self
+        }
+    }
+
+    /// Whether a session pane is open.
+    pub fn pane_open(&self) -> bool {
+        self.sessions.pane_open()
+    }
+
+    /// The open pane's text, for tests; `None` when no pane is open.
+    pub fn pane_text(&self) -> Option<String> {
+        self.sessions.pane_text()
+    }
+
     /// Reads the branch and file count of the project selected in the
     /// launcher, once. Git runs only in a project the engineer selected (or
     /// opened), never in the rest of those discovered.
@@ -679,8 +703,11 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         app.buildings.clear();
         app.bridges.clear();
         app.cables.clear();
+        app.sessions.close_pane();
     }
-    let typing = app.sessions.search_focused(ui);
+    // A focused session terminal owns the keyboard: the map's keys do nothing.
+    let terminal = app.sessions.has_keyboard(ui);
+    let typing = app.sessions.search_focused(ui) || terminal;
     let Keys {
         enter,
         esc,
@@ -704,12 +731,14 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         session_prev,
         session_next,
     } = ui.input(|input| {
+        let closes_pane =
+            !terminal && app.sessions.pane_open() && input.key_pressed(egui::Key::Escape);
         let plain = input.modifiers.is_none();
-        let pressed = |key| input.key_pressed(key);
+        let pressed = |key| !terminal && input.key_pressed(key);
         let towards = |less, more| isize::from(pressed(more)) - isize::from(pressed(less));
         Keys {
             enter: pressed(egui::Key::Enter),
-            esc: pressed(egui::Key::Escape),
+            esc: pressed(egui::Key::Escape) && !closes_pane,
             ignored: !typing && plain && pressed(egui::Key::I),
             lock: !typing && plain && pressed(egui::Key::Z),
             tree: !typing && plain && pressed(egui::Key::E),
@@ -743,6 +772,11 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             session_next: !typing && plain && pressed(egui::Key::CloseBracket),
         }
     });
+    // Esc with a pane open but its terminal unfocused ends the attach and
+    // does nothing else that frame.
+    if !terminal && app.sessions.pane_open() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        app.sessions.close_pane();
+    }
     let common_dir = app.city_common_dir();
     if turn != 0
         && let Some(opened) = &mut app.opened
@@ -918,15 +952,16 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                     sidebar_centre = centre;
                 }
             }
+            app.sessions.pane(ui);
             let sessions_view = &mut app.sessions;
-            let (drawn, minimap, floor, (sessions_drawn, session_clicked)) =
+            let (drawn, minimap, floor, (sessions_drawn, session_clicked, pane_opened)) =
                 egui::CentralPanel::default()
                     .frame(egui::Frame::central_panel(ui.style()).inner_margin(0.0))
                     .show(ui, |ui| {
                         let drawn = project(ui, opened, &app.navigation, app.underground);
                         let (Some(shown), ProjectState::Mapped(map)) = (&drawn, opened.state())
                         else {
-                            return (drawn, None, None, (Vec::new(), None));
+                            return (drawn, None, None, (Vec::new(), None, false));
                         };
                         let minimap = cellworks_map::ui::minimap(ui, map, &shown.view, shown.panel);
                         if let Some(hints) = app.navigation.hints(map) {
@@ -1036,7 +1071,8 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 app.navigation.deselect();
                 app.navigation.drop_lane();
             }
-            if let Some(tower) = drawn.entered
+            if !pane_opened
+                && let Some(tower) = drawn.entered
                 && let Some(map) = mapped(&app.opened)
             {
                 app.navigation.step_inside(map, tower);

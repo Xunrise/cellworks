@@ -32,6 +32,20 @@ impl Tail {
         Tail::default()
     }
 
+    /// Seeds the starting offset at `max_bytes` from the end of `path`, so
+    /// the next [`Tail::read`] call reads only lines completed within
+    /// roughly its last `max_bytes` - a freshly opened read-only pane does
+    /// not reparse a long-running session's whole history just to show its
+    /// last few entries (design.md requirement 6). Falls back to the whole
+    /// file when it is shorter than `max_bytes`, or to offset 0 when its
+    /// length cannot be read.
+    pub(crate) fn from_end(path: &Path, max_bytes: u64) -> Tail {
+        let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        Tail {
+            offset: len.saturating_sub(max_bytes),
+        }
+    }
+
     /// The complete new lines of `path` since the last call; a shorter file
     /// than last time is read again from the start. Never blocks on
     /// growth - just reads what's there now.
@@ -309,6 +323,119 @@ pub(crate) fn summary(lines: &[String]) -> (Option<String>, Option<u64>) {
     (last, newest)
 }
 
+/// What one [`Entry`] of a read-only conversation is.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum EntryKind {
+    Prompt,
+    Text,
+    Tool,
+}
+
+/// One line of a read-only conversation (design.md requirement 6): a
+/// prompt, a piece of assistant text, or a tool call already formatted to
+/// one line.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Entry {
+    pub kind: EntryKind,
+    pub text: String,
+}
+
+/// The first of `input.file_path`, `input.notebook_path`, `input.command`,
+/// `input.pattern` or `input.path` present on a `tool_use` block, formatted
+/// as one line: whitespace-flattened and cut to 80 characters, as
+/// `"{name} {arg}"` for `Read`/`Edit`/`Write`/`MultiEdit`, else
+/// `"{name}: {arg}"`.
+fn tool_entry(name: &str, input: &serde_json::Value) -> Entry {
+    let raw = ["file_path", "notebook_path", "command", "pattern", "path"]
+        .into_iter()
+        .find_map(|key| input[key].as_str())
+        .unwrap_or("");
+    let flattened = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let arg: String = flattened.chars().take(80).collect();
+
+    let text = if matches!(name, "Read" | "Edit" | "Write" | "MultiEdit") {
+        format!("{name} {arg}")
+    } else {
+        format!("{name}: {arg}")
+    };
+    Entry {
+        kind: EntryKind::Tool,
+        text,
+    }
+}
+
+/// A prompt or text candidate, kept only when, trimmed, it is non-empty and
+/// does not start with `'<'` (system reminders and command output).
+fn candidate(kind: EntryKind, text: &str) -> Option<Entry> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.starts_with('<') {
+        return None;
+    }
+    Some(Entry {
+        kind,
+        text: trimmed.to_owned(),
+    })
+}
+
+/// The read-only conversation `lines` carry (design.md requirement 6):
+/// prompts (`"> text"` is the UI's concern, not this function's), assistant
+/// text, and tool calls formatted to one line each, oldest first. A
+/// sidechain line is skipped entirely; an unparsable line is skipped too -
+/// neither the transcript format nor `claude agents --json` is a published
+/// contract.
+pub(crate) fn entries(lines: &[String]) -> Vec<Entry> {
+    let mut out = Vec::new();
+
+    for line in lines {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+
+        if value["isSidechain"] == serde_json::Value::Bool(true) {
+            continue;
+        }
+
+        let role = value["message"]["role"].as_str().unwrap_or("");
+        let content = &value["message"]["content"];
+
+        if let Some(text) = content.as_str() {
+            if let Some(entry) = candidate(EntryKind::Prompt, text) {
+                out.push(entry);
+            }
+            continue;
+        }
+
+        let Some(blocks) = content.as_array() else {
+            continue;
+        };
+
+        for block in blocks {
+            match block["type"].as_str() {
+                Some("text") => {
+                    let text = block["text"].as_str().unwrap_or("");
+                    let kind = if role == "user" {
+                        EntryKind::Prompt
+                    } else {
+                        EntryKind::Text
+                    };
+                    if let Some(entry) = candidate(kind, text) {
+                        out.push(entry);
+                    }
+                }
+                Some("tool_use") => {
+                    let Some(name) = block["name"].as_str() else {
+                        continue;
+                    };
+                    out.push(tool_entry(name, &block["input"]));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    out
+}
+
 /// An RFC3339-ish UTC timestamp ("2026-10-19T10:00:00.123Z") to epoch
 /// seconds. `None` if it doesn't parse.
 pub(crate) fn epoch(ts: &str) -> Option<u64> {
@@ -366,6 +493,23 @@ mod tests {
             "message": {
                 "role": role,
                 "content": [{"type": "text", "text": text}]
+            }
+        })
+        .to_string()
+    }
+
+    /// One transcript line of a user message whose `content` is a plain
+    /// string rather than an array of blocks - the shape a plain user
+    /// message takes, distinct from [`text_line`]'s block form.
+    fn user_string_line(ts: &str, cwd: &Path, sidechain: bool, text: &str) -> String {
+        json!({
+            "timestamp": ts,
+            "cwd": cwd.display().to_string(),
+            "isSidechain": sidechain,
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": text
             }
         })
         .to_string()
@@ -656,5 +800,128 @@ mod tests {
 
         assert!(later > earlier, "{earlier} vs {later}");
         assert_eq!(epoch("not a timestamp"), None);
+    }
+
+    /// Pins [`entries`] (design.md requirement 6 and the Proof section): a
+    /// plain-string user message and a user `text` block both become a
+    /// prompt, an assistant `text` block becomes text, a `Read` tool call
+    /// becomes one line "Read <path>", another tool (`Bash`) becomes
+    /// "Bash: <command>" cut to 80 characters, a sidechain line is skipped
+    /// entirely whatever it carries, and an assistant `text` block starting
+    /// with "<" or carrying no text is skipped too (system reminders and
+    /// command output, and the tool-only assistant messages a working
+    /// session is mostly made of).
+    #[test]
+    fn the_conversation_is_prompts_text_and_one_line_tool_calls() {
+        let cwd = Path::new("/repo");
+        let long_command = "x".repeat(200);
+        let lines = vec![
+            user_string_line("t1", cwd, false, "Plain string content becomes a prompt"),
+            text_line(
+                "t2",
+                cwd,
+                "user",
+                false,
+                "A user text block is also a prompt",
+            ),
+            text_line(
+                "t3",
+                cwd,
+                "assistant",
+                false,
+                "Assistant text becomes a Text entry",
+            ),
+            tool_use_line("t4", cwd, "Read", json!({"file_path": "foo.rs"})),
+            tool_use_line("t5", cwd, "Bash", json!({"command": long_command})),
+            text_line(
+                "t6",
+                cwd,
+                "assistant",
+                true,
+                "SIDECHAIN MARKER must never surface",
+            ),
+            text_line(
+                "t7",
+                cwd,
+                "assistant",
+                false,
+                "<system-reminder>skipped, starts with '<'</system-reminder>",
+            ),
+            text_line("t8", cwd, "assistant", false, ""),
+        ];
+
+        let entries = entries(&lines);
+
+        let prompts: Vec<&Entry> = entries
+            .iter()
+            .filter(|e| e.kind == EntryKind::Prompt)
+            .collect();
+        assert_eq!(prompts.len(), 2, "{entries:?}");
+        assert_eq!(prompts[0].text, "Plain string content becomes a prompt");
+        assert_eq!(prompts[1].text, "A user text block is also a prompt");
+
+        let texts: Vec<&Entry> = entries
+            .iter()
+            .filter(|e| e.kind == EntryKind::Text)
+            .collect();
+        assert_eq!(
+            texts.len(),
+            1,
+            "the sidechain line, the '<'-prefixed line and the empty line are all \
+             skipped: {entries:?}"
+        );
+        assert_eq!(texts[0].text, "Assistant text becomes a Text entry");
+
+        let tools: Vec<&Entry> = entries
+            .iter()
+            .filter(|e| e.kind == EntryKind::Tool)
+            .collect();
+        assert_eq!(tools.len(), 2, "{entries:?}");
+        assert_eq!(
+            tools[0].text, "Read foo.rs",
+            "Read/Edit/Write/MultiEdit format as \"{{name}} {{arg}}\""
+        );
+        assert_eq!(
+            tools[1].text,
+            format!("Bash: {}", "x".repeat(80)),
+            "another tool formats as \"{{name}}: {{arg}}\", its argument cut to 80 characters"
+        );
+
+        assert!(
+            !entries.iter().any(|e| e.text.contains("SIDECHAIN")),
+            "a sidechain line is skipped whatever kind it would otherwise be: {entries:?}"
+        );
+    }
+
+    /// Pins [`Tail::from_end`]: seeded this way, the next `read` returns only
+    /// the lines completed within the last `max_bytes` of the file - so a
+    /// freshly-opened pane does not reparse a whole transcript's history
+    /// just to show its last ~80 entries - and falls back to the whole file
+    /// when it is shorter than `max_bytes`.
+    #[test]
+    fn from_end_seeds_reading_only_the_recent_tail_of_a_file() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().join("transcript.jsonl");
+        let kept = "kept-line\n";
+        // Far more history than `max_bytes` below, so the seeded offset
+        // lands exactly at the start of `kept`, not inside the old content.
+        let old = "stale ".repeat(1000);
+        fs::write(&path, format!("{old}{kept}")).expect("write the fixture");
+
+        let mut tail = Tail::from_end(&path, kept.len() as u64);
+        assert_eq!(
+            tail.read(&path),
+            vec!["kept-line".to_owned()],
+            "only the line completed within the last max_bytes is read"
+        );
+
+        let short_path = dir.path().join("short.jsonl");
+        fs::write(&short_path, "only-line\n").expect("write the short fixture");
+        let mut short_tail = Tail::from_end(&short_path, 1_000_000);
+        assert_eq!(
+            short_tail.read(&short_path),
+            vec!["only-line".to_owned()],
+            "a file shorter than max_bytes is read from the start"
+        );
     }
 }

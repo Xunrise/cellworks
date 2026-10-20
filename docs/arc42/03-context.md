@@ -65,7 +65,8 @@ tools; there is no SLA.
 - **Quirks:** neither the transcript format nor `claude agents --json` is a published contract; both can change with
   Claude Code releases, so parse tolerantly and ignore unknown events and fields. Waiting for approval shows only in
   `claude agents --json`. Reads through Bash are seen only as file paths named in the command. Sessions often touch files outside
-  their working directory. `--resume` on a session that is still running starts a copy under a new id.
+  their working directory. `--resume` on a session that is still running starts a copy under a new id and prints "backgrounded · <id> · <name>".
+  `claude attach` accepts only background sessions; interactive sessions have no attach id.
 
 ### git
 

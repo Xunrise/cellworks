@@ -5,17 +5,20 @@
 
 mod checkout;
 mod claude;
+mod terminal;
 mod transcript;
 pub mod ui;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
 use cellworks_map::ProjectMap;
 use egui::Pos2;
+
+use crate::terminal::Terminal;
 
 pub use claude::{Agent, AgentList, ClaudeCli, ClaudeUnavailable};
 
@@ -51,6 +54,9 @@ pub enum SessionState {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Session {
     pub id: String,
+    /// The short id `claude attach`/`claude stop` take, carried over from
+    /// `Agent.id`; `None` for an interactive session, which has none.
+    pub attach_id: Option<String>,
     pub name: String,
     pub cwd: PathBuf,
     pub status: String,
@@ -76,11 +82,24 @@ impl Session {
     }
 }
 
-/// What a background watch reports to the UI thread, once per drain.
+/// What a background watch, or a [`SessionPane`], reports to the UI thread,
+/// once per drain. Crate-private: it carries `transcript::Entry`, itself
+/// `pub(crate)` since the conversation's shape is this crate's own concern,
+/// not part of its public API.
 #[derive(Clone, Debug)]
-pub enum SessionEvent {
+pub(crate) enum SessionEvent {
     Listed(Vec<Session>),
     ListingFailed(String),
+    /// A pane's conversation, re-read from its transcript.
+    ConversationRead(Vec<transcript::Entry>),
+    /// The new attach id of a background copy `continue_in_background`
+    /// started.
+    CopyStarted(String),
+    /// At most 200 characters of a failed `continue_in_background`'s output.
+    CopyFailed(String),
+    Stopped,
+    /// At most 200 characters of a failed `stop`'s error.
+    StopFailed(String),
 }
 
 /// Where a watch reads sessions from, and how often it polls: passed in so
@@ -89,6 +108,9 @@ pub struct SessionSources {
     pub transcripts: PathBuf,
     pub agents: Arc<dyn AgentList + Send + Sync>,
     pub poll: Duration,
+    /// The `claude` program a [`SessionPane`] runs to attach, stop and
+    /// continue a session.
+    pub claude: PathBuf,
 }
 
 impl SessionSources {
@@ -100,6 +122,7 @@ impl SessionSources {
             transcripts: PathBuf::from(home).join(".claude/projects"),
             agents: Arc::new(crate::ClaudeCli),
             poll: Duration::from_secs(2),
+            claude: PathBuf::from("claude"),
         })
     }
 }
@@ -143,8 +166,11 @@ pub fn common_dir(root: &Path) -> Option<PathBuf> {
 type CheckoutInfo = (String, Option<PathBuf>, String);
 
 /// Starts watching every running session on the machine on a background
-/// thread; never blocks the caller.
-pub fn start_watch(sources: SessionSources) -> Receiver<SessionEvent> {
+/// thread; never blocks the caller. Crate-private: only `ui::SessionsView`
+/// calls it; made so when `SessionEvent` itself became crate-private
+/// (STORY-081), since it carries `transcript::Entry`, which is not part of
+/// this crate's public API.
+pub(crate) fn start_watch(sources: SessionSources) -> Receiver<SessionEvent> {
     let (tx, rx) = std::sync::mpsc::channel();
 
     std::thread::spawn(move || {
@@ -235,6 +261,7 @@ fn build_session(
 
     Session {
         id: agent.session_id.clone(),
+        attach_id: (!agent.id.is_empty()).then(|| agent.id.clone()),
         name: if agent.name.is_empty() {
             agent.session_id.clone()
         } else {
@@ -314,6 +341,293 @@ fn resolve_event(tool_call: &transcript::ToolCall) -> FileEvent {
         line: tool_call.line,
         added: tool_call.added,
     }
+}
+
+/// How many cells a freshly opened pane assumes before the UI's first real
+/// draw corrects it to the pane's actual size.
+const INITIAL_ROWS: u16 = 24;
+const INITIAL_COLS: u16 = 80;
+
+/// How much of the end of a transcript a freshly opened read-only pane reads,
+/// rather than reparsing a long-running session's whole history (design.md
+/// requirement 6).
+const TAIL_BYTES: u64 = 1 << 20;
+
+/// How often a read-only conversation is re-read from its transcript.
+const CONVERSATION_POLL: Duration = Duration::from_secs(1);
+
+/// The read-only conversation's entries are kept to this many, newest last -
+/// the same trimming pattern [`build_session`] already applies to a
+/// session's events.
+const MAX_ENTRIES: usize = 80;
+
+/// requirement 6's banner for a session with no attach id.
+const READ_ONLY_BANNER: &str = "Started outside Cellworks (interactive). Read-only here.";
+
+/// Whether a [`SessionPane`] shows a live terminal or a read-only
+/// conversation.
+enum PaneKind {
+    /// `None` when the attach process could not even be spawned - treated as
+    /// already ended, tolerantly, rather than failing to open the pane at
+    /// all. Boxed: a `Terminal` is much larger than `Vec<transcript::Entry>`,
+    /// and this enum is cloned-free but still sized for its largest variant.
+    Terminal(Option<Box<Terminal>>),
+    /// Oldest first, trimmed to [`MAX_ENTRIES`].
+    Conversation(Vec<transcript::Entry>),
+}
+
+/// The headless half of a session's pane (design.md requirement 2 onward):
+/// either a live terminal attached to a background session, or a read-only,
+/// periodically refreshed conversation for an interactive one, each owning
+/// whatever background thread(s) it starts, all reporting on this pane's own
+/// channel - not the main watch's.
+pub(crate) struct SessionPane {
+    session_id: String,
+    name: String,
+    claude: PathBuf,
+    /// The attach id the pane's terminal is currently attached to, if any;
+    /// updated when a background copy starts, so [`SessionPane::stop`] always
+    /// stops the session actually shown.
+    attach_id: Option<String>,
+    rows: u16,
+    cols: u16,
+    kind: PaneKind,
+    banner: Option<String>,
+    tx: Sender<SessionEvent>,
+    rx: Receiver<SessionEvent>,
+}
+
+impl SessionPane {
+    /// Opens a pane on `session`: a live terminal when it has an attach id,
+    /// otherwise a read-only conversation tailed from its main transcript
+    /// under `transcripts_root`, re-read every second on a background
+    /// thread.
+    pub(crate) fn open(session: &Session, claude: &Path, transcripts_root: &Path) -> SessionPane {
+        let (tx, rx) = mpsc::channel();
+        let rows = INITIAL_ROWS;
+        let cols = INITIAL_COLS;
+
+        let (kind, banner) = match &session.attach_id {
+            Some(id) => {
+                let terminal = Terminal::spawn(claude, &["attach", id], rows, cols)
+                    .ok()
+                    .map(Box::new);
+                (PaneKind::Terminal(terminal), None)
+            }
+            None => {
+                if let Some(file) = main_transcript_file(transcripts_root, &session.id) {
+                    spawn_conversation_reader(file, tx.clone());
+                }
+                (
+                    PaneKind::Conversation(Vec::new()),
+                    Some(READ_ONLY_BANNER.to_owned()),
+                )
+            }
+        };
+
+        SessionPane {
+            session_id: session.id.clone(),
+            name: session.name.clone(),
+            claude: claude.to_owned(),
+            attach_id: session.attach_id.clone(),
+            rows,
+            cols,
+            kind,
+            banner,
+            tx,
+            rx,
+        }
+    }
+
+    pub(crate) fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Whether this pane shows a live terminal (vs. a read-only
+    /// conversation) - used by the UI to decide whether to offer "Stop" vs.
+    /// "Continue in the background".
+    pub(crate) fn is_terminal(&self) -> bool {
+        matches!(self.kind, PaneKind::Terminal(_))
+    }
+
+    /// Pumps the terminal (if any) and drains whatever the pane's own
+    /// channel has reported since the last call. Never blocks.
+    pub(crate) fn drain(&mut self) {
+        if let PaneKind::Terminal(Some(terminal)) = &mut self.kind {
+            terminal.pump();
+        }
+
+        loop {
+            match self.rx.try_recv() {
+                Ok(SessionEvent::ConversationRead(list)) => {
+                    if let PaneKind::Conversation(entries) = &mut self.kind {
+                        *entries = list;
+                    }
+                }
+                Ok(SessionEvent::CopyStarted(id)) => {
+                    let terminal =
+                        Terminal::spawn(&self.claude, &["attach", &id], self.rows, self.cols)
+                            .ok()
+                            .map(Box::new);
+                    self.kind = PaneKind::Terminal(terminal);
+                    self.attach_id = Some(id);
+                    self.banner = Some(format!(
+                        "Background copy of {}; close the original where it runs.",
+                        self.name
+                    ));
+                }
+                Ok(SessionEvent::CopyFailed(message)) => {
+                    self.banner = Some(message);
+                }
+                Ok(SessionEvent::Stopped) => {}
+                Ok(SessionEvent::StopFailed(message)) => {
+                    self.banner = Some(message);
+                }
+                Ok(SessionEvent::Listed(_)) | Ok(SessionEvent::ListingFailed(_)) => {}
+                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+            }
+        }
+    }
+
+    /// Starts a background thread running `claude::continue_in_background`
+    /// and sending `CopyStarted`/`CopyFailed` on this pane's channel. No-op
+    /// if this pane is already a terminal.
+    pub(crate) fn continue_in_background(&mut self) {
+        if self.is_terminal() {
+            return;
+        }
+        let tx = self.tx.clone();
+        let claude = self.claude.clone();
+        let session_id = self.session_id.clone();
+        let name = self.name.clone();
+        std::thread::spawn(move || {
+            let event = match claude::continue_in_background(&claude, &session_id, &name) {
+                Ok(id) => SessionEvent::CopyStarted(id),
+                Err(message) => SessionEvent::CopyFailed(message),
+            };
+            let _ = tx.send(event);
+        });
+    }
+
+    /// Starts a background thread running `claude::stop` and sending
+    /// `Stopped`/`StopFailed`. No-op if this pane is a conversation (nothing
+    /// to stop).
+    pub(crate) fn stop(&mut self) {
+        let Some(id) = (if self.is_terminal() {
+            self.attach_id.clone()
+        } else {
+            None
+        }) else {
+            return;
+        };
+        let tx = self.tx.clone();
+        let claude = self.claude.clone();
+        std::thread::spawn(move || {
+            let event = match claude::stop(&claude, &id) {
+                Ok(()) => SessionEvent::Stopped,
+                Err(message) => SessionEvent::StopFailed(message.chars().take(200).collect()),
+            };
+            let _ = tx.send(event);
+        });
+    }
+
+    /// The vt100 screen of a terminal pane, for drawing; `None` for a
+    /// conversation.
+    pub(crate) fn screen(&self) -> Option<&vt100::Screen> {
+        match &self.kind {
+            PaneKind::Terminal(Some(terminal)) => Some(terminal.screen()),
+            _ => None,
+        }
+    }
+
+    /// Sends `bytes` to a terminal pane's child; no-op for a conversation.
+    pub(crate) fn send(&mut self, bytes: &[u8]) {
+        if let PaneKind::Terminal(Some(terminal)) = &mut self.kind {
+            terminal.send(bytes);
+        }
+    }
+
+    /// Resizes a terminal pane's pty; no-op for a conversation.
+    pub(crate) fn resize(&mut self, rows: u16, cols: u16) {
+        self.rows = rows;
+        self.cols = cols;
+        if let PaneKind::Terminal(Some(terminal)) = &mut self.kind {
+            terminal.resize(rows, cols);
+        }
+    }
+
+    /// Whether a terminal pane's attach process has ended ("(attach ended)"
+    /// in the UI); `false` for a conversation.
+    pub(crate) fn has_ended(&mut self) -> bool {
+        match &mut self.kind {
+            PaneKind::Terminal(Some(terminal)) => terminal.has_ended(),
+            PaneKind::Terminal(None) => true,
+            PaneKind::Conversation(_) => false,
+        }
+    }
+
+    /// The conversation's entries, oldest first, for drawing; `None` for a
+    /// terminal.
+    pub(crate) fn entries(&self) -> Option<&[transcript::Entry]> {
+        match &self.kind {
+            PaneKind::Conversation(entries) => Some(entries.as_slice()),
+            PaneKind::Terminal(_) => None,
+        }
+    }
+
+    /// The banner line shown above a conversation; `None` for a (never-was-
+    /// a-conversation) terminal that was a background session from the
+    /// start.
+    pub(crate) fn banner(&self) -> Option<&str> {
+        self.banner.as_deref()
+    }
+}
+
+/// The main transcript file `session_id` has under `transcripts_root`, if
+/// any: `<transcripts_root>/<any immediate subdir>/<session_id>.jsonl` - the
+/// "main file" half of [`transcript_files`], since a pane must never tail a
+/// subagent's own transcript (design.md requirement 6).
+fn main_transcript_file(transcripts_root: &Path, session_id: &str) -> Option<PathBuf> {
+    std::fs::read_dir(transcripts_root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .map(|dir| dir.join(format!("{session_id}.jsonl")))
+        .find(|file| file.is_file())
+}
+
+/// Starts the background thread a read-only conversation pane tails its
+/// transcript with: reads from [`Tail::from_end`][transcript::Tail::from_end]
+/// (the last [`TAIL_BYTES`]), parses new lines with
+/// [`transcript::entries`], accumulates into a running list trimmed to
+/// [`MAX_ENTRIES`], and sends `SessionEvent::ConversationRead(list.clone())`
+/// after every read - the first one immediately, before the first sleep, so
+/// the pane shows content right away.
+fn spawn_conversation_reader(file: PathBuf, tx: Sender<SessionEvent>) {
+    std::thread::spawn(move || {
+        let mut tail = transcript::Tail::from_end(&file, TAIL_BYTES);
+        let mut list: Vec<transcript::Entry> = Vec::new();
+        loop {
+            let new_lines = tail.read(&file);
+            list.extend(transcript::entries(&new_lines));
+            let cut = list.len().saturating_sub(MAX_ENTRIES);
+            list.drain(..cut);
+
+            if tx
+                .send(SessionEvent::ConversationRead(list.clone()))
+                .is_err()
+            {
+                return;
+            }
+            std::thread::sleep(CONVERSATION_POLL);
+        }
+    });
 }
 
 /// Where a session's latest placeable event stands in a city.
@@ -568,6 +882,7 @@ mod tests {
     fn session_at(events: Vec<FileEvent>) -> Session {
         Session {
             id: "s1".to_owned(),
+            attach_id: None,
             name: "pricing-fix".to_owned(),
             cwd: PathBuf::new(),
             status: "busy".to_owned(),
@@ -655,6 +970,7 @@ mod tests {
     ) -> Session {
         Session {
             id: id.to_owned(),
+            attach_id: None,
             name: id.to_owned(),
             cwd: PathBuf::new(),
             status: status.to_owned(),
