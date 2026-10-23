@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 use cellworks_map::{Declares, ItemKind, Token};
 use tree_sitter::{Node, Parser};
 
+use crate::items;
+
 /// What one file holds.
 #[derive(Debug, Default)]
 pub(crate) struct FileCode {
@@ -105,9 +107,6 @@ pub(crate) enum Call {
 /// The name an item gets for a block of `use` statements.
 pub(crate) const USES: &str = "use";
 
-/// Columns a tab counts as.
-const TAB: usize = 4;
-
 /// Reads `source`. A file tree-sitter cannot parse at all holds nothing; one
 /// with syntax errors still yields what parsed.
 pub(crate) fn parse(source: &str) -> FileCode {
@@ -123,12 +122,12 @@ pub(crate) fn parse(source: &str) -> FileCode {
             ..FileCode::default()
         };
     };
+    let tokens = items::tokens(tree.root_node(), source, &lines);
     let mut code = FileCode {
-        tokens: vec![Vec::new(); lines.len()],
+        tokens,
         lines,
         ..FileCode::default()
     };
-    leaves(tree.root_node(), source, &mut code);
     let mut reader = Reader {
         source,
         code: &mut code,
@@ -137,48 +136,6 @@ pub(crate) fn parse(source: &str) -> FileCode {
     };
     reader.declarations(tree.root_node(), &[], None);
     code
-}
-
-/// The column `byte` of `line` is at, a tab counting as [`TAB`].
-pub(crate) fn column(line: &str, byte: usize) -> usize {
-    line.get(..byte)
-        .unwrap_or(line)
-        .chars()
-        .map(|c| if c == '\t' { TAB } else { 1 })
-        .sum()
-}
-
-/// Records every leaf of the tree as a token on the line it starts on.
-fn leaves(root: Node<'_>, source: &str, code: &mut FileCode) {
-    let mut cursor = root.walk();
-    loop {
-        let node = cursor.node();
-        if node.child_count() == 0 && node.end_byte() > node.start_byte() {
-            let start = node.start_position();
-            if let (Some(line), Some(tokens)) =
-                (code.lines.get(start.row), code.tokens.get_mut(start.row))
-            {
-                let first = column(line, start.column);
-                let text = source.get(node.byte_range()).unwrap_or_default();
-                let len = text.lines().next().map_or(0, |t| column(t, t.len()));
-                tokens.push(Token {
-                    start: first,
-                    len: len.max(1),
-                });
-            }
-        }
-        if cursor.goto_first_child() {
-            continue;
-        }
-        loop {
-            if cursor.goto_next_sibling() {
-                break;
-            }
-            if !cursor.goto_parent() {
-                return;
-            }
-        }
-    }
 }
 
 struct Reader<'s, 'c> {
@@ -549,6 +506,7 @@ fn type_name(written: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::items::column;
 
     const PRICING: &str = "\
 use std::fmt;

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use cellworks_map::{Declaration, Declares, Floor, Item, ItemKind};
 
-pub(crate) use parse::column;
+use crate::items;
 use parse::{Call, FileCode, ParsedItem};
 use resolve::{Index, Module, module_of, package_name};
 
@@ -90,7 +90,7 @@ pub(crate) fn read(root: &Path, files: &[PathBuf]) -> BTreeMap<PathBuf, Vec<Item
                 .zip(paths)
                 .map(|(item, path)| {
                     let mut floors: Vec<Floor> = (item.start..=item.end)
-                        .filter_map(|row| floor(code, row))
+                        .filter_map(|row| items::floor(&code.lines, &code.tokens, row))
                         .collect();
                     if item.kind == cellworks_map::ItemKind::Uses {
                         let lines = item.start..=item.end;
@@ -185,35 +185,12 @@ fn type_path<'a>(
 /// item's qualified name, and the first line as well when two items of the
 /// file would otherwise share it.
 fn item_paths(file: &Path, code: &FileCode) -> Vec<PathBuf> {
-    let mut taken = BTreeMap::<PathBuf, usize>::new();
-    code.items
-        .iter()
-        .map(|item| {
-            let path = file.join(item.qualified().join("::"));
-            let seen = taken.entry(path.clone()).or_default();
-            *seen += 1;
-            if *seen == 1 {
-                path
-            } else {
-                PathBuf::from(format!("{}@{}", path.display(), item.start + 1))
-            }
-        })
-        .collect()
-}
-
-fn floor(code: &FileCode, row: usize) -> Option<Floor> {
-    let text = code.lines.get(row)?;
-    let trimmed = text.trim_end();
-    let indent = column(text, text.len() - text.trim_start().len());
-    Some(Floor {
-        number: row + 1,
-        text: text.clone(),
-        indent: if trimmed.is_empty() { 0 } else { indent },
-        width: column(trimmed, trimmed.len()),
-        tokens: code.tokens.get(row).cloned().unwrap_or_default(),
-        calls: Vec::new(),
-        imports: Vec::new(),
-    })
+    items::unique_paths(
+        file,
+        code.items
+            .iter()
+            .map(|item| (item.qualified().join("::"), item.start)),
+    )
 }
 
 #[cfg(test)]

@@ -4,9 +4,10 @@
 //! Defined by docs/domain/contexts/CodeAnalysis/CodeAnalysis.md. So far it
 //! finds a project's included files and hands them to the Map: in a git
 //! repository git says which files it shows, elsewhere the folder is walked,
-//! and hidden folders are left out either way. Rust files are read with
-//! tree-sitter into items: functions, types and `use` blocks, line by line,
-//! with the calls they make resolved to the item called. Every file is told
+//! and hidden folders are left out either way. Rust, TypeScript and
+//! JavaScript files are read with tree-sitter into items: functions, types
+//! and `use`/import blocks, line by line, with the calls Rust makes
+//! resolved to the item called. Every file is told
 //! by its kind, and any other file holding text is read in the parts its
 //! kind has: a document's sections, a configuration's keys, a feature
 //! file's scenarios; else one tower of its lines. With ignored files switched on,
@@ -23,9 +24,11 @@ mod event;
 mod files;
 mod git;
 mod history;
+mod items;
 mod kinds;
 mod plain;
 mod rust;
+mod typescript;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
@@ -110,6 +113,7 @@ pub fn load(
     }));
 
     let mut items = rust::read(root, &files);
+    items.extend(typescript::read(root, &files));
     // A file no parser read stands as one tower of its lines.
     let unread: Vec<&PathBuf> = files.iter().filter(|f| !items.contains_key(*f)).collect();
     items.extend(plain::read(root, unread));

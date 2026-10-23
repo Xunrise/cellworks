@@ -27,12 +27,12 @@ fn start() {
 ";
 
 /// The background: "fleet" holds "src/main.rs" with two functions and
-/// "web/app.ts", 40 lines no parser reads, and is open as a city.
+/// "web/app.rb", 40 lines no parser reads, and is open as a city.
 fn fleet(more: &[(&str, &[u8])]) -> (Tree, Harness<'static, CellworksApp>) {
     let app: String = (1..=40)
         .map(|n| format!("export const line{n} = {n};\n"))
         .collect();
-    let tree = Tree::sources("fleet", &[("src/main.rs", MAIN), ("web/app.ts", &app)]);
+    let tree = Tree::sources("fleet", &[("src/main.rs", MAIN), ("web/app.rb", &app)]);
     for (file, bytes) in more {
         fs::write(tree.root.join(file), bytes).expect("write the file");
     }
@@ -46,10 +46,10 @@ fn a_file_no_parser_reads_stands_as_one_tower() {
     let (tree, harness) = fleet(&[]);
 
     let map = map(&harness);
-    let app = tree.root.join("web/app.ts");
-    let items = map.items_of(&app).expect("a block for app.ts");
+    let app = tree.root.join("web/app.rb");
+    let items = map.items_of(&app).expect("a block for app.rb");
     assert_eq!(items.len(), 1, "one tower");
-    assert_eq!(items[0].name, "app.ts");
+    assert_eq!(items[0].name, "app.rb");
     assert_eq!(items[0].kind, ItemKind::Text);
     assert_eq!(items[0].floors.len(), 40, "a floor per line");
     assert_eq!(
