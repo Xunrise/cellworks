@@ -10,6 +10,7 @@ flowchart LR
   CW[Cellworks]
   FS[(Project folders)]
   Git[git]
+  GH[GitHub<br/>via gh]
   CC[Claude Code]
   TR[(Claude transcripts<br/>~/.claude/projects)]
   NV[Neovim]
@@ -20,7 +21,8 @@ flowchart LR
 
   User -->|keyboard, mouse| CW
   CW -->|read, watch| FS
-  CW -->|status, numstat, branches, worktrees| Git
+  CW -->|status, numstat, branches, worktrees, diff, fetch pull-request heads| Git
+  CW -->|read-only pr list| GH
   CW -->|create, steer, observe| CC
   CW -->|tail| TR
   CW -->|embed, msgpack-rpc| NV
@@ -34,7 +36,8 @@ flowchart LR
 |---|---|
 | Engineer | Navigates the map, edits files, creates and steers Claude Code sessions. |
 | Project folders | Scans code, domain docs, Knex migrations, proto files and DTOs; watches for changes to rescan. |
-| git | Reads the files a repository shows (`ls-files`), status, numstat, branches and worktrees; switches branches and adds worktrees on request. |
+| git | Reads the files a repository shows (`ls-files`), status, numstat, diff, branches and worktrees; fetches pull-request heads; switches branches and adds worktrees on request, and adds and removes temporary detached worktrees. |
+| GitHub | Lists a project's pull requests through the read-only `gh` CLI. |
 | Claude Code | Creates and steers sessions that survive restarts of Cellworks. |
 | Claude transcripts | Discovers every session on the machine and follows what it reads and writes. |
 | Neovim | Embedded editor. |
@@ -71,8 +74,19 @@ tools; there is no SLA.
 ### git
 
 - **Protocol:** the `git` CLI, run per project.
-- **Data:** the files a repository shows and does not ignore (`ls-files`), status, numstat, branch and worktree lists.
-- **Auth:** none beyond the user's git setup; Cellworks does not push or fetch.
+- **Data:** the files a repository shows and does not ignore (`ls-files`), status, numstat, diffs, branch and worktree
+  lists.
+- **Auth:** none beyond the user's git setup; Cellworks never pushes. It fetches pull-request heads
+  (`git fetch origin pull/<n>/head`), which writes objects and `FETCH_HEAD` but creates no branch and moves no ref the
+  user owns, and it adds and removes temporary detached worktrees.
+
+### GitHub (via gh)
+
+- **Protocol:** the `gh` CLI over HTTPS, read-only (`gh pr list`).
+- **Data:** pull requests with number, state, title, branch, head and base commits and author.
+- **Auth:** the user's own `gh auth login`; Cellworks never handles its credentials.
+- **Quirks:** the forge refuses diffs above 20,000 lines, so diffs come from git; the API is rate limited; a repository
+  whose `origin` is not on GitHub has no pull requests.
 
 ### Neovim
 

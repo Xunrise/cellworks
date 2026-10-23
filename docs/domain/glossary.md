@@ -31,5 +31,5 @@ Every context's own glossary.
 | [Editing](contexts/Editing/glossary.md) | 2 |
 | [Map](contexts/Map/glossary.md) | 11 |
 | [Navigation](contexts/Navigation/glossary.md) | 7 |
-| [Sources](contexts/Sources/glossary.md) | 5 |
+| [Sources](contexts/Sources/glossary.md) | 8 |
 | [Workspace](contexts/Workspace/glossary.md) | 2 |

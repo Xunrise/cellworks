@@ -7,5 +7,6 @@
 pub mod app;
 pub mod cli;
 pub mod opened;
+pub mod review;
 
 pub use app::draw;

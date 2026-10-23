@@ -35,7 +35,8 @@
 
 ## External tools
 
-- git, kubectl, nvim and curl are run as child processes behind a small adapter per tool in the crate that uses it.
+- git, kubectl, nvim, curl and gh are run as child processes behind a small adapter per tool in the crate that uses it.
 - Secrets reach curl through stdin config or private temp files, never through arguments.
 - Cluster calls are `kubectl get` only.
+- `gh` runs read-only commands only (`gh pr list`), never a write command.
 - Tool output is parsed tolerantly: unknown fields and events are ignored.

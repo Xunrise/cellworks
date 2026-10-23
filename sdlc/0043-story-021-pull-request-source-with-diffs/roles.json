@@ -1,0 +1,15 @@
+{
+  "agents": ["implementer", "test-author", "backend-security-reviewer"],
+  "implementers": [
+    { "step": 1, "count": 2 },
+    { "step": 2, "count": 1 },
+    { "step": 3, "count": 1 },
+    { "step": 4, "count": 1 },
+    { "step": 5, "count": 1 }
+  ],
+  "why": {
+    "implementer": "Five steps; step 1 writes the diff parser and the critical-flag matcher, which are independent.",
+    "test-author": "New parsing, matching and placement logic with error paths for missing tools.",
+    "backend-security-reviewer": "Spawns gh and git and parses their output, which carries untrusted pull-request titles, branch names and paths."
+  }
+}

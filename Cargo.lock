@@ -647,6 +647,7 @@ version = "0.0.0"
 dependencies = [
  "cellworks-map",
  "cellworks-workspace",
+ "tempfile",
 ]
 
 [[package]]
