@@ -262,18 +262,33 @@ fn search(harness: &mut Harness<'_, CellworksApp>, text: &str) {
     harness.run();
 }
 
-/// Projects are grouped by their folder or remote host
+/// Projects are grouped by where they live: this Mac, or a remote host
+///
+/// STORY-082 requirement 5 made the group a *location* rather than a parent
+/// folder, so the fixture's two local folders (`~/Projects` and `~/scratch`)
+/// are one group now; the folder each project lives in is still named, on
+/// its own row, by the path asserted below.
 #[test]
-fn projects_are_grouped_by_their_folder_or_remote_host() {
+fn projects_are_grouped_by_location_or_remote_host() {
     let fixture = Fixture::new();
     fixture.settings(&[("az.wsl", &["~/work/api"])]);
     let harness = harness_over(app(&fixture, &[("az.wsl", true)]));
 
     let shown = labels(&harness);
 
-    for heading in ["~/Projects", "~/scratch", "az.wsl"] {
+    for heading in ["This Mac", "az.wsl"] {
         assert!(shown.contains(&heading.to_owned()), "{shown:?}");
     }
+    // Twice in the whole frame: the location chip and the one group heading.
+    // Three times would mean a heading per folder again.
+    assert_eq!(
+        shown
+            .iter()
+            .filter(|label| label.as_str() == "This Mac")
+            .count(),
+        2,
+        "two local folders share one group heading: {shown:?}"
+    );
     for (name, path) in [
         ("cellworks", "~/Projects/cellworks"),
         ("shop", "~/Projects/shop"),
@@ -285,19 +300,21 @@ fn projects_are_grouped_by_their_folder_or_remote_host() {
     }
 }
 
-/// The sources column narrows the list
+/// The location chips narrow the list
 #[test]
-fn the_sources_column_narrows_the_list() {
+fn the_location_chips_narrow_the_list() {
     let fixture = Fixture::new();
     fixture.settings(&[("az.wsl", &["~/work/api"]), ("gcp.vm", &["~/infra/db"])]);
     let mut harness = harness_over(app(&fixture, &[("az.wsl", true), ("gcp.vm", false)]));
 
     let shown = labels(&harness);
-    assert!(shown.contains(&"● connected".to_owned()), "{shown:?}");
-    assert!(shown.contains(&"○ offline".to_owned()), "{shown:?}");
+    // A chip's text is the state's word alone (STORY-082 ASSUMED (Q-1)); the
+    // glyph beside it is painted, so no label carries one.
+    assert!(shown.contains(&"connected".to_owned()), "{shown:?}");
+    assert!(shown.contains(&"offline".to_owned()), "{shown:?}");
 
-    // The left locations column is drawn before the main area's groups, so
-    // the first "az.wsl" found in the tree is its entry there.
+    // The chip row is drawn before the main area's groups, so the first
+    // "az.wsl" found in the tree is its chip.
     harness
         .get_all_by_label("az.wsl")
         .next()
@@ -345,7 +362,10 @@ fn a_search_that_matches_nothing_says_so() {
     // label: `query_all_by_label` tolerates that, where `query_by_label`
     // panics on more than one match.
     assert!(
-        harness.query_all_by_label("Add project…").next().is_some(),
+        harness
+            .query_all_by_label("Add project ⌘N")
+            .next()
+            .is_some(),
         "a search with no match still offers to add a project"
     );
 }
@@ -387,7 +407,12 @@ fn the_selected_project_shows_its_details_and_opens_on_enter() {
     harness.run();
 
     let shown = labels(&harness);
-    assert!(shown.contains(&"git repository".to_owned()), "{shown:?}");
+    // The preview pane now reads the kind and the location together, as
+    // "git repository · This Mac", rather than as two separate labels.
+    assert!(
+        shown.iter().any(|label| label.contains("git repository")),
+        "{shown:?}"
+    );
     assert!(shown.contains(&"main".to_owned()), "{shown:?}");
     assert!(
         shown
@@ -424,7 +449,15 @@ fn git_reads_only_the_selected_project_and_only_once() {
     );
 
     for _ in 0..2 {
-        harness.get_by_label("cellworks").click_accesskit();
+        // Once "cellworks" is selected, the preview pane also carries its
+        // name as a heading, and the right panel it lives in is drawn before
+        // the central panel's list — so the list row (the one actually
+        // clickable) is the *last* "cellworks" in tree order, not the first.
+        harness
+            .get_all_by_label("cellworks")
+            .last()
+            .expect("cellworks is shown at least once")
+            .click_accesskit();
         harness.run();
         settle(harness.state_mut());
         harness.run();
@@ -457,10 +490,11 @@ fn enter_on_a_remote_project_opens_nothing() {
 
     assert!(
         harness
-            .get_by_label("Open (Enter)")
+            .get_by_label("Open · Enter")
             .accesskit_node()
             .is_disabled(),
-        "Open is disabled for a remote project, which hints to connect the host"
+        "Open is disabled for a remote project on a connected host, with a \
+         disabled-hover explaining why"
     );
 
     harness.key_press(Key::Enter);

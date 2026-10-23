@@ -760,7 +760,15 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     }
     // A focused session terminal owns the keyboard: the map's keys do nothing.
     let terminal = app.sessions.has_keyboard(ui);
-    let typing = app.sessions.search_focused(ui) || terminal;
+    // So does the launcher's search field, which is focused from the first
+    // frame (STORY-082 requirement 2): without this, every "u", "m" and "z"
+    // of a typed project name would also toggle underground, the cables and
+    // the navigation lock, since those three act whether a project is open or
+    // not. The keys are read here, before `ui::launcher` draws the field, so
+    // the field never gets to swallow them itself.
+    let typing = app.sessions.search_focused(ui)
+        || (app.opened.is_none() && cellworks_workspace::ui::search_focused(ui))
+        || terminal;
     let Keys {
         enter,
         esc,
@@ -845,6 +853,11 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             None => app.navigation.deselect(),
         }
     }
+    let launcher_tab = app.opened.is_none()
+        && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
+    if launcher_tab {
+        app.launcher.cycle_pick();
+    }
     let now = ui.input(|input| input.time);
     if lens && let Some(opened) = &mut app.opened {
         let next = opened.next_lens();
@@ -922,16 +935,37 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     if lock {
         app.navigation.toggle_lock();
     }
-    if esc && app.sessions.deselect() {
+    if esc && app.opened.is_none() {
+        app.launcher.clear_search();
+        // Requirement 10: Esc clears the text "and nothing else". egui drops
+        // the focus of whatever widget holds it on an unmodified Escape, so
+        // the launcher asks for it straight back — otherwise the next letter
+        // typed would miss the field and reach the map's shortcuts.
+        app.launcher.request_focus();
+    } else if esc && app.sessions.deselect() {
         // handled: a session selection is cleared before anything else.
     } else if esc && app.navigation.esc(mapped(&app.opened)) == Some(Moved::Closed) {
         app.opened = None;
+        app.launcher.request_focus();
     }
     if enter
+        && (app.opened.is_some()
+            || app
+                .launcher
+                .selected()
+                .is_some_and(|id| app.launcher.can_open(id)))
         && let Some(Moved::Opened(path)) = app.navigation.enter(mapped(&app.opened))
         && let Some(project) = app.project_at(&path)
     {
         app.open(project);
+    }
+    // A single-line `TextEdit` ends its input by surrendering the focus on
+    // Enter, including on the frames where the launcher opens nothing — a
+    // remote project (requirement 8), or no selection at all. The field is
+    // drawn after this block, so asking now puts the focus back the same
+    // frame.
+    if enter && app.opened.is_none() {
+        app.launcher.request_focus();
     }
 
     // Why the selected tower was built: worked out before the frame borrows
@@ -946,6 +980,10 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             Some(LauncherAction::Selected(project)) => {
                 app.launcher.select(Some(project.id.clone()));
                 app.request_details();
+                // Clicking a row gives it the focus, which the search field
+                // then no longer has: the palette stays keyboard-first, so
+                // the field takes it back on the next frame.
+                app.launcher.request_focus();
                 match project.id.local_path() {
                     Some(path) => app.navigation.select(path.to_owned()),
                     None => app.navigation.deselect(),

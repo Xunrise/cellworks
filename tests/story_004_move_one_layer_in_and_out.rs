@@ -89,8 +89,16 @@ impl Universe {
     }
 
     fn rect_of(&self, name: &str) -> Rect {
+        // STORY-082's preview pane also names the selected project, so at the
+        // universe layer a project's name can match twice (its row and the
+        // pane); the row — what this helper means — is the later of the two,
+        // the pane being drawn first. Every other name this is called with
+        // (a folder, a node) is never also a selected project's name at the
+        // universe layer, so it stays the only match either way.
         self.harness
-            .get_by_label(name)
+            .get_all_by_label(name)
+            .last()
+            .expect("a label is laid out")
             .accesskit_node()
             .bounding_box()
             .expect("a label is laid out")

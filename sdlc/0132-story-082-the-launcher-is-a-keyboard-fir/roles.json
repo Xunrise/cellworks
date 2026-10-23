@@ -1,0 +1,13 @@
+{
+  "agents": ["implementer", "test-author"],
+  "implementers": [
+    { "step": 1, "count": 1 },
+    { "step": 2, "count": 1 },
+    { "step": 3, "count": 1 },
+    { "step": 4, "count": 1 }
+  ],
+  "why": {
+    "implementer": "Four steps, each one file or one test folder; no step splits into independent files.",
+    "test-author": "Seven scenarios plus pure view-model helpers (match range, chips, cycling, open rule) a test can pin."
+  }
+}

@@ -31,7 +31,10 @@ pub enum Pick {
 }
 
 /// Whether a remote host answers, always a glyph paired with a word, never
-/// colour alone (requirement 4).
+/// colour alone (requirement 4). The glyph is a shape the view paints beside
+/// the word (STORY-082 ASSUMED (Q-1)), so this type carries the word alone —
+/// there is deliberately no `Display` writing a glyph into text a row or a
+/// chip would then read out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HostState {
     Checking,
@@ -39,14 +42,61 @@ pub enum HostState {
     Offline,
 }
 
-impl std::fmt::Display for HostState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl HostState {
+    /// The state's word, as a chip reads it: "connected", "checking" or
+    /// "offline", never a glyph (STORY-082 ASSUMED (Q-1)).
+    pub fn word(self) -> &'static str {
         match self {
-            HostState::Checking => write!(f, "◌ checking"),
-            HostState::Connected => write!(f, "● connected"),
-            HostState::Offline => write!(f, "○ offline"),
+            HostState::Checking => "checking",
+            HostState::Connected => "connected",
+            HostState::Offline => "offline",
         }
     }
+}
+
+/// What every local project's location is called — the chip, the list
+/// heading and the preview pane all name it the same way (STORY-082
+/// requirements 3, 5 and 7).
+const THIS_MAC: &str = "This Mac";
+
+/// Sort key for ASSUMED (Q-2)'s chip and `cycle_pick` order: connected hosts
+/// before checking ones before offline ones, name breaking a tie.
+fn state_priority(state: HostState) -> u8 {
+    match state {
+        HostState::Connected => 0,
+        HostState::Checking => 1,
+        HostState::Offline => 2,
+    }
+}
+
+/// One location chip (STORY-082 requirement 3): `pick` is what clicking it
+/// narrows the main area to, `label` and `count` what it reads, `state` the
+/// host's state for a host chip, `None` for "All" and "This Mac" which have
+/// none.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Chip {
+    pub pick: Pick,
+    pub label: String,
+    pub count: usize,
+    pub state: Option<HostState>,
+}
+
+/// The byte range of the first case-insensitive match of `query` in `name`,
+/// for the view to underline (STORY-082 requirement 6); `None` when `query`
+/// is empty, there is no match, or lowercasing `name` changes its byte
+/// length — a Unicode case-folding mismatch that would make a byte index
+/// found in the lowercased copy invalid against `name` itself.
+pub fn match_range(name: &str, query: &str) -> Option<std::ops::Range<usize>> {
+    if query.is_empty() {
+        return None;
+    }
+    let lower_name = name.to_lowercase();
+    if lower_name.len() != name.len() {
+        return None;
+    }
+    let lower_query = query.to_lowercase();
+    let start = lower_name.find(&lower_query)?;
+    Some(start..start + lower_query.len())
 }
 
 /// What the inspector calls a project (requirement 9).
@@ -83,6 +133,10 @@ pub struct Launcher {
     recent: Vec<ProjectId>,
     hosts: HashMap<String, HostState>,
     details: HashMap<PathBuf, ProjectDetails>,
+    /// Whether the search field should take focus this frame: set on launch
+    /// and on ⌘K, read (and cleared) once by the view (STORY-082 requirement
+    /// 2).
+    focus_requested: bool,
 }
 
 impl Launcher {
@@ -99,6 +153,7 @@ impl Launcher {
             recent: Vec::new(),
             hosts: HashMap::new(),
             details: HashMap::new(),
+            focus_requested: true,
         }
     }
 
@@ -135,9 +190,17 @@ impl Launcher {
         &self.search
     }
 
-    /// Narrows the main area to `pick`.
+    /// Narrows the main area to `pick`, and drops the selection if it is no
+    /// longer among the projects the new pick shows (STORY-082 requirement 4's
+    /// last sentence) — through this method rather than only `cycle_pick`,
+    /// since a chip click changes the pick the same way.
     pub fn pick(&mut self, pick: Pick) {
         self.pick = pick;
+        if let Some(selected) = &self.selected
+            && !self.visible().iter().any(|project| &project.id == selected)
+        {
+            self.selected = None;
+        }
     }
 
     /// What the main area is currently narrowed to.
@@ -239,17 +302,14 @@ impl Launcher {
         }
     }
 
-    /// `id`'s state, shown on every row: "this Mac" for a local project, or
-    /// its host's state (requirement 4's last sentence).
-    pub fn state_of(&self, id: &ProjectId) -> String {
+    /// Where `id` lives, as the preview pane names it after its kind
+    /// (STORY-082 requirement 7's "`<kind> · <location>`"): "This Mac" for a
+    /// local project, the host's name for a remote one. Never the host's
+    /// state — that is what the host's chip says, and it is not a location.
+    pub fn location_of(&self, id: &ProjectId) -> String {
         match id {
-            ProjectId::Local(_) => "this Mac".to_owned(),
-            ProjectId::Remote { host, .. } => self
-                .hosts
-                .get(host)
-                .copied()
-                .unwrap_or(HostState::Checking)
-                .to_string(),
+            ProjectId::Local(_) => THIS_MAC.to_owned(),
+            ProjectId::Remote { host, .. } => host.clone(),
         }
     }
 
@@ -274,12 +334,159 @@ impl Launcher {
             .collect()
     }
 
+    /// How many projects the current pick and search leave standing — the
+    /// "<k> matches" count (STORY-082 requirement 2).
+    pub fn match_count(&self) -> usize {
+        self.visible().len()
+    }
+
+    /// A remote host's current state, "checking" for one never probed yet —
+    /// shared by [`Launcher::location_chips`] and [`Launcher::open_label`]
+    /// (STORY-082 requirement 3 and requirement 8).
+    fn host_state(&self, host: &str) -> HostState {
+        self.hosts.get(host).copied().unwrap_or(HostState::Checking)
+    }
+
+    /// The location chip row: "All", "This Mac", then one chip per remote
+    /// host with a project, ordered by state (connected, then checking, then
+    /// offline) and by name within a state, per ASSUMED (Q-2) — the only
+    /// order that reaches the acceptance fixture's connected "wsl" before the
+    /// offline "devbox". Counts are totals over every project found, never
+    /// narrowed by the current pick or search (Decision 3).
+    pub fn location_chips(&self) -> Vec<Chip> {
+        let mut chips = vec![
+            Chip {
+                pick: Pick::All,
+                label: "All".to_owned(),
+                count: self.projects.len(),
+                state: None,
+            },
+            Chip {
+                pick: Pick::Location(Location::ThisMac),
+                label: THIS_MAC.to_owned(),
+                count: self
+                    .projects
+                    .iter()
+                    .filter(|project| project.id.local_path().is_some())
+                    .count(),
+                state: None,
+            },
+        ];
+
+        let names: BTreeSet<&str> = self
+            .projects
+            .iter()
+            .filter_map(|project| project.id.host())
+            .collect();
+        let mut hosts: Vec<(&str, HostState)> = names
+            .into_iter()
+            .map(|name| (name, self.host_state(name)))
+            .collect();
+        hosts.sort_by_key(|(name, state)| (state_priority(*state), *name));
+
+        for (host, state) in hosts {
+            let count = self
+                .projects
+                .iter()
+                .filter(|project| project.id.host() == Some(host))
+                .count();
+            chips.push(Chip {
+                pick: Pick::Location(Location::Host(host.to_owned())),
+                label: host.to_owned(),
+                count,
+                state: Some(state),
+            });
+        }
+
+        chips
+    }
+
+    /// Moves the pick to the chip after the current one in
+    /// [`Launcher::location_chips`] order, wrapping from the last host back
+    /// to "All" (STORY-082 requirement 4). Routed through [`Launcher::pick`]
+    /// rather than setting the field directly, so the invisible-selection
+    /// rule applies here too.
+    pub fn cycle_pick(&mut self) {
+        let order: Vec<Pick> = self
+            .location_chips()
+            .into_iter()
+            .map(|chip| chip.pick)
+            .collect();
+        let at = order
+            .iter()
+            .position(|pick| pick == &self.pick)
+            .unwrap_or(0);
+        let next = (at + 1) % order.len();
+        self.pick(order[next].clone());
+    }
+
+    /// Whether `id` can be opened at all: only a local project, since remote
+    /// opening is not built this story regardless of the host's state
+    /// (STORY-082 Decision 1).
+    pub fn can_open(&self, id: &ProjectId) -> bool {
+        id.local_path().is_some()
+    }
+
+    /// The Open button's label for `id` (STORY-082 requirement 8): a local
+    /// project, or a remote one on a connected host, reads "Open · Enter"
+    /// even though a remote project never actually opens (`ui.rs` supplies
+    /// the explaining hover text); any other remote host reads "connect the
+    /// host first".
+    pub fn open_label(&self, id: &ProjectId) -> &'static str {
+        match id.host() {
+            None => "Open · Enter",
+            Some(host) if self.host_state(host) == HostState::Connected => "Open · Enter",
+            Some(_) => "Open · connect the host first",
+        }
+    }
+
+    /// `id`'s branch label for a row or the inspector: the known branch, or
+    /// "folder" for a project whose details came back without one — which is
+    /// what "folder" means (STORY-082 requirement 5: "its branch, or
+    /// 'folder' when it has none").
+    ///
+    /// `None` while nothing is known: a local project whose details have not
+    /// been read yet (git runs only in the selected project, STORY-078), and
+    /// a remote project, which never has details at all. The row then shows
+    /// no branch rather than claiming the project has none.
+    pub fn branch_label(&self, id: &ProjectId) -> Option<String> {
+        let details = self.details_of(id)?;
+        Some(
+            details
+                .branch
+                .clone()
+                .unwrap_or_else(|| "folder".to_owned()),
+        )
+    }
+
+    /// Empties the search field, as Esc does (STORY-082 requirement 9/10).
+    pub fn clear_search(&mut self) {
+        self.search.clear();
+    }
+
+    /// Asks the search field to take focus on the next frame, as ⌘K does
+    /// (STORY-082 requirement 2).
+    pub fn request_focus(&mut self) {
+        self.focus_requested = true;
+    }
+
+    /// Reads and clears the focus request: true on the first frame or right
+    /// after [`Launcher::request_focus`], false otherwise, so the view asks
+    /// for focus exactly once per request (STORY-082 requirement 2).
+    pub fn take_focus_request(&mut self) -> bool {
+        std::mem::take(&mut self.focus_requested)
+    }
+
     /// Up to five of the most recently opened projects, most recent first,
-    /// skipping an id no longer among those found (requirement 6).
+    /// skipping an id no longer among those found (requirement 6), and
+    /// narrowed by the current pick and search like every other row
+    /// (STORY-082 requirement 4: picking a location must hide a recent
+    /// project that is not on it, the same as it hides one from its group).
     pub fn recent_row(&self) -> Vec<&Project> {
         self.recent
             .iter()
             .filter_map(|id| self.project(id))
+            .filter(|project| self.matches_pick(project) && self.matches_search(project))
             .take(5)
             .collect()
     }
@@ -291,21 +498,23 @@ impl Launcher {
         self.displayed_path(project)
     }
 
-    /// Every project currently shown, grouped by its parent folder (the home
-    /// folder shown as `~`) or, for a remote project, by its host: local
-    /// groups first, ordered by path, then hosts, ordered by name
-    /// (requirement 7), each narrowed by the current pick and search
-    /// (requirements 1 and 8).
+    /// Every project currently shown, one group per location (STORY-082
+    /// requirement 5): a single "This Mac" group holding every local project,
+    /// however many folders they come from, then one group per remote host,
+    /// ordered by name (STORY-078 requirement 7's host order, unchanged).
+    /// Each group is narrowed by the current pick and search (requirements 1
+    /// and 8).
+    ///
+    /// Local projects keep STORY-078's order inside the group — by parent
+    /// folder, then by name — so the folders still read as blocks, and each
+    /// row names its own folder through the path beside it.
     pub fn groups(&self) -> Vec<(String, Vec<&Project>)> {
-        let mut local: BTreeMap<PathBuf, Vec<&Project>> = BTreeMap::new();
+        let mut local: Vec<&Project> = Vec::new();
         let mut remote: BTreeMap<&str, Vec<&Project>> = BTreeMap::new();
 
         for project in self.visible() {
             match &project.id {
-                ProjectId::Local(path) => {
-                    let parent = path.parent().unwrap_or(Path::new("/")).to_path_buf();
-                    local.entry(parent).or_default().push(project);
-                }
+                ProjectId::Local(_) => local.push(project),
                 ProjectId::Remote { host, .. } => {
                     remote.entry(host.as_str()).or_default().push(project)
                 }
@@ -313,9 +522,15 @@ impl Launcher {
         }
 
         let mut groups = Vec::new();
-        for (parent, mut projects) in local {
-            projects.sort_by(|one, other| one.name.cmp(&other.name));
-            groups.push((self.tilde(&parent), projects));
+        if !local.is_empty() {
+            local.sort_by_key(|project| {
+                let path = project.id.local_path().unwrap_or(Path::new("/"));
+                (
+                    path.parent().unwrap_or(Path::new("/")).to_path_buf(),
+                    project.name.clone(),
+                )
+            });
+            groups.push((THIS_MAC.to_owned(), local));
         }
         for (host, mut projects) in remote {
             projects.sort_by(|one, other| one.name.cmp(&other.name));
@@ -325,9 +540,9 @@ impl Launcher {
     }
 
     /// `path` as the engineer wrote it, with this machine's home folder shown
-    /// as `~` (requirement 7). Used for a local project's group label and its
-    /// displayed path alike — never for a remote one, whose path is shown
-    /// exactly as the settings file wrote it, a different machine's folder.
+    /// as `~` (requirement 7). Used for a local project's displayed path —
+    /// never for a remote one, whose path is shown exactly as the settings
+    /// file wrote it, a different machine's folder.
     fn tilde(&self, path: &Path) -> String {
         let Some(home) = &self.home else {
             return path.display().to_string();
@@ -464,11 +679,13 @@ mod tests {
         );
     }
 
-    /// STORY-078, requirement 7: a local project's group is its parent
-    /// folder, a remote project's its host; the local groups come first,
-    /// ordered by path, then the hosts, ordered by name.
+    /// STORY-082, requirement 5: one group per location — every local
+    /// project is in the single "This Mac" group however many folders they
+    /// come from, then one group per host, ordered by name. Inside "This
+    /// Mac" the projects keep STORY-078's order, by parent folder then by
+    /// name.
     #[test]
-    fn groups_are_parent_folders_then_hosts() {
+    fn groups_are_this_mac_then_hosts() {
         let mut launcher = Launcher::new(None);
         launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![
             Project::at(PathBuf::from("/Users/engineer/scratch/tool")),
@@ -478,25 +695,30 @@ mod tests {
 
         assert_eq!(
             group_labels(&launcher),
-            vec![
-                "/Users/engineer/Projects".to_owned(),
-                "/Users/engineer/scratch".to_owned(),
-                "az.wsl".to_owned(),
-            ]
+            vec!["This Mac".to_owned(), "az.wsl".to_owned()],
+            "two local folders are one location, not two groups"
+        );
+        assert_eq!(
+            group_names(&launcher),
+            vec!["cellworks".to_owned(), "tool".to_owned(), "api".to_owned()],
+            "~/Projects before ~/scratch, by parent folder then by name"
         );
     }
 
-    /// STORY-078, requirement 7: the home folder is shown as `~`, like the
-    /// universe's own empty-state message already does for the projects
-    /// folder.
+    /// STORY-078, requirement 7: the home folder is shown as `~` on a
+    /// project's row, like the universe's own empty-state message already
+    /// does for the projects folder — the folder a local project lives in is
+    /// named there, now that the group heading names its location instead.
     #[test]
     fn home_is_shown_as_a_tilde() {
         let mut launcher = Launcher::new(Some(PathBuf::from("/Users/engineer")));
-        launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![Project::at(
-            PathBuf::from("/Users/engineer/Projects/cellworks"),
-        )]));
+        let project = Project::at(PathBuf::from("/Users/engineer/Projects/cellworks"));
+        launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![project.clone()]));
 
-        assert_eq!(group_labels(&launcher), vec!["~/Projects".to_owned()]);
+        assert_eq!(
+            launcher.path_of(&project),
+            "~/Projects/cellworks".to_owned()
+        );
     }
 
     /// STORY-078, requirement 1 and the "This Mac" location: picking it
@@ -537,5 +759,369 @@ mod tests {
             vec!["shop".to_owned()],
             "matches the path, ignoring case"
         );
+    }
+
+    // STORY-082 below: the keyboard-first palette's view-model additions.
+    // The fixture mirrors the design's Proof section: cellworks and
+    // The-Factory on this Mac, factory-evals on the connected host "wsl",
+    // surface-kit on the offline host "devbox".
+
+    /// The STORY-082 Proof fixture, shared by the tests below: two local
+    /// projects, one project on a connected host, one on an offline host.
+    fn four_projects() -> Launcher {
+        let mut launcher = Launcher::new(None);
+        launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![
+            Project::at(PathBuf::from("/Users/engineer/Projects/cellworks")),
+            Project::at(PathBuf::from("/Users/engineer/Projects/The-Factory")),
+            Project::remote("wsl".to_owned(), PathBuf::from("~/src/factory-evals")),
+            Project::remote("devbox".to_owned(), PathBuf::from("/srv/surface-kit")),
+        ]));
+        launcher.apply(WorkspaceEvent::HostProbed {
+            host: "wsl".to_owned(),
+            connected: true,
+        });
+        launcher.apply(WorkspaceEvent::HostProbed {
+            host: "devbox".to_owned(),
+            connected: false,
+        });
+        launcher
+    }
+
+    /// STORY-082 requirement 6: the first case-insensitive match, as a byte
+    /// range the view can underline.
+    #[test]
+    fn match_range_finds_the_first_case_insensitive_match() {
+        assert_eq!(match_range("The-Factory", "fac"), Some(4..7));
+        assert_eq!(match_range("The-Factory", "FAC"), Some(4..7));
+    }
+
+    /// STORY-082 requirement 6: no match and an empty query both give
+    /// `None`; a name whose lowercase form changes byte length (a Unicode
+    /// case-folding mismatch) also gives `None`, rather than panicking on a
+    /// byte index that no longer lines up with `name`.
+    #[test]
+    fn match_range_gives_none_for_no_match_empty_query_or_a_length_changing_lowercase() {
+        assert_eq!(match_range("cellworks", "zzz"), None, "no match");
+        assert_eq!(
+            match_range("cellworks", ""),
+            None,
+            "an empty query matches nothing"
+        );
+        // 'İ' (U+0130) lowercases to "i" followed by a combining dot above,
+        // one byte longer than the original two-byte character.
+        assert_eq!(
+            match_range("İstanbul", "ist"),
+            None,
+            "a length-changing lowercase guards against a byte-index mismatch"
+        );
+    }
+
+    /// STORY-082 requirement 2: "<k> matches" counts distinct projects
+    /// currently visible, for the current pick and search together.
+    #[test]
+    fn match_count_counts_the_projects_currently_visible() {
+        let mut launcher = four_projects();
+
+        launcher.search("fac".to_owned());
+
+        assert_eq!(launcher.match_count(), 3);
+    }
+
+    /// STORY-082 requirement 3 and ASSUMED (Q-2): chips read "All", "This
+    /// Mac", then the hosts ordered by state (connected before offline)
+    /// rather than by name — "devbox" would sort before "wsl"
+    /// alphabetically, but the connected host must be reached first.
+    #[test]
+    fn location_chips_lists_all_this_mac_then_hosts_by_state_not_name() {
+        let launcher = four_projects();
+
+        let chips: Vec<(Pick, String, usize, Option<HostState>)> = launcher
+            .location_chips()
+            .iter()
+            .map(|chip| {
+                (
+                    chip.pick.clone(),
+                    chip.label.clone(),
+                    chip.count,
+                    chip.state,
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            chips,
+            vec![
+                (Pick::All, "All".to_owned(), 4, None),
+                (
+                    Pick::Location(Location::ThisMac),
+                    "This Mac".to_owned(),
+                    2,
+                    None
+                ),
+                (
+                    Pick::Location(Location::Host("wsl".to_owned())),
+                    "wsl".to_owned(),
+                    1,
+                    Some(HostState::Connected)
+                ),
+                (
+                    Pick::Location(Location::Host("devbox".to_owned())),
+                    "devbox".to_owned(),
+                    1,
+                    Some(HostState::Offline)
+                ),
+            ]
+        );
+    }
+
+    /// STORY-082 Decision 3: chip counts are unfiltered totals, unchanged by
+    /// a query.
+    #[test]
+    fn location_chips_counts_are_unchanged_by_a_search() {
+        let mut launcher = four_projects();
+
+        launcher.search("fac".to_owned());
+
+        let counts: Vec<usize> = launcher
+            .location_chips()
+            .iter()
+            .map(|chip| chip.count)
+            .collect();
+        assert_eq!(counts, vec![4, 2, 1, 1]);
+    }
+
+    /// STORY-082 requirement 4: Tab visits the chips in `location_chips`
+    /// order — "This Mac" first, the one remote host second — and wraps from
+    /// the last chip back to "All".
+    #[test]
+    fn cycle_pick_steps_through_this_mac_then_the_one_host_then_wraps() {
+        let mut launcher = Launcher::new(None);
+        launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![
+            Project::at(PathBuf::from("/Users/engineer/Projects/cellworks")),
+            Project::remote("wsl".to_owned(), PathBuf::from("~/src/factory-evals")),
+        ]));
+        launcher.apply(WorkspaceEvent::HostProbed {
+            host: "wsl".to_owned(),
+            connected: true,
+        });
+        assert_eq!(launcher.picked(), &Pick::All);
+
+        launcher.cycle_pick();
+        assert_eq!(launcher.picked(), &Pick::Location(Location::ThisMac));
+
+        launcher.cycle_pick();
+        assert_eq!(
+            launcher.picked(),
+            &Pick::Location(Location::Host("wsl".to_owned()))
+        );
+
+        launcher.cycle_pick();
+        assert_eq!(
+            launcher.picked(),
+            &Pick::All,
+            "the last chip wraps back to All"
+        );
+    }
+
+    /// STORY-082 requirement 4's last sentence: changing the pick drops a
+    /// selection that is no longer visible under it.
+    #[test]
+    fn cycle_pick_drops_a_selection_no_longer_visible() {
+        let mut launcher = four_projects();
+        launcher.pick(Pick::Location(Location::Host("wsl".to_owned())));
+        let factory_evals = Project::remote("wsl".to_owned(), PathBuf::from("~/src/factory-evals"));
+        launcher.select(Some(factory_evals.id.clone()));
+        assert_eq!(launcher.selected(), Some(&factory_evals.id));
+
+        // The next chip after "wsl" is "devbox" (STORY-082's Q-2 order),
+        // which does not show a wsl project.
+        launcher.cycle_pick();
+
+        assert_eq!(
+            launcher.selected(),
+            None,
+            "factory-evals is no longer visible once the pick moves off wsl"
+        );
+    }
+
+    /// STORY-082 requirement 8: Open is enabled, and reads "Open · Enter",
+    /// for a local project.
+    #[test]
+    fn can_open_and_open_label_for_a_local_project() {
+        let mut launcher = Launcher::new(None);
+        let local = Project::at(PathBuf::from("/Users/engineer/Projects/cellworks"));
+        launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![local.clone()]));
+
+        assert!(launcher.can_open(&local.id));
+        assert_eq!(launcher.open_label(&local.id), "Open · Enter");
+    }
+
+    /// STORY-082 requirement 8: a remote project on a host that is not
+    /// connected — offline, or never probed at all ("checking" or unknown) —
+    /// cannot be opened, and the label asks to connect the host first.
+    #[test]
+    fn can_open_and_open_label_for_a_remote_project_on_an_unconnected_host() {
+        let mut launcher = Launcher::new(None);
+        let offline = Project::remote("devbox".to_owned(), PathBuf::from("/srv/surface-kit"));
+        let unknown = Project::remote("ghost".to_owned(), PathBuf::from("/srv/unknown"));
+        launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![
+            offline.clone(),
+            unknown.clone(),
+        ]));
+        launcher.apply(WorkspaceEvent::HostProbed {
+            host: "devbox".to_owned(),
+            connected: false,
+        });
+        // "ghost" is never probed at all, so its state defaults to checking.
+
+        for id in [&offline.id, &unknown.id] {
+            assert!(!launcher.can_open(id), "{id:?}");
+            assert_eq!(
+                launcher.open_label(id),
+                "Open · connect the host first",
+                "{id:?}"
+            );
+        }
+    }
+
+    /// STORY-082 Decision 1: remote opening is not built this story, so Open
+    /// stays disabled even on a connected host, though its label reads the
+    /// same as a local project's — `ui.rs` adds its own hover text to
+    /// explain why, which is not this function's job.
+    #[test]
+    fn can_open_is_false_for_a_remote_project_even_on_a_connected_host() {
+        let mut launcher = Launcher::new(None);
+        let connected = Project::remote("wsl".to_owned(), PathBuf::from("~/src/factory-evals"));
+        launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![connected.clone()]));
+        launcher.apply(WorkspaceEvent::HostProbed {
+            host: "wsl".to_owned(),
+            connected: true,
+        });
+
+        assert!(!launcher.can_open(&connected.id));
+        assert_eq!(launcher.open_label(&connected.id), "Open · Enter");
+    }
+
+    /// STORY-082 requirement 5: "folder" means the project has no branch, so
+    /// there is no label at all until its details have been read — a row
+    /// whose branch is merely unknown says nothing rather than calling a
+    /// repository a folder.
+    #[test]
+    fn branch_label_is_silent_until_details_arrive_then_names_the_branch() {
+        let mut launcher = Launcher::new(None);
+        let local = Project::at(PathBuf::from("/Users/engineer/Projects/cellworks"));
+        launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![local.clone()]));
+
+        assert_eq!(
+            launcher.branch_label(&local.id),
+            None,
+            "nothing is known about the branch yet"
+        );
+
+        launcher.detailed(
+            local.id.local_path().unwrap().to_path_buf(),
+            Some("main".to_owned()),
+            Some(2),
+        );
+        assert_eq!(launcher.branch_label(&local.id), Some("main".to_owned()));
+    }
+
+    /// STORY-082 requirement 5: a local project whose details came back
+    /// without a branch is the one thing that reads "folder".
+    #[test]
+    fn branch_label_is_folder_for_a_project_read_without_a_branch() {
+        let mut launcher = Launcher::new(None);
+        let local = Project::at(PathBuf::from("/Users/engineer/scratch/tool"));
+        launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![local.clone()]));
+
+        launcher.detailed(local.id.local_path().unwrap().to_path_buf(), None, None);
+
+        assert_eq!(launcher.branch_label(&local.id), Some("folder".to_owned()));
+    }
+
+    /// STORY-082 requirement 5: a remote project never has details read for
+    /// it, so its row shows no branch — it is not claimed to be a folder
+    /// either.
+    #[test]
+    fn branch_label_is_silent_for_a_remote_project() {
+        let mut launcher = Launcher::new(None);
+        let remote = Project::remote("wsl".to_owned(), PathBuf::from("~/src/factory-evals"));
+        launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![remote.clone()]));
+
+        assert_eq!(launcher.branch_label(&remote.id), None);
+    }
+
+    /// STORY-082 requirement 7: the preview pane's location is where the
+    /// project lives — this Mac, or the host's name — never the host's
+    /// connection state, which the host's chip carries.
+    #[test]
+    fn location_of_is_this_mac_or_the_host_name() {
+        let launcher = four_projects();
+        let local = Project::at(PathBuf::from("/Users/engineer/Projects/cellworks"));
+        let remote = Project::remote("wsl".to_owned(), PathBuf::from("~/src/factory-evals"));
+
+        assert_eq!(launcher.location_of(&local.id), "This Mac");
+        assert_eq!(
+            launcher.location_of(&remote.id),
+            "wsl",
+            "the connected host is named, not its state"
+        );
+    }
+
+    /// STORY-082 ASSUMED (Q-1): a state's text is the word alone; the glyph
+    /// is a shape the view paints beside it, never part of a label.
+    #[test]
+    fn a_host_state_reads_as_its_word_without_a_glyph() {
+        for (state, word) in [
+            (HostState::Connected, "connected"),
+            (HostState::Checking, "checking"),
+            (HostState::Offline, "offline"),
+        ] {
+            assert_eq!(state.word(), word);
+        }
+    }
+
+    /// STORY-082 requirement 9's "Esc clear": clearing the search empties
+    /// the query and lists every project again.
+    #[test]
+    fn clear_search_empties_the_query_and_lists_every_project() {
+        let mut launcher = four_projects();
+        launcher.search("fac".to_owned());
+        assert_eq!(
+            group_names(&launcher).len(),
+            3,
+            "the search narrowed the list"
+        );
+
+        launcher.clear_search();
+
+        assert_eq!(launcher.search_text(), "");
+        let mut names = group_names(&launcher);
+        names.sort();
+        let mut expected: Vec<String> =
+            ["The-Factory", "cellworks", "factory-evals", "surface-kit"]
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect();
+        expected.sort();
+        assert_eq!(names, expected, "every project is listed again");
+    }
+
+    /// STORY-082 requirement 2: the search field asks for focus on the very
+    /// first frame, and the request is read exactly once, until something
+    /// (⌘K) asks again.
+    #[test]
+    fn take_focus_request_is_true_once_then_false_until_asked_again() {
+        let mut launcher = Launcher::new(None);
+
+        assert!(
+            launcher.take_focus_request(),
+            "the first frame autofocuses the search field"
+        );
+        assert!(!launcher.take_focus_request(), "reading the flag clears it");
+
+        launcher.request_focus();
+        assert!(launcher.take_focus_request(), "⌘K asks again");
+        assert!(!launcher.take_focus_request());
     }
 }
