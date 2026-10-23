@@ -78,6 +78,9 @@ pub struct OpenedProject {
     /// The lanes and building features of the map as it is now, worked out
     /// off the frame loop, and the turns they were worked out for.
     preparing: Option<(Receiver<Network>, u8)>,
+    /// Whether a drain since this was last asked brought something a tower
+    /// is explained from: a map, or the domain knowledge (STORY-019).
+    learned: bool,
 }
 
 impl OpenedProject {
@@ -102,7 +105,15 @@ impl OpenedProject {
             network: None,
             relensing: None,
             preparing: None,
+            learned: false,
         }
+    }
+
+    /// Whether something a tower is explained from — a map, or the domain
+    /// knowledge — has arrived since this was last asked; asking clears it,
+    /// so the caller works the explanation out once (STORY-019).
+    pub fn take_learned(&mut self) -> bool {
+        std::mem::take(&mut self.learned)
     }
 
     /// The project that is open.
@@ -159,6 +170,7 @@ impl OpenedProject {
                     self.relensing = None;
                     self.preparing = None;
                     self.folders = Some(map);
+                    self.learned = true;
                 }
             }
             CodeAnalysisEvent::ProjectFolderSkipped { path, reason, .. } => {
@@ -437,6 +449,12 @@ impl OpenedProject {
             if let Some(folders) = &mut self.folders {
                 folders.contexts = self.contexts.clone();
             }
+            // The map on screen explains its towers from the same knowledge,
+            // whichever of the two reads finished first (STORY-019).
+            if let ProjectState::Mapped(map) = &mut self.state {
+                map.contexts = self.contexts.clone();
+            }
+            self.learned = true;
         }
         loop {
             match self.events.try_recv() {

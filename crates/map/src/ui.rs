@@ -15,10 +15,12 @@ use egui::{Color32, Pos2, Rect, RichText, Sense, Shape, Stroke, StrokeKind, Vec2
 mod buildings;
 mod explain;
 mod lanes;
+mod why;
 
 pub use buildings::{DrawnBridge, DrawnBuilding, bridge_card};
 pub use explain::{banner, caption, caption_text, lane_toggles, legend, legend_text, lens_bar};
 pub use lanes::{DrawnLane, colour_of};
+pub use why::{NO_CONTEXT, NO_STORY, why_panel};
 
 use crate::Framing;
 use crate::city::{self, iso, iso_bounds};
@@ -171,6 +173,23 @@ const CROWN_HUES: [Color32; 5] = [
     Color32::from_rgb(0xff, 0x5c, 0xa8),
 ];
 const CROWN_FILL: Color32 = Color32::from_rgb(0x0b, 0x2a, 0x2e);
+
+/// The colours the floors of the selected tower are tinted by, one per pull
+/// request in the order the why panel lists them; a group beyond the palette
+/// starts again at its first colour (STORY-019).
+const PR_HUES: [Color32; 6] = [
+    Color32::from_rgb(0x5e, 0xf6, 0xff),
+    Color32::from_rgb(0xff, 0xb3, 0x5c),
+    Color32::from_rgb(0xb2, 0x6b, 0xff),
+    Color32::from_rgb(0x7a, 0xe5, 0x82),
+    Color32::from_rgb(0xff, 0x5c, 0xa8),
+    Color32::from_rgb(0x4a, 0xa8, 0xff),
+];
+
+/// How much of its light a tower keeps while another one is explained: the
+/// city steps back so the colours of the explained tower's floors read
+/// (STORY-019).
+const UNEXPLAINED: f32 = 0.4;
 
 /// The paving of a forecourt, and the colour of a mast's head.
 const PAVING: Color32 = Color32::from_rgb(0x14, 0x1a, 0x22);
@@ -439,6 +458,9 @@ struct Painter<'a> {
     /// The billboard of each image on a block of its own: the node, its
     /// ground and how high it is raised.
     billboards: Vec<(&'a Path, Rect, f32)>,
+    /// The palette index of each floor of the selected tower, while one is
+    /// explained; every other tower is dimmed then (STORY-019).
+    tint: Option<&'a [usize]>,
 }
 
 /// A name to put on the map: the ground it names, how it is written, the
@@ -484,6 +506,11 @@ pub struct ViewOptions<'a> {
     pub network: Option<&'a crate::Network>,
     /// Whether a cable runs from each mast to the building it calls.
     pub cables: bool,
+    /// The selected tower's floors tinted by the pull request that last
+    /// wrote each: one index into the palette per floor, in source order, as
+    /// [`crate::Why::floors`] gives them. Every other tower is dimmed while
+    /// it is set; `None` leaves the city as it was (STORY-019).
+    pub tint: Option<&'a [usize]>,
 }
 
 /// A click on a lane: the lane, and with Cmd held the tower at its far end
@@ -508,6 +535,7 @@ pub fn project(ui: &mut egui::Ui, map: &ProjectMap, options: ViewOptions<'_>) ->
         picked,
         network,
         cables,
+        tint,
     } = options;
     let panel = ui.available_rect_before_wrap();
     let view = fit(framing, panel);
@@ -545,6 +573,7 @@ pub fn project(ui: &mut egui::Ui, map: &ProjectMap, options: ViewOptions<'_>) ->
         cables_drawn: Vec::new(),
         bridge_hovered: None,
         billboards: Vec::new(),
+        tint,
     };
     orbits(ui, map, &view);
     let mut outlines = Vec::new();
@@ -1295,6 +1324,11 @@ impl<'a> Painter<'a> {
             if tower.glass {
                 lit *= GLASS;
             }
+            // While one tower is explained, the rest of the city steps back
+            // so the colours of its floors read.
+            if self.tint.is_some() && Some(item.path.as_path()) != self.selected {
+                lit *= UNEXPLAINED;
+            }
             if let Some((pivot, turn)) = self.facing {
                 lit *= 1.0 + (fog(item, pivot) - 1.0) * turn;
             }
@@ -1423,6 +1457,11 @@ impl<'a> Painter<'a> {
                 shapes.push(Shape::convex_polygon(front, face, Stroke::NONE));
                 continue;
             }
+            // Explained, a tower wears the colour of the pull request that
+            // last wrote each floor instead of its district's.
+            let tinted = self
+                .tint
+                .filter(|_| Some(item.path.as_path()) == self.selected);
             for (index, floor) in item.floors.iter().enumerate() {
                 let z = city::floor_z(item, index);
                 let bright = if floor.calls.is_empty() {
@@ -1430,9 +1469,13 @@ impl<'a> Painter<'a> {
                 } else {
                     CALLING_LINE
                 };
-                let fill = glow(tower.colour, bright * lit);
+                let colour = match tinted.and_then(|tint| tint.get(index)) {
+                    Some(group) => PR_HUES[group % PR_HUES.len()],
+                    None => tower.colour,
+                };
+                let fill = glow(colour, bright * lit);
                 if let Some(font) = letters {
-                    shapes.push(self.written(ui, item, index, font, tower.colour, lit));
+                    shapes.push(self.written(ui, item, index, font, colour, lit));
                     continue;
                 }
                 if scale >= DASHES_FROM {
@@ -1985,10 +2028,12 @@ pub fn minimap(ui: &mut egui::Ui, map: &ProjectMap, view: &View, panel: Rect) ->
 }
 
 /// Rows inside a tower: their height, and where the line number ends, the
-/// line starts and the calls start, from the panel's left edge.
+/// line starts, the pull request that last wrote it is marked and the calls
+/// start, from the panel's left edge.
 const ROW: f32 = 17.0;
 const NUMBER_END: f32 = 70.0;
 const TEXT_START: f32 = 86.0;
+const MARK_START: f32 = 620.0;
 const CALLS_START: f32 = 760.0;
 
 /// Draws the tower at `item` from inside, face on, over the city dimmed
@@ -2073,6 +2118,19 @@ pub fn inside(
             painter.rect_filled(tick, 0.0, colour.gamma_multiply(0.35));
         }
         painter.galley(text_at, text, INK);
+        // What built this floor: the pull request that last wrote it and the
+        // stories its commit names. Nothing for an uncommitted floor or a
+        // commit without a pull request.
+        let mark = crate::why::floor_commit(map, item, index).and_then(why::floor_mark);
+        if let Some(mark) = &mark {
+            painter.text(
+                pos2(left + MARK_START, middle),
+                egui::Align2::LEFT_CENTER,
+                mark,
+                egui::FontId::monospace(11.0),
+                DIM,
+            );
+        }
         let calls: Vec<&str> = line
             .calls
             .iter()
@@ -2090,6 +2148,9 @@ pub fn inside(
 
         let response = ui.interact(row, ui.id().with(("floor", index)), Sense::click());
         let mut name = format!("{:>5}  {}", line.number, line.text);
+        if let Some(mark) = &mark {
+            name.push_str(&format!("    {mark}"));
+        }
         if !calls.is_empty() {
             name.push_str(&format!("    calls {}", calls.join(", ")));
         }
@@ -2220,6 +2281,7 @@ mod tests {
                     picked: None,
                     network: None,
                     cables: false,
+                    tint: None,
                 },
             )
             .towers;
@@ -2308,6 +2370,7 @@ mod tests {
                     picked: None,
                     network: None,
                     cables: false,
+                    tint: None,
                 },
             )
             .towers;
@@ -2394,6 +2457,7 @@ mod tests {
                         picked: None,
                         network: Some(&network),
                         cables: true,
+                        tint: None,
                     },
                 )
                 .buildings;

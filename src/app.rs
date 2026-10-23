@@ -21,7 +21,7 @@ use cellworks_agent_sessions::{Session, SessionSources};
 use cellworks_code_analysis::{CodeAnalysisEvent, GitCli, GitListing, start_details, start_load};
 use cellworks_map::View;
 use cellworks_map::ui::{Drawn, DrawnBridge, DrawnBuilding, DrawnLane, DrawnTower, Outline};
-use cellworks_map::{Lens, ProjectMap, default_prefix_rule, prefix_rule};
+use cellworks_map::{Lens, ProjectMap, Why, default_prefix_rule, prefix_rule};
 use cellworks_navigation::{Moved, Navigation};
 use cellworks_workspace::ui::LauncherAction;
 use cellworks_workspace::{
@@ -50,6 +50,10 @@ const PAN: f32 = 120.0;
 /// Points of scrolling that zoom in by a factor of e.
 const SCROLL_PER_E: f32 = 200.0;
 
+/// The fixed width of the why panel, the right column beside the city
+/// (STORY-019).
+const WHY_WIDTH: f32 = 420.0;
+
 /// The Cellworks application: the universe it shows, the scan that fills it
 /// in, the project opened from it, if any, and where the view is.
 pub struct CellworksApp {
@@ -73,8 +77,10 @@ pub struct CellworksApp {
     cables: Vec<(std::path::PathBuf, std::path::PathBuf)>,
     /// The skybridge the pointer was over in the last frame.
     bridge_hovered: Option<cellworks_map::Bridge>,
-    /// Where the last frame saw the map from.
+    /// Where the last frame saw the map from, and the space it drew it in;
+    /// the why panel takes its own column out of the window (STORY-019).
     view: Option<View>,
+    panel: Option<egui::Rect>,
     /// Whether this frame's view is underground: turned so, or Shift held.
     underground: bool,
     /// The districts the last frame drew, with their outlines.
@@ -90,6 +96,10 @@ pub struct CellworksApp {
     /// Where custom arrangements are kept, and the thread keeping them;
     /// none, none are kept.
     arrangements: Option<(ArrangementStore, ArrangementKeeper)>,
+    /// Why the selected tower was built: the path it was worked out for and
+    /// the explanation, `None` where the selection is no tower. Worked out
+    /// on the UI thread only when the selected path changes (STORY-019).
+    why: Option<(std::path::PathBuf, Option<Why>)>,
     /// The launcher's own view model: search, pick, selection, host states and
     /// project details, read off the frame loop.
     launcher: Launcher,
@@ -198,12 +208,14 @@ impl CellworksApp {
                 cables: Vec::new(),
                 bridge_hovered: None,
                 view: None,
+                panel: None,
                 underground: false,
                 districts: Vec::new(),
                 folders: Vec::new(),
                 outlines: Vec::new(),
                 lanes: Vec::new(),
                 lane_hovered: None,
+                why: None,
             },
             None => CellworksApp {
                 arrangements: None,
@@ -233,12 +245,14 @@ impl CellworksApp {
                 cables: Vec::new(),
                 bridge_hovered: None,
                 view: None,
+                panel: None,
                 underground: false,
                 districts: Vec::new(),
                 folders: Vec::new(),
                 outlines: Vec::new(),
                 lanes: Vec::new(),
                 lane_hovered: None,
+                why: None,
             },
         }
     }
@@ -271,12 +285,14 @@ impl CellworksApp {
             cables: Vec::new(),
             bridge_hovered: None,
             view: None,
+            panel: None,
             underground: false,
             districts: Vec::new(),
             folders: Vec::new(),
             outlines: Vec::new(),
             lanes: Vec::new(),
             lane_hovered: None,
+            why: None,
         }
     }
 
@@ -438,6 +454,11 @@ impl CellworksApp {
         });
         if let Some(opened) = &mut self.opened {
             opened.drain();
+            // A new map, or the domain knowledge: what a tower is explained
+            // from has moved, so the explanation is worked out again.
+            if opened.take_learned() {
+                self.why = None;
+            }
             match opened.state() {
                 ProjectState::Mapped(map) => self.navigation.remapped(map),
                 // Nothing left to frame or select: the project, whole.
@@ -546,9 +567,39 @@ impl CellworksApp {
         self.view
     }
 
+    /// The space the last frame drew the map in: the window less the
+    /// breadcrumb, the tree and the why panel (STORY-019).
+    pub fn panel(&self) -> Option<egui::Rect> {
+        self.panel
+    }
+
     /// The layer the view is on, what is framed and what is selected.
     pub fn navigation(&self) -> &Navigation {
         &self.navigation
+    }
+
+    /// Why the selected tower was built, once the selection is one.
+    pub fn why(&self) -> Option<&Why> {
+        self.why.as_ref().and_then(|(_, why)| why.as_ref())
+    }
+
+    /// Works out why the selected tower was built, unless it was already
+    /// worked out for this path: the join walks every floor of the tower, so
+    /// it runs when the selection moves and not every frame.
+    fn explain_selection(&mut self) {
+        let Some(selected) = self
+            .navigation
+            .selection()
+            .map(std::path::Path::to_path_buf)
+        else {
+            self.why = None;
+            return;
+        };
+        if self.why.as_ref().is_some_and(|(at, _)| *at == selected) {
+            return;
+        }
+        let why = mapped(&self.opened).and_then(|map| cellworks_map::why_of(map, &selected));
+        self.why = Some((selected, why));
     }
 
     /// Moves straight to the element of the open project at `path`, showing
@@ -626,6 +677,8 @@ impl CellworksApp {
         note_unknown_prefix(&mut opened);
         self.opened = Some(opened);
         self.navigation.opened(path);
+        // Another project's towers: nothing explained carries over.
+        self.why = None;
     }
 
     /// Switches ignored files on or off and reads the open project again,
@@ -881,6 +934,10 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         app.open(project);
     }
 
+    // Why the selected tower was built: worked out before the frame borrows
+    // the opened project, and only when the selection has moved.
+    app.explain_selection();
+
     // What the lens bar and the lane toggles asked for: applied once the
     // frame no longer borrows the opened project.
     let mut bar: (Option<Lens>, (bool, bool)) = (None, (false, false));
@@ -938,6 +995,24 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                     app.navigation.select(path);
                 }
             }
+            // The why panel, in its own right column between the tree and
+            // the city; nothing or a district selected shows no panel.
+            let why = app.why().cloned();
+            if let Some(why) = &why {
+                // Inside the tower, the floor the engineer stands on is
+                // explained too.
+                let floor = app.navigation.inside().and_then(|(item, floor)| {
+                    let map = mapped(&app.opened)?;
+                    cellworks_map::floor_commit(map, map.item(item)?, floor)
+                });
+                egui::Panel::right("why")
+                    .exact_size(WHY_WIDTH)
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .show(ui, |ui| cellworks_map::ui::why_panel(ui, why, floor));
+                    });
+            }
+            let tint = why.as_ref().map(|why| why.floors.as_slice());
             let mut sidebar_centre: Option<egui::Pos2> = None;
             if app.sessions.has_sources()
                 && let Some(map) = mapped(&app.opened)
@@ -958,7 +1033,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::central_panel(ui.style()).inner_margin(0.0))
                     .show(ui, |ui| {
-                        let drawn = project(ui, opened, &app.navigation, app.underground);
+                        let drawn = project(ui, opened, &app.navigation, app.underground, tint);
                         let (Some(shown), ProjectState::Mapped(map)) = (&drawn, opened.state())
                         else {
                             return (drawn, None, None, (Vec::new(), None, false));
@@ -988,6 +1063,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 app.cables.clear();
                 app.drawn_sessions = Vec::new();
                 app.view = None;
+                app.panel = None;
                 return;
             };
             app.towers = drawn.towers;
@@ -1006,6 +1082,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             }
             let visible = drawn.view.visible;
             app.view = Some(drawn.view);
+            app.panel = Some(drawn.panel);
             // Close enough, the camera turns to face a facade; the pivot
             // glides to it over the next frames.
             if let Some(map) = mapped(&app.opened) {
@@ -1122,6 +1199,7 @@ fn project(
     opened: &OpenedProject,
     navigation: &Navigation,
     underground: bool,
+    tint: Option<&[usize]>,
 ) -> Option<Drawn> {
     for notice in opened.notices() {
         ui.label(notice_text(notice));
@@ -1154,6 +1232,7 @@ fn project(
                 picked: navigation.picked_lane(),
                 network: opened.network(),
                 cables: navigation.shows_cables(),
+                tint,
             },
         )),
     }

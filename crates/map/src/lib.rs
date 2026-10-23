@@ -21,6 +21,7 @@ mod lens;
 mod rules;
 pub mod ui;
 mod view;
+mod why;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -28,7 +29,7 @@ use std::path::{Path, PathBuf};
 use egui::{Pos2, Rect, vec2};
 
 pub use buildings::{Bridge, Buildings, Form, Mast, Stand, Trim};
-pub use contexts::{BoundedContext, BoundedContexts, Road};
+pub use contexts::{BoundedContext, BoundedContexts, Decision, Road, Scope, StoryText};
 pub use districts::{Directories, DistrictStrategy};
 pub use graph::{
     CoChange, Declaration, Declares, District, DistrictKind, Element, Floor, Found, Group, Item,
@@ -39,6 +40,7 @@ pub use lanes::{LaneId, LaneKind, Lanes, Network};
 pub use lens::{Flight, Lens, relens};
 pub use rules::{PREFIX_RULES, PrefixRule, default_prefix_rule, prefix_rule};
 pub use view::{Pivot, View, turn_at};
+pub use why::{PrKey, PrShare, Story, Why, floor_commit, why_of};
 
 impl ProjectMap {
     /// The map of a project: `strategy` cuts `files`, relative to `root`, into

@@ -26,9 +26,6 @@ const TURN_TO: f32 = 16.0;
 /// How steeply a line runs seen from the corner: 0.5 down for 0.866 across.
 const FROM_THE_CORNER: f32 = 0.577;
 
-/// The middle of the map's panel: the window, under the breadcrumb.
-const MIDDLE_X: f32 = 600.0;
-
 struct Shop {
     tree: Tree,
     harness: Harness<'static, CellworksApp>,
@@ -53,6 +50,17 @@ impl Shop {
 
     fn drawn(&self, name: &str) -> DrawnTower {
         tower(&self.harness, &self.at(name)).clone()
+    }
+
+    /// The middle of the map's panel across: the window less the columns
+    /// beside the map, the why panel of a selected tower among them.
+    fn middle_x(&self) -> f32 {
+        self.harness
+            .state()
+            .panel()
+            .expect("the city is drawn")
+            .center()
+            .x
     }
 
     fn scale(&self) -> f32 {
@@ -98,7 +106,8 @@ impl Shop {
     /// Zooms in over the middle of the view until the scale passes `until`.
     fn zoom_in_until(&mut self, until: f32) {
         while self.scale() < until {
-            self.zoom(pos2(MIDDLE_X, 450.0), 1.15);
+            let middle = self.middle_x();
+            self.zoom(pos2(middle, 450.0), 1.15);
         }
     }
 }
@@ -142,7 +151,8 @@ fn zooming_out_turns_the_camera_back() {
     shop.zoom_in_until(TURN_TO);
 
     while shop.scale() > TURN_FROM * 0.9 {
-        shop.zoom(pos2(MIDDLE_X, 450.0), 1.0 / 1.15);
+        let middle = shop.middle_x();
+        shop.zoom(pos2(middle, 450.0), 1.0 / 1.15);
     }
 
     assert!((shop.slope("total") - FROM_THE_CORNER).abs() < 0.01);
@@ -157,7 +167,10 @@ fn the_facade_turned_to_stays_in_the_middle_of_the_view() {
     shop.zoom_in_until(TURN_TO);
 
     let middle = shop.middle_of("total");
-    assert!((middle.x - MIDDLE_X).abs() < 40.0, "total at {middle:?}");
+    assert!(
+        (middle.x - shop.middle_x()).abs() < 40.0,
+        "total at {middle:?}"
+    );
 }
 
 /// Without a selection the camera turns to the tower pointed at
@@ -191,7 +204,8 @@ fn from_afar_the_camera_does_not_turn() {
     shop.select_total();
     assert!(shop.scale() * 1.15 < TURN_FROM);
 
-    shop.zoom(pos2(MIDDLE_X, 450.0), 1.15);
+    let middle = shop.middle_x();
+    shop.zoom(pos2(middle, 450.0), 1.15);
 
     assert!((shop.slope("total") - FROM_THE_CORNER).abs() < 0.01);
     assert!(shop.harness.state().navigation().facing().is_none());
