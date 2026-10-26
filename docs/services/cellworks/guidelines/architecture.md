@@ -39,4 +39,5 @@
 - Secrets reach curl through stdin config or private temp files, never through arguments.
 - Cluster calls are `kubectl get` only.
 - `gh` runs read-only commands only (`gh pr list`), never a write command.
+- `defaults` (macOS) and `gsettings` (Linux) are read once at start-up, read-only, for the reduced-motion preference.
 - Tool output is parsed tolerantly: unknown fields and events are ignored.
