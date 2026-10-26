@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use crate::event::WorkspaceEvent;
 use crate::project::{Project, ProjectId};
+use crate::words::{PLAIN, THEMED, Words};
 
 /// A left-column entry the launcher can be narrowed to: this Mac, or one
 /// remote host. "Location" because "source" already names the Sources
@@ -41,23 +42,6 @@ pub enum HostState {
     Connected,
     Offline,
 }
-
-impl HostState {
-    /// The state's word, as a chip reads it: "connected", "checking" or
-    /// "offline", never a glyph (STORY-082 ASSUMED (Q-1)).
-    pub fn word(self) -> &'static str {
-        match self {
-            HostState::Checking => "checking",
-            HostState::Connected => "connected",
-            HostState::Offline => "offline",
-        }
-    }
-}
-
-/// What every local project's location is called — the chip, the list
-/// heading and the preview pane all name it the same way (STORY-082
-/// requirements 3, 5 and 7).
-const THIS_MAC: &str = "This Mac";
 
 /// Sort key for ASSUMED (Q-2)'s chip and `cycle_pick` order: connected hosts
 /// before checking ones before offline ones, name breaking a tie.
@@ -137,6 +121,10 @@ pub struct Launcher {
     /// and on ⌘K, read (and cleared) once by the view (STORY-082 requirement
     /// 2).
     focus_requested: bool,
+    /// The vocabulary the launcher currently speaks (STORY-083 requirement
+    /// 6): themed by default, switched to [`PLAIN`] once the settings file's
+    /// `ThemeWordsTurnedOff` is applied.
+    words: &'static Words,
 }
 
 impl Launcher {
@@ -154,7 +142,20 @@ impl Launcher {
             hosts: HashMap::new(),
             details: HashMap::new(),
             focus_requested: true,
+            words: &THEMED,
         }
+    }
+
+    /// The vocabulary currently in effect, for the view to read its words
+    /// from (STORY-083 requirement 6). `pub(crate)`, not `pub`, because
+    /// [`Words`] itself is `pub(crate)` — only `ui.rs`, inside this crate,
+    /// reaches it this way.
+    ///
+    /// Not yet called outside this file's own tests — step 2 wires `ui.rs`
+    /// to it — hence `#[allow(dead_code)]`.
+    #[allow(dead_code)]
+    pub(crate) fn words(&self) -> &'static Words {
+        self.words
     }
 
     /// Folds one scan event into the state. Every variant of `WorkspaceEvent`
@@ -171,6 +172,7 @@ impl Launcher {
                 self.hosts.insert(host, state);
             }
             WorkspaceEvent::RecentRead(ids) => self.recent = ids,
+            WorkspaceEvent::ThemeWordsTurnedOff => self.words = &PLAIN,
             WorkspaceEvent::HostSkipped { .. }
             | WorkspaceEvent::ProjectsFolderUnreadable { .. }
             | WorkspaceEvent::AddedFolderSkipped { .. }
@@ -308,7 +310,7 @@ impl Launcher {
     /// state — that is what the host's chip says, and it is not a location.
     pub fn location_of(&self, id: &ProjectId) -> String {
         match id {
-            ProjectId::Local(_) => THIS_MAC.to_owned(),
+            ProjectId::Local(_) => self.words.this_mac_location.to_owned(),
             ProjectId::Remote { host, .. } => host.clone(),
         }
     }
@@ -357,13 +359,13 @@ impl Launcher {
         let mut chips = vec![
             Chip {
                 pick: Pick::All,
-                label: "All".to_owned(),
+                label: self.words.all_chip.to_owned(),
                 count: self.projects.len(),
                 state: None,
             },
             Chip {
                 pick: Pick::Location(Location::ThisMac),
-                label: THIS_MAC.to_owned(),
+                label: self.words.this_mac_label.to_owned(),
                 count: self
                     .projects
                     .iter()
@@ -433,11 +435,11 @@ impl Launcher {
     /// the explaining hover text); any other remote host reads "connect the
     /// host first".
     pub fn open_label(&self, id: &ProjectId) -> &'static str {
-        match id.host() {
-            None => "Open · Enter",
-            Some(host) if self.host_state(host) == HostState::Connected => "Open · Enter",
-            Some(_) => "Open · connect the host first",
-        }
+        let connected = match id.host() {
+            None => true,
+            Some(host) => self.host_state(host) == HostState::Connected,
+        };
+        self.words.open_label(connected)
     }
 
     /// `id`'s branch label for a row or the inspector: the known branch, or
@@ -455,7 +457,7 @@ impl Launcher {
             details
                 .branch
                 .clone()
-                .unwrap_or_else(|| "folder".to_owned()),
+                .unwrap_or_else(|| self.words.branchless.to_owned()),
         )
     }
 
@@ -530,7 +532,7 @@ impl Launcher {
                     project.name.clone(),
                 )
             });
-            groups.push((THIS_MAC.to_owned(), local));
+            groups.push((self.words.this_mac_label.to_owned(), local));
         }
         for (host, mut projects) in remote {
             projects.sort_by(|one, other| one.name.cmp(&other.name));
@@ -687,6 +689,10 @@ mod tests {
     #[test]
     fn groups_are_this_mac_then_hosts() {
         let mut launcher = Launcher::new(None);
+        // STORY-083: this STORY-082 test pins STORY-082's own plain text
+        // ("This Mac"); theme words now default on, so it opts into plain
+        // words explicitly, the same way the STORY-082 acceptance tests do.
+        launcher.apply(WorkspaceEvent::ThemeWordsTurnedOff);
         launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![
             Project::at(PathBuf::from("/Users/engineer/scratch/tool")),
             Project::at(PathBuf::from("/Users/engineer/Projects/cellworks")),
@@ -768,8 +774,13 @@ mod tests {
 
     /// The STORY-082 Proof fixture, shared by the tests below: two local
     /// projects, one project on a connected host, one on an offline host.
+    ///
+    /// STORY-083: theme words default on now, but these tests pin STORY-082's
+    /// own plain text ("This Mac"), so this fixture opts into plain words
+    /// explicitly — the same way the STORY-082 acceptance tests do.
     fn four_projects() -> Launcher {
         let mut launcher = Launcher::new(None);
+        launcher.apply(WorkspaceEvent::ThemeWordsTurnedOff);
         launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![
             Project::at(PathBuf::from("/Users/engineer/Projects/cellworks")),
             Project::at(PathBuf::from("/Users/engineer/Projects/The-Factory")),
@@ -874,6 +885,51 @@ mod tests {
         );
     }
 
+    /// `location_chips`'s chip for the local location ("This Mac" or its
+    /// themed name), wherever it sits in the row.
+    fn this_mac_chip_label(launcher: &Launcher) -> String {
+        launcher
+            .location_chips()
+            .into_iter()
+            .find(|chip| chip.pick == Pick::Location(Location::ThisMac))
+            .expect("a launcher with a local project has a This Mac chip")
+            .label
+    }
+
+    /// STORY-083 requirements 6 to 8: a new launcher speaks theme words by
+    /// default — the local location's chip reads "Local net" (themed; the
+    /// view draws it upper case per requirement 10) — and switches to
+    /// STORY-082's unchanged "This Mac" once `ThemeWordsTurnedOff` is
+    /// applied. `can_open` is a behaviour, not a word, and does not move with
+    /// the switch.
+    #[test]
+    fn theme_words_switch_the_local_location_s_name_without_touching_can_open() {
+        let mut launcher = Launcher::new(None);
+        let local = Project::at(PathBuf::from("/Users/engineer/Projects/cellworks"));
+        launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![local.clone()]));
+
+        assert!(
+            this_mac_chip_label(&launcher)
+                .to_lowercase()
+                .contains("local net"),
+            "theme words are on by default: {:?}",
+            this_mac_chip_label(&launcher)
+        );
+        assert!(launcher.can_open(&local.id));
+
+        launcher.apply(WorkspaceEvent::ThemeWordsTurnedOff);
+
+        assert_eq!(
+            this_mac_chip_label(&launcher),
+            "This Mac",
+            "STORY-082's plain text, exactly, once theme words are off"
+        );
+        assert!(
+            launcher.can_open(&local.id),
+            "switching the words never touches what can be opened"
+        );
+    }
+
     /// STORY-082 Decision 3: chip counts are unfiltered totals, unchanged by
     /// a query.
     #[test]
@@ -944,24 +1000,29 @@ mod tests {
         );
     }
 
-    /// STORY-082 requirement 8: Open is enabled, and reads "Open · Enter",
-    /// for a local project.
+    /// STORY-082 requirement 8, STORY-083 requirement 8: Open is enabled, and
+    /// reads "Open project" (STORY-083's plain wording, opted into the same
+    /// way the STORY-082 acceptance tests do, since theme words now default
+    /// on), for a local project.
     #[test]
     fn can_open_and_open_label_for_a_local_project() {
         let mut launcher = Launcher::new(None);
+        launcher.apply(WorkspaceEvent::ThemeWordsTurnedOff);
         let local = Project::at(PathBuf::from("/Users/engineer/Projects/cellworks"));
         launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![local.clone()]));
 
         assert!(launcher.can_open(&local.id));
-        assert_eq!(launcher.open_label(&local.id), "Open · Enter");
+        assert_eq!(launcher.open_label(&local.id), "Open project");
     }
 
-    /// STORY-082 requirement 8: a remote project on a host that is not
-    /// connected — offline, or never probed at all ("checking" or unknown) —
-    /// cannot be opened, and the label asks to connect the host first.
+    /// STORY-082 requirement 8, STORY-083 requirement 8: a remote project on
+    /// a host that is not connected — offline, or never probed at all
+    /// ("checking" or unknown) — cannot be opened, and the label asks to
+    /// connect the host first (STORY-083's plain wording).
     #[test]
     fn can_open_and_open_label_for_a_remote_project_on_an_unconnected_host() {
         let mut launcher = Launcher::new(None);
+        launcher.apply(WorkspaceEvent::ThemeWordsTurnedOff);
         let offline = Project::remote("devbox".to_owned(), PathBuf::from("/srv/surface-kit"));
         let unknown = Project::remote("ghost".to_owned(), PathBuf::from("/srv/unknown"));
         launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![
@@ -976,11 +1037,7 @@ mod tests {
 
         for id in [&offline.id, &unknown.id] {
             assert!(!launcher.can_open(id), "{id:?}");
-            assert_eq!(
-                launcher.open_label(id),
-                "Open · connect the host first",
-                "{id:?}"
-            );
+            assert_eq!(launcher.open_label(id), "Connect the host first", "{id:?}");
         }
     }
 
@@ -991,6 +1048,7 @@ mod tests {
     #[test]
     fn can_open_is_false_for_a_remote_project_even_on_a_connected_host() {
         let mut launcher = Launcher::new(None);
+        launcher.apply(WorkspaceEvent::ThemeWordsTurnedOff);
         let connected = Project::remote("wsl".to_owned(), PathBuf::from("~/src/factory-evals"));
         launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![connected.clone()]));
         launcher.apply(WorkspaceEvent::HostProbed {
@@ -999,7 +1057,7 @@ mod tests {
         });
 
         assert!(!launcher.can_open(&connected.id));
-        assert_eq!(launcher.open_label(&connected.id), "Open · Enter");
+        assert_eq!(launcher.open_label(&connected.id), "Open project");
     }
 
     /// STORY-082 requirement 5: "folder" means the project has no branch, so
@@ -1031,6 +1089,10 @@ mod tests {
     #[test]
     fn branch_label_is_folder_for_a_project_read_without_a_branch() {
         let mut launcher = Launcher::new(None);
+        // "folder" is STORY-082's plain word; theme words default on now, so
+        // this test opts into plain words explicitly to pin it (THEMED's
+        // branch-less word is "block").
+        launcher.apply(WorkspaceEvent::ThemeWordsTurnedOff);
         let local = Project::at(PathBuf::from("/Users/engineer/scratch/tool"));
         launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![local.clone()]));
 
@@ -1066,19 +1128,6 @@ mod tests {
             "wsl",
             "the connected host is named, not its state"
         );
-    }
-
-    /// STORY-082 ASSUMED (Q-1): a state's text is the word alone; the glyph
-    /// is a shape the view paints beside it, never part of a label.
-    #[test]
-    fn a_host_state_reads_as_its_word_without_a_glyph() {
-        for (state, word) in [
-            (HostState::Connected, "connected"),
-            (HostState::Checking, "checking"),
-            (HostState::Offline, "offline"),
-        ] {
-            assert_eq!(state.word(), word);
-        }
     }
 
     /// STORY-082 requirement 9's "Esc clear": clearing the search empties

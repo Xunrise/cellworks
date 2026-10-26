@@ -17,7 +17,14 @@ and the words of the launcher only.
 
 ## Open questions
 
-None.
+> ASSUMED (Q-1): what does the plain-words eyebrow say? — default: nothing,
+> the eyebrow line (header and preview pane) is only drawn in theme words,
+> because STORY-082 never had one and requirement 8 names no plain text for
+> it.
+
+> ASSUMED (Q-2): what does the plain offline body say? — default: "The <host>
+> host is not reachable right now.", because requirement 8 is silent on this
+> body text and this is the plainest paraphrase of the themed one.
 
 ## Requirements
 
@@ -111,7 +118,7 @@ None.
 
 ## Order of work
 
-1. Words and switch. Add `crates/workspace/src/words.rs` (`Words`, `THEMED`,
+1. [x] Words and switch. Add `crates/workspace/src/words.rs` (`Words`, `THEMED`,
    `PLAIN`, singular/plural counts, host-dependent strings) and declare it in
    `lib.rs`; `settings.rs` consts `LAUNCHER`, `THEME_WORDS` and
    `theme_words_off`; `event.rs` `WorkspaceEvent::ThemeWordsTurnedOff`; `scan`
@@ -119,7 +126,7 @@ None.
    `words: &'static Words` (default `&THEMED`), switches on the event, exposes
    `words()`, and reads its strings from the table. Unit tests first.
    Files: `crates/workspace/src/{words,settings,event,lib,universe,launcher}.rs`.
-2. The look. Add `crates/workspace/assets/fonts/ChakraPetch-SemiBold.ttf`,
+2. [x] The look. Add `crates/workspace/assets/fonts/ChakraPetch-SemiBold.ttf`,
    `JetBrainsMono-Regular.ttf` and their `OFL.txt`; in `ui.rs` the Netrunner
    colour consts, `chamfer`, grid, `install_fonts`, family fallback, and the
    restyled header, search row, chips, list, rows, preview with CTA and ICE
@@ -127,13 +134,13 @@ None.
    `launcher.words()`; the remote-on-connected-host hover keys on the project,
    not on a label string. Files: `crates/workspace/assets/fonts/*`,
    `crates/workspace/src/ui.rs`.
-3. Motion and start-up. In `ui.rs` pure `rise` and `breath`, first-shown time
+3. [x] Motion and start-up. In `ui.rs` pure `rise` and `breath`, first-shown time
    in egui temp memory, `with_visual_transform` / `multiply_opacity`, scheduled
    repaints only while moving and not reduced. In `src/app.rs` call
    `install_fonts`, add `reduced_motion_requested()` and the pure
    `reduces_motion(output, macos)`, and apply the reduced style.
    Files: `crates/workspace/src/ui.rs`, `src/app.rs`.
-4. Acceptance tests. Add
+4. [x] Acceptance tests. Add
    `tests/story_083_the_launcher_wears_the_netrunner_look_with_switchable_theme_words.rs`
    (one test per scenario) and write `[launcher]\ntheme_words = false` into the
    STORY-078 and STORY-082 fixtures, moving their open-action assertions.

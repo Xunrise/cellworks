@@ -41,4 +41,8 @@ pub enum WorkspaceEvent {
     /// The most recently opened projects were read from the `recent` file,
     /// most recent first.
     RecentRead(Vec<ProjectId>),
+    /// The settings file switched theme words off (STORY-083: `[launcher]
+    /// theme_words = false`). Sent once per scan when the setting is off,
+    /// never otherwise.
+    ThemeWordsTurnedOff,
 }

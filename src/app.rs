@@ -13,6 +13,7 @@
 //! never waits. A project opened from the universe is read the same way, with
 //! `CodeAnalysisEvent` values.
 
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
@@ -1336,6 +1337,52 @@ pub fn native_options() -> eframe::NativeOptions {
     }
 }
 
+/// Whether `output` — the trimmed stdout of the platform's own read of the
+/// system's reduced-motion setting — says to switch motion off (STORY-083
+/// Decision 7): `"1"` on macOS (`defaults read
+/// com.apple.universalaccess reduceMotion`), `"false"` on Linux (`gsettings
+/// get org.gnome.desktop.interface enable-animations`). Anything else,
+/// including an empty or garbled read, means not reduced: failure means
+/// animate.
+pub(crate) fn reduces_motion(output: &str, macos: bool) -> bool {
+    let output = output.trim();
+    if macos {
+        output == "1"
+    } else {
+        output == "false"
+    }
+}
+
+/// Reads whether the system currently asks for reduced motion, by a
+/// read-only child process (ADR-0003): `defaults read
+/// com.apple.universalaccess reduceMotion` on macOS, `gsettings get
+/// org.gnome.desktop.interface enable-animations` elsewhere. A command that
+/// fails to spawn, exits non-zero, or whose stdout is not valid UTF-8, reads
+/// as empty — [`reduces_motion`] already treats that, like every other
+/// unrecognised read, as "animate".
+pub(crate) fn reduced_motion_requested() -> bool {
+    let macos = cfg!(target_os = "macos");
+    let output = if macos {
+        Command::new("defaults")
+            .args(["read", "com.apple.universalaccess", "reduceMotion"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+    } else {
+        Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.interface", "enable-animations"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+    };
+    let read = output
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .unwrap_or_default();
+    reduces_motion(&read, macos)
+}
+
 /// Opens the window and runs until it closes.
 ///
 /// Returns `Err` when there is no wgpu adapter and no display — a headless
@@ -1348,6 +1395,13 @@ pub fn run() -> eframe::Result {
         Box::new(|cc| {
             // The city is drawn at night, whatever the system's appearance.
             cc.egui_ctx.set_theme(egui::Theme::Dark);
+            cellworks_workspace::ui::install_fonts(&cc.egui_ctx);
+            if reduced_motion_requested() {
+                cc.egui_ctx.all_styles_mut(|style| {
+                    style.animation_time = 0.0;
+                    style.visuals.text_cursor.blink = false;
+                });
+            }
             Ok(Box::new(CellworksApp::start()))
         }),
     )
@@ -1381,5 +1435,37 @@ mod tests {
         let options = native_options();
 
         assert!(matches!(options.renderer, eframe::Renderer::Wgpu));
+    }
+
+    /// STORY-083 Decision 7: `reduces_motion` reads a platform-specific value
+    /// for "reduced" — "1" from `defaults read` on macOS, "false" from
+    /// `gsettings get` on Linux — and treats anything else, including an
+    /// empty or garbled read, as "animate": failure means animate.
+    #[test]
+    fn reduces_motion_reads_the_platform_specific_value_for_reduced() {
+        assert!(
+            reduces_motion("1", true),
+            "macOS reports reduced motion with \"1\""
+        );
+        assert!(
+            !reduces_motion("0", true),
+            "macOS: anything but \"1\" animates"
+        );
+        assert!(
+            reduces_motion("false", false),
+            "Linux reports reduced motion with \"false\""
+        );
+        assert!(
+            !reduces_motion("true", false),
+            "Linux: anything but \"false\" animates"
+        );
+        assert!(
+            !reduces_motion("", true),
+            "an empty read means animate, not reduced"
+        );
+        assert!(
+            !reduces_motion("garbage", false),
+            "a garbled read means animate, not reduced"
+        );
     }
 }

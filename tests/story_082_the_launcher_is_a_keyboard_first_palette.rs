@@ -97,8 +97,13 @@ impl Fixture {
     /// Writes the settings file: one `[hosts."<name>"]` table per host,
     /// naming the one remote project on it as the engineer would write it,
     /// unresolved.
+    ///
+    /// STORY-083 Decision 10: this suite's own assertions are plain-words
+    /// text, so every fixture here switches theme words off — otherwise the
+    /// new themed defaults (e.g. "Open fortress" instead of "Open · Enter")
+    /// would break them.
     fn settings(&self, hosts: &[(&str, &str)]) {
-        let mut text = String::new();
+        let mut text = "[launcher]\ntheme_words = false\n".to_owned();
         for (host, project) in hosts {
             text.push_str(&format!(
                 "\n[hosts.\"{host}\"]\nprojects = [\"{project}\"]\n"
@@ -513,7 +518,7 @@ fn a_project_on_an_offline_remote_host_cannot_be_opened() {
 
     assert!(
         harness
-            .get_by_label("Open · connect the host first")
+            .get_by_label("Connect the host first")
             .accesskit_node()
             .is_disabled(),
         "Open is disabled for a project on an offline host, and says so"

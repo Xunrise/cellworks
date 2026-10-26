@@ -143,9 +143,23 @@ impl Fixture {
     /// Writes the settings file: the added folder `scratch/tool`, and one
     /// `[hosts."<name>"]` table per host, naming the remote projects on it as
     /// the engineer would write them, unresolved.
+    ///
+    /// STORY-083 Decision 10: this suite's own assertions are plain-words
+    /// text, so every fixture here switches theme words off — otherwise the
+    /// new themed defaults (e.g. "Open fortress" instead of "Open · Enter")
+    /// would break them.
     fn settings(&self, hosts: &[(&str, &[&str])]) {
         let scratch = self.home.join("scratch/tool");
-        let mut text = format!("added_folders = [\"{}\"]\n", scratch.display());
+        // `added_folders` must come before the `[launcher]` table: TOML reads
+        // every key after a `[table]` header as belonging to it until the
+        // next header, so writing `[launcher]` first would silently fold
+        // `added_folders` into `[launcher]` instead of leaving it top-level —
+        // which is exactly why `scratch/tool` stopped being discovered when
+        // this line was first added.
+        let mut text = format!(
+            "added_folders = [\"{}\"]\n\n[launcher]\ntheme_words = false\n",
+            scratch.display()
+        );
         for (host, projects) in hosts {
             let list: Vec<String> = projects.iter().map(|path| format!("\"{path}\"")).collect();
             text.push_str(&format!(
@@ -490,7 +504,7 @@ fn enter_on_a_remote_project_opens_nothing() {
 
     assert!(
         harness
-            .get_by_label("Open · Enter")
+            .get_by_label("Open project")
             .accesskit_node()
             .is_disabled(),
         "Open is disabled for a remote project on a connected host, with a \
