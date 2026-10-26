@@ -271,6 +271,18 @@ impl SessionsView {
         self.pane = None;
     }
 
+    /// Prototype: types `bytes` into the open pane's terminal.
+    pub fn send_to_pane(&mut self, bytes: &[u8]) {
+        if let Some(pane) = self.pane.as_mut() {
+            pane.send(bytes);
+        }
+    }
+
+    /// Prototype: the id of the session the pane shows.
+    pub fn pane_session(&self) -> Option<&str> {
+        self.pane.as_ref().map(|pane| pane.session_id())
+    }
+
     pub fn pane_open(&self) -> bool {
         self.pane.is_some()
     }

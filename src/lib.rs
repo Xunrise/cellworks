@@ -6,6 +6,7 @@
 
 pub mod app;
 pub mod cli;
+pub mod iterate;
 pub mod opened;
 pub mod review;
 

@@ -132,6 +132,10 @@ pub struct CellworksApp {
     /// The open project's own git common dir, cached by its root so it is
     /// read from disk once per project, not every frame.
     common_dir_cache: Option<(std::path::PathBuf, Option<std::path::PathBuf>)>,
+    /// PROTOTYPE: the iterate loop running from this window, if any.
+    iterate: Option<crate::iterate::Iterate>,
+    /// PROTOTYPE: whether the iterate session's pane was opened once.
+    iterate_pane: bool,
 }
 
 /// What the keyboard and the pointer asked for in one frame.
@@ -195,6 +199,8 @@ impl CellworksApp {
                 },
                 drawn_sessions: Vec::new(),
                 common_dir_cache: None,
+                iterate: None,
+                iterate_pane: false,
                 universe: Universe::scanning(&sources),
                 events: Some(start_scan(sources)),
                 opened: None,
@@ -232,6 +238,8 @@ impl CellworksApp {
                 },
                 drawn_sessions: Vec::new(),
                 common_dir_cache: None,
+                iterate: None,
+                iterate_pane: false,
                 universe: Universe::without_home(),
                 events: None,
                 opened: None,
@@ -272,6 +280,8 @@ impl CellworksApp {
             sessions: SessionsView::none(),
             drawn_sessions: Vec::new(),
             common_dir_cache: None,
+                iterate: None,
+                iterate_pane: false,
             universe,
             events: Some(events),
             opened: None,
@@ -403,6 +413,24 @@ impl CellworksApp {
     /// sent so far. Never waits.
     pub fn apply_pending(&mut self) {
         self.sessions.drain();
+        if let Some(it) = &mut self.iterate {
+            it.drain();
+            // The session walks in: open its pane the first time it shows.
+            if !self.iterate_pane
+                && let Some(session) = self
+                    .sessions
+                    .sessions()
+                    .iter()
+                    .find(|s| s.name == it.session_name && s.attach_id.is_some())
+                    .cloned()
+            {
+                self.sessions.open_pane(&session);
+                self.iterate_pane = true;
+            }
+            for bytes in it.due() {
+                self.sessions.send_to_pane(&bytes);
+            }
+        }
         if let Some(events) = &self.events {
             for event in self.universe.drain(events) {
                 self.launcher.apply(event);
@@ -736,6 +764,10 @@ impl eframe::App for CellworksApp {
         {
             ui.ctx().request_repaint();
         }
+        if self.iterate.is_some() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(250));
+        }
     }
 }
 
@@ -759,7 +791,8 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         app.sessions.close_pane();
     }
     // A focused session terminal owns the keyboard: the map's keys do nothing.
-    let terminal = app.sessions.has_keyboard(ui);
+    let terminal = app.sessions.has_keyboard(ui)
+        || (app.iterate.as_ref().is_some_and(|it| it.draft.is_some()));
     // So does the launcher's search field, which is focused from the first
     // frame (STORY-082 requirement 2): without this, every "u", "m" and "z"
     // of a typed project name would also toggle underground, the cables and
@@ -967,6 +1000,8 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     if enter && app.opened.is_none() {
         app.launcher.request_focus();
     }
+
+    iterate_keys(ui, app, terminal || typing);
 
     // Why the selected tower was built: worked out before the frame borrows
     // the opened project, and only when the selection has moved.
@@ -1208,6 +1243,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             }
         }
     }
+    iterate_overlay(ui, app);
     let (picked, (import_lanes, call_lanes)) = bar;
     if let Some(opened) = &mut app.opened {
         if let Some(lens) = picked {
@@ -1219,6 +1255,430 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         if call_lanes {
             opened.toggle_call_lanes();
         }
+    }
+}
+
+/// PROTOTYPE: the iterate loop's keys. Cmd+P prototypes the selected or open
+/// project; with a loop running, P pins the selection, C captures a region,
+/// `,` and `.` step through the rounds.
+fn iterate_keys(ui: &mut egui::Ui, app: &mut CellworksApp, blocked: bool) {
+    let start = ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::P));
+    if start {
+        prototype_this(app);
+    }
+    iterate_drive(ui, app);
+    iterate_rest(ui, app, blocked);
+}
+
+/// PROTOTYPE: a drive file (`CELLWORKS_DRIVE`) the window polls, so the
+/// prototype can be operated without synthetic keystrokes. One command per
+/// line: open <path>, select <path>, proto, pin <anchor>, note <text>,
+/// image <png>, send, step <n>, revert <k>, shot <png>.
+fn iterate_drive(ui: &mut egui::Ui, app: &mut CellworksApp) {
+    let Ok(file) = std::env::var("CELLWORKS_DRIVE") else {
+        return;
+    };
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(200));
+    // Screenshots requested earlier.
+    let shots: Vec<(String, std::sync::Arc<egui::ColorImage>)> = ui.input(|i| {
+        i.events
+            .iter()
+            .filter_map(|e| match e {
+                egui::Event::Screenshot {
+                    user_data, image, ..
+                } => user_data
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.downcast_ref::<String>())
+                    .map(|path| (path.clone(), image.clone())),
+                _ => None,
+            })
+            .collect()
+    });
+    for (path, image) in shots {
+        write_png(&path, &image);
+    }
+    let Ok(text) = std::fs::read_to_string(&file) else {
+        return;
+    };
+    if text.is_empty() {
+        return;
+    }
+    let _ = std::fs::write(&file, "");
+    for line in text.lines() {
+        let (cmd, arg) = line.split_once(' ').unwrap_or((line, ""));
+        match cmd {
+            "open" => app.open(Project::at(std::path::PathBuf::from(arg))),
+            "select" => {
+                if let Some(project) = app.project_at(std::path::Path::new(arg)) {
+                    app.launcher.select(Some(project.id.clone()));
+                }
+            }
+            "proto" => prototype_this(app),
+            "attach" => {
+                let (path, name) = arg.split_once(' ').unwrap_or((arg, ""));
+                match crate::iterate::Iterate::attach(std::path::Path::new(path), name) {
+                    Ok(it) => {
+                        let worktree = it.worktree.clone();
+                        app.iterate = Some(it);
+                        app.iterate_pane = false;
+                        app.open(Project::at(worktree));
+                    }
+                    Err(e) => eprintln!("attach failed: {e}"),
+                }
+            }
+            "jump" => {
+                if let Some(root) = app.map().map(|m| m.root.clone()) {
+                    app.jump(root.join(arg));
+                }
+            }
+            "shot" => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Screenshot(
+                egui::UserData::new(arg.to_owned()),
+            )),
+            _ => {
+                let Some(it) = &mut app.iterate else {
+                    continue;
+                };
+                let draft = || crate::iterate::Draft {
+                    anchor: None,
+                    image: None,
+                    note: String::new(),
+                };
+                match cmd {
+                    "pin" => it.pin(arg.to_owned()),
+                    "note" => it.draft.get_or_insert_with(draft).note = arg.to_owned(),
+                    "image" => {
+                        it.draft.get_or_insert_with(draft).image = Some(arg.into());
+                    }
+                    "send" => {
+                        let session = app
+                            .sessions
+                            .sessions()
+                            .iter()
+                            .find(|s| s.name == it.session_name && s.attach_id.is_some())
+                            .cloned();
+                        let delay = match &session {
+                            Some(s) if app.sessions.pane_session() == Some(s.id.as_str()) => {
+                                std::time::Duration::ZERO
+                            }
+                            Some(s) => {
+                                app.sessions.open_pane(s);
+                                std::time::Duration::from_secs(2)
+                            }
+                            None => std::time::Duration::ZERO,
+                        };
+                        it.send(delay);
+                    }
+                    "respawn" => it.respawn(),
+                    "close" => it.close_round(),
+                    "step" => it.step(arg.parse().unwrap_or(0)),
+                    "revert" => it.revert(arg.parse().unwrap_or(0)),
+                    _ => eprintln!("drive: unknown {line}"),
+                }
+            }
+        }
+    }
+}
+
+/// PROTOTYPE: writes `image` as a PNG via a BMP and `sips`.
+fn write_png(path: &str, image: &egui::ColorImage) {
+    let [w, h] = image.size;
+    let mut bmp = Vec::with_capacity(54 + w * h * 4);
+    let size = (54 + w * h * 4) as u32;
+    bmp.extend_from_slice(b"BM");
+    bmp.extend_from_slice(&size.to_le_bytes());
+    bmp.extend_from_slice(&0u32.to_le_bytes());
+    bmp.extend_from_slice(&54u32.to_le_bytes());
+    bmp.extend_from_slice(&40u32.to_le_bytes());
+    bmp.extend_from_slice(&(w as i32).to_le_bytes());
+    bmp.extend_from_slice(&(-(h as i32)).to_le_bytes());
+    bmp.extend_from_slice(&1u16.to_le_bytes());
+    bmp.extend_from_slice(&32u16.to_le_bytes());
+    bmp.extend_from_slice(&[0u8; 24]);
+    for px in &image.pixels {
+        bmp.extend_from_slice(&[px.b(), px.g(), px.r(), 255]);
+    }
+    let tmp = format!("{path}.bmp");
+    if std::fs::write(&tmp, bmp).is_ok() {
+        let _ = std::process::Command::new("sips")
+            .args(["-s", "format", "png", &tmp, "--out", path])
+            .output();
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+/// PROTOTYPE: Cmd+P on the selected or open project.
+fn prototype_this(app: &mut CellworksApp) {
+    {
+        let root = match &app.opened {
+            Some(opened) => opened.project().id.local_path().map(|p| p.to_owned()),
+            None => app
+                .launcher
+                .selected_project()
+                .and_then(|p| p.id.local_path())
+                .map(|p| p.to_owned()),
+        };
+        if let Some(root) = root {
+            match crate::iterate::Iterate::start(&root) {
+                Ok(it) => {
+                    let worktree = it.worktree.clone();
+                    app.iterate = Some(it);
+                    app.iterate_pane = false;
+                    app.open(Project::at(worktree));
+                }
+                Err(e) => eprintln!("prototype-this failed: {e}"),
+            }
+        }
+    }
+}
+
+fn iterate_rest(ui: &mut egui::Ui, app: &mut CellworksApp, blocked: bool) {
+    if blocked || app.opened.is_none() {
+        return;
+    }
+    let (pin, capture, back, forward, close) = ui.input(|i| {
+        let plain = i.modifiers.is_none();
+        (
+            plain && i.key_pressed(egui::Key::R),
+            plain && i.key_pressed(egui::Key::P),
+            plain && i.key_pressed(egui::Key::C),
+            plain && i.key_pressed(egui::Key::Comma),
+            plain && i.key_pressed(egui::Key::Period),
+        )
+    });
+    let anchor = {
+        let root = app.map().map(|m| m.root.clone());
+        let rel = |p: &std::path::Path| {
+            root.as_ref()
+                .and_then(|r| p.strip_prefix(r).ok())
+                .unwrap_or(p)
+                .display()
+                .to_string()
+        };
+        match app.navigation.inside() {
+            Some((item, floor)) => Some(format!("{}:{}", rel(item), floor + 1)),
+            None => app.navigation.selection().map(rel),
+        }
+    };
+    let Some(it) = &mut app.iterate else {
+        return;
+    };
+    if pin && let Some(anchor) = anchor {
+        it.pin(anchor);
+    }
+    if capture {
+        it.capture();
+    }
+    if back {
+        it.step(-1);
+    }
+    if forward {
+        it.step(1);
+    }
+    if close {
+        it.close_round();
+    }
+}
+
+/// PROTOTYPE: the loop's strip, the fires and scaffolding on the towers, and
+/// the feedback note.
+fn iterate_overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
+    if app.opened.is_none() {
+        return;
+    }
+    let Some(it) = &mut app.iterate else {
+        return;
+    };
+    let ctx = ui.ctx().clone();
+    let mut jump: Option<std::path::PathBuf> = None;
+    let mut revert: Option<usize> = None;
+    let mut retry = false;
+    egui::Area::new(egui::Id::new("iterate-strip"))
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 40.0))
+        .show(&ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_max_width(360.0);
+                ui.horizontal(|ui| {
+                    ui.strong(format!("proto/{}", it.slug));
+                    match (it.status.port, it.status.live) {
+                        (Some(port), true) => {
+                            ui.colored_label(egui::Color32::LIGHT_GREEN, format!("● live :{port}"));
+                            if ui.small_button("open").clicked()
+                                && let Some(url) = it.url()
+                            {
+                                let _ = std::process::Command::new("open").arg(url).spawn();
+                            }
+                        }
+                        (Some(port), false) => {
+                            ui.colored_label(egui::Color32::GRAY, format!("○ down :{port}"));
+                        }
+                        (None, _) => {
+                            ui.colored_label(egui::Color32::GRAY, "○ no launch.json");
+                        }
+                    }
+                });
+                match &it.spawned {
+                    None => {
+                        ui.label("starting session…");
+                    }
+                    Some(Err(e)) => {
+                        ui.colored_label(egui::Color32::LIGHT_RED, e);
+                        if ui.small_button("retry session").clicked() {
+                            retry = true;
+                        }
+                    }
+                    Some(Ok(_)) => {
+                        ui.label(format!("session {}", it.session_name));
+                    }
+                }
+                ui.separator();
+                let live = it.rounds.len() - 1;
+                let shown = match it.viewing {
+                    Some(k) => format!("viewing round {}: {}", k + 1, it.rounds[k].note),
+                    None => format!(
+                        "round {} open · {} notes · R closes it",
+                        live + 1,
+                        it.notes_in_round()
+                    ),
+                };
+                ui.horizontal(|ui| {
+                    ui.label(shown);
+                    if let Some(k) = it.viewing
+                        && ui.small_button(format!("undo round {} and later", k + 1)).clicked()
+                    {
+                        revert = Some(k);
+                    }
+                });
+                ui.label(format!("{} files touched", it.scaffolding().len()));
+                if !it.status.fires.is_empty() {
+                    ui.separator();
+                    for (file, line, text) in &it.status.fires {
+                        if ui
+                            .link(format!("🔥 {file}:{line}"))
+                            .on_hover_text(text)
+                            .clicked()
+                        {
+                            jump = Some(it.worktree.join(file));
+                        }
+                    }
+                }
+                for line in it.log.iter().rev().take(2) {
+                    ui.small(line);
+                }
+                ui.small("P pin · C capture · R close round · , . step");
+            });
+        });
+    if let Some(k) = revert {
+        it.revert(k);
+    }
+    if retry {
+        it.respawn();
+    }
+
+    // Fires and scaffolding on the files' plots, whatever form they are
+    // drawn in at this zoom.
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("iterate-marks"),
+    ));
+    let scaffold = egui::Stroke::new(2.0, egui::Color32::from_rgb(240, 190, 60));
+    let plot = |rel: &str| -> Option<[egui::Pos2; 4]> {
+        let map = mapped(&app.opened)?;
+        let view = app.view.as_ref()?;
+        let area = map.find(&map.root.join(rel))?.area.expand(1.0);
+        Some([
+            view.to_screen(area.left_top(), 0.0),
+            view.to_screen(area.right_top(), 0.0),
+            view.to_screen(area.right_bottom(), 0.0),
+            view.to_screen(area.left_bottom(), 0.0),
+        ])
+    };
+    for rel in it.scaffolding() {
+        if let Some([a, b, c, d]) = plot(rel) {
+            painter.extend(egui::Shape::dashed_line(&[a, b, c, d, a], scaffold, 6.0, 4.0));
+        }
+    }
+    let mut burning: Vec<(&str, Vec<u32>)> = Vec::new();
+    for (file, line, _) in &it.status.fires {
+        match burning.iter_mut().find(|(f, _)| *f == file.as_str()) {
+            Some((_, lines)) => lines.push(*line),
+            None => burning.push((file.as_str(), vec![*line])),
+        }
+    }
+    for (file, lines) in burning {
+        if let Some(corners) = plot(file) {
+            let top = corners.iter().fold(corners[0], |m, p| if p.y < m.y { *p } else { m });
+            let at = top - egui::vec2(0.0, 14.0);
+            painter.circle_filled(at, 8.0, egui::Color32::from_rgb(255, 90, 30));
+            painter.text(
+                at + egui::vec2(12.0, 0.0),
+                egui::Align2::LEFT_CENTER,
+                lines
+                    .iter()
+                    .map(|l| format!("L{l}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                egui::FontId::monospace(13.0),
+                egui::Color32::from_rgb(255, 140, 80),
+            );
+        }
+    }
+
+    // The note.
+    let mut send = false;
+    let mut cancel = false;
+    if let Some(draft) = &mut it.draft {
+        egui::Window::new("Feedback")
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -40.0))
+            .collapsible(false)
+            .resizable(false)
+            .show(&ctx, |ui| {
+                if let Some(anchor) = &draft.anchor {
+                    ui.label(format!("at {anchor}"));
+                }
+                if let Some(image) = &draft.image {
+                    ui.label(format!("screenshot {}", image.display()));
+                }
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut draft.note)
+                        .id(egui::Id::new("iterate-note"))
+                        .desired_width(420.0)
+                        .hint_text("What should change? Enter sends, Esc cancels"),
+                );
+                response.request_focus();
+                if ui.input(|i| i.key_pressed(egui::Key::Enter)) && !draft.note.trim().is_empty() {
+                    send = true;
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    cancel = true;
+                }
+            });
+    }
+    if cancel {
+        it.draft = None;
+    }
+    if send {
+        let session = app
+            .sessions
+            .sessions()
+            .iter()
+            .find(|s| s.name == it.session_name && s.attach_id.is_some())
+            .cloned();
+        let delay = match &session {
+            Some(s) if app.sessions.pane_session() == Some(s.id.as_str()) => {
+                std::time::Duration::ZERO
+            }
+            Some(s) => {
+                app.sessions.open_pane(s);
+                std::time::Duration::from_secs(2)
+            }
+            None => std::time::Duration::ZERO,
+        };
+        it.send(delay);
+    }
+    if let Some(path) = jump {
+        app.jump(path);
     }
 }
 
