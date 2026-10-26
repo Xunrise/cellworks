@@ -136,6 +136,8 @@ pub struct CellworksApp {
     iterate: Option<crate::iterate::Iterate>,
     /// PROTOTYPE: whether the iterate session's pane was opened once.
     iterate_pane: bool,
+    /// PROTOTYPE: what stages 4 and 5 keep between frames.
+    iterate_view: crate::iterate_view::ViewState,
     /// PROTOTYPE: the open case, which takes over the window.
     case: Option<cellworks_map::ui::case::Case>,
     /// PROTOTYPE: the ticket menu (T), from which a case opens.
@@ -209,6 +211,7 @@ impl CellworksApp {
                 common_dir_cache: None,
                 iterate: None,
                 iterate_pane: false,
+                iterate_view: Default::default(),
                 case: None,
                 tickets_open: false,
                 jira: cellworks_map::ui::jira::Jira::new(),
@@ -252,6 +255,7 @@ impl CellworksApp {
                 common_dir_cache: None,
                 iterate: None,
                 iterate_pane: false,
+                iterate_view: Default::default(),
                 case: None,
                 tickets_open: false,
                 jira: cellworks_map::ui::jira::Jira::new(),
@@ -298,6 +302,7 @@ impl CellworksApp {
             common_dir_cache: None,
                 iterate: None,
                 iterate_pane: false,
+                iterate_view: Default::default(),
                 case: None,
                 tickets_open: false,
                 jira: cellworks_map::ui::jira::Jira::new(),
@@ -859,6 +864,26 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         app.navigation.look_at(area);
         ui.ctx().request_repaint();
     }
+    // PROTOTYPE: the case's PROTOTYPE act hands over its worktree, branch
+    // and prompt; the iterate loop starts there and the case moves to stage 4.
+    if let Some(case) = &mut app.case {
+        if let Some(p) = case.prototype.take() {
+            match crate::iterate::Iterate::start_at(&p.root, &p.worktree, &p.branch, &p.base, &p.name, &p.prompt) {
+                Ok(it) => {
+                    app.iterate = Some(it);
+                    app.iterate_pane = false;
+                    app.iterate_view = Default::default();
+                }
+                Err(e) => eprintln!("prototype failed: {e}"),
+            }
+            case.iterating = app.iterate.is_some();
+            case.go(4, case_now);
+        }
+        case.iterating = app.iterate.is_some();
+        if let (Some(line), Some(it)) = (case.typed.take(), app.iterate.as_mut()) {
+            it.type_line(line);
+        }
+    }
     let spots = app
         .case
         .as_ref()
@@ -874,7 +899,8 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     }
     // A focused session terminal owns the keyboard: the map's keys do nothing.
     let terminal = app.sessions.has_keyboard(ui)
-        || (app.iterate.as_ref().is_some_and(|it| it.draft.is_some()));
+        || ui.memory(|m| m.has_focus(egui::Id::new("iterate-note")))
+        || (app.case.is_none() && app.iterate.as_ref().is_some_and(|it| it.draft.is_some()));
     // So does the launcher's search field, which is focused from the first
     // frame (STORY-082 requirement 2): without this, every "u", "m" and "z"
     // of a typed project name would also toggle underground, the cables and
@@ -964,8 +990,10 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     } else {
         (enter, esc, tree, turn)
     };
-    let over_case =
-        pointer.is_some_and(|pointer| app.case.as_ref().is_some_and(|case| case.covers(pointer)));
+    let over_case = pointer.is_some_and(|pointer| app.case.as_ref().is_some_and(|case| case.covers(pointer)))
+        || app.case.as_ref().is_some_and(|case| {
+            case.stage() == 5 || (matches!(case.stage(), 4 | 6) && app.iterate_view.m(ui.input(|i| i.time)) < 0.5)
+        });
     let mut case_key: Option<(String, f64)> = None;
     // Esc with a pane open but its terminal unfocused ends the attach and
     // does nothing else that frame.
@@ -1203,6 +1231,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             let tint = why.as_ref().map(|why| why.floors.as_slice());
             let mut sidebar_centre: Option<egui::Pos2> = None;
             if app.sessions.has_sources()
+                && !casing
                 && let Some(map) = mapped(&app.opened)
             {
                 if let Some((_, centre)) = egui::Panel::left("sessions")
@@ -1215,6 +1244,9 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                     sidebar_centre = centre;
                 }
             }
+            app.sessions.set_hosted(
+                app.case.as_ref().is_some_and(|c| matches!(c.stage(), 4 | 6)) && app.iterate.is_some(),
+            );
             app.sessions.pane(ui);
             let sessions_view = &mut app.sessions;
             let (drawn, minimap, floor, (sessions_drawn, session_clicked, pane_opened)) =
@@ -1226,16 +1258,22 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                         else {
                             return (drawn, None, None, (Vec::new(), None, false));
                         };
-                        let minimap = cellworks_map::ui::minimap(ui, map, &shown.view, shown.panel);
-                        if let Some(hints) = app.navigation.hints(map) {
-                            cellworks_navigation::ui::hints(ui, shown.panel, &hints);
-                        }
-                        cellworks_map::ui::caption(ui, shown.panel, opened.lens());
-                        if let Some(age) = opened.switched_at().map(|at| ui.input(|i| i.time) - at)
-                        {
-                            cellworks_map::ui::banner(ui, shown.panel, opened.lens(), age);
-                        }
-                        cellworks_map::ui::legend(ui, shown.panel, opened.lanes());
+                        // PROTOTYPE: a case brings its own chrome; the map's stays away.
+                        let minimap = if casing {
+                            None
+                        } else {
+                            let minimap = cellworks_map::ui::minimap(ui, map, &shown.view, shown.panel);
+                            if let Some(hints) = app.navigation.hints(map) {
+                                cellworks_navigation::ui::hints(ui, shown.panel, &hints);
+                            }
+                            cellworks_map::ui::caption(ui, shown.panel, opened.lens());
+                            if let Some(age) = opened.switched_at().map(|at| ui.input(|i| i.time) - at)
+                            {
+                                cellworks_map::ui::banner(ui, shown.panel, opened.lens(), age);
+                            }
+                            cellworks_map::ui::legend(ui, shown.panel, opened.lanes());
+                            minimap
+                        };
                         let sessions_result =
                             sessions_view.paint(ui, map, common_dir.as_deref(), &shown.view);
                         let floor = app.navigation.inside().and_then(|(item, floor)| {
@@ -1388,6 +1426,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     if app.opened.is_some() && app.tickets_open {
         case_key = tickets_window(ui, app);
     }
+    iterate_screen(ui, app);
     show_case(ui, app);
     if let Some((key, now)) = case_key {
         app.open_case(&key, now);
@@ -1465,6 +1504,32 @@ fn iterate_drive(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 }
             }
             "proto" => prototype_this(app),
+            "case-go" => {
+                let now = ui.input(|i| i.time);
+                if let Some(case) = &mut app.case {
+                    case.go(arg.parse().unwrap_or(1), now);
+                }
+            }
+            "case-prototype" => {
+                let now = ui.input(|i| i.time);
+                if let Some(case) = &mut app.case {
+                    case.prototype_act(now);
+                }
+            }
+            "file" => {
+                if let Some(it) = &app.iterate {
+                    let (label, lines) = it.file_view(arg);
+                    let now = ui.input(|i| i.time);
+                    app.iterate_view.file = Some(crate::iterate_view::OpenFile { rel: arg.to_owned(), label, lines, opened: now });
+                }
+            }
+            "dock" => app.sessions.toggle_dock(),
+            "fold" => app.sessions.toggle_collapsed(),
+            "swap" => {
+                let now = ui.input(|i| i.time);
+                app.iterate_view.swap(now);
+            }
+            "type" => app.iterate_view.note = arg.to_owned(),
             "attach" => {
                 let (path, name) = arg.split_once(' ').unwrap_or((arg, ""));
                 match crate::iterate::Iterate::attach(std::path::Path::new(path), name) {
@@ -1586,7 +1651,7 @@ fn iterate_rest(ui: &mut egui::Ui, app: &mut CellworksApp, blocked: bool) {
     if blocked || app.opened.is_none() {
         return;
     }
-    let (pin, capture, back, forward, close) = ui.input(|i| {
+    let (close, pin, capture, back, forward, swap) = ui.input(|i| {
         let plain = i.modifiers.is_none();
         (
             plain && i.key_pressed(egui::Key::R),
@@ -1594,8 +1659,14 @@ fn iterate_rest(ui: &mut egui::Ui, app: &mut CellworksApp, blocked: bool) {
             plain && i.key_pressed(egui::Key::C),
             plain && i.key_pressed(egui::Key::Comma),
             plain && i.key_pressed(egui::Key::Period),
+            plain && i.key_pressed(egui::Key::V),
         )
     });
+    let now = ui.input(|i| i.time);
+    let on_plan = app.case.as_ref().is_some_and(|c| matches!(c.stage(), 4 | 6)) && !app.iterate_view.city;
+    if swap && app.case.as_ref().is_some_and(|c| matches!(c.stage(), 4 | 6)) {
+        app.iterate_view.swap(now);
+    }
     let anchor = {
         let root = app.map().map(|m| m.root.clone());
         let rel = |p: &std::path::Path| {
@@ -1613,8 +1684,12 @@ fn iterate_rest(ui: &mut egui::Ui, app: &mut CellworksApp, blocked: bool) {
     let Some(it) = &mut app.iterate else {
         return;
     };
-    if pin && let Some(anchor) = anchor {
-        it.pin(anchor);
+    if pin {
+        // On the plan P arms the next click; on the city it pins the selection.
+        match (on_plan, anchor) {
+            (true, _) | (false, None) => app.iterate_view.pin_armed = !app.iterate_view.pin_armed,
+            (false, Some(anchor)) => it.pin(anchor),
+        }
     }
     if capture {
         it.capture();
@@ -1630,10 +1705,158 @@ fn iterate_rest(ui: &mut egui::Ui, app: &mut CellworksApp, blocked: bool) {
     }
 }
 
+/// PROTOTYPE: stages 4 and 5 of a case, below its bar.
+fn iterate_screen(ui: &mut egui::Ui, app: &mut CellworksApp) {
+    let Some(case) = &app.case else {
+        return;
+    };
+    let stage = case.stage();
+    if stage < 4 {
+        return;
+    }
+    let entered = case.entered();
+    let factory = case.flavour() == cellworks_map::ui::case::Flavour::Factory;
+    let Some(it) = &mut app.iterate else {
+        return;
+    };
+    let now = ui.input(|i| i.time);
+    if stage == 6 {
+        let stale = app.iterate_view.review.as_ref().is_none_or(|r| now - r.read > 2.0);
+        if stale {
+            let base = app.case.as_ref().and_then(|c| c.base_branch()).unwrap_or_else(|| "main".into());
+            let (files, commits) = it.since(&base);
+            app.iterate_view.review = Some(crate::iterate_view::Review { base, files, commits, read: now });
+        }
+    } else {
+        app.iterate_view.review = None;
+    }
+    let bottom = app
+        .sessions
+        .pane_top()
+        .unwrap_or_else(|| ui.ctx().content_rect().max.y);
+    let session = app
+        .sessions
+        .sessions()
+        .iter()
+        .find(|s| s.name == it.session_name)
+        .cloned();
+    let runner = session.as_ref().and_then(|s| {
+        let last = s.events.iter().rev().find(|e| e.write)?;
+        Some((s.name.as_str(), last.path.as_path()))
+    });
+    let pane_right = (matches!(stage, 4 | 6) && app.sessions.pane_open() && app.sessions.dock_right())
+        .then(|| app.sessions.collapsed());
+    let (acts, slot) = crate::iterate_view::show(
+        ui,
+        stage,
+        entered,
+        bottom,
+        &mut app.iterate_view,
+        mapped(&app.opened),
+        it,
+        runner,
+        factory,
+        pane_right,
+        now,
+    );
+    if let Some(slot) = slot {
+        app.sessions.pane_at(ui, slot);
+    }
+    use crate::iterate_view::Act;
+    for act in acts {
+        match act {
+            Act::Send => {
+                let note = std::mem::take(&mut app.iterate_view.note);
+                if note.trim().is_empty() {
+                    continue;
+                }
+                it.draft
+                    .get_or_insert(crate::iterate::Draft {
+                        anchor: None,
+                        image: None,
+                        note: String::new(),
+                    })
+                    .note = note;
+                let delay = match &session {
+                    Some(s) if app.sessions.pane_session() == Some(s.id.as_str()) => {
+                        std::time::Duration::ZERO
+                    }
+                    Some(s) if s.attach_id.is_some() => {
+                        app.sessions.open_pane(s);
+                        std::time::Duration::from_secs(2)
+                    }
+                    _ => std::time::Duration::ZERO,
+                };
+                it.send(delay);
+                ui.memory_mut(|m| m.request_focus(egui::Id::new("iterate-note")));
+            }
+            Act::CloseRound => it.close_round(),
+            Act::Undo(k) => {
+                it.revert(k);
+                it.viewing = None;
+            }
+            Act::View(v) => {
+                it.viewing = v;
+                if let Some(file) = &mut app.iterate_view.file {
+                    (file.label, file.lines) = it.file_view(&file.rel);
+                }
+            }
+            Act::Pin(anchor) => {
+                it.pin(anchor);
+                app.iterate_view.pin_armed = false;
+            }
+            Act::ArmPin => app.iterate_view.pin_armed = !app.iterate_view.pin_armed,
+            Act::Capture => it.capture(),
+            Act::Open => {
+                if let Some(url) = it.url() {
+                    let _ = std::process::Command::new("open").arg(url).spawn();
+                }
+            }
+            Act::Swap => app.iterate_view.swap(now),
+            Act::OpenFile(rel) => {
+                let (label, lines) = match &app.iterate_view.review {
+                    Some(review) if stage == 6 => it.file_view_since(&review.base, &rel),
+                    _ => it.file_view(&rel),
+                };
+                app.iterate_view.file = Some(crate::iterate_view::OpenFile { rel, label, lines, opened: now });
+            }
+            Act::CloseFile => app.iterate_view.file = None,
+            Act::Launch(nvim) => {
+                if let Some(file) = &app.iterate_view.file {
+                    let line = it
+                        .draft
+                        .as_ref()
+                        .and_then(|d| d.anchor.as_deref())
+                        .and_then(|a| a.strip_prefix(&format!("{}:", file.rel)))
+                        .and_then(|n| n.parse().ok())
+                        .or_else(|| file.lines.iter().find(|l| l.mark == '+').and_then(|l| l.no))
+                        .unwrap_or(1);
+                    let shown = cellworks_map::ui::case::launch(nvim, &it.worktree.join(&file.rel), line);
+                    it.toast = Some((format!("Launched: {shown}"), std::time::Instant::now()));
+                }
+            }
+            Act::Freeze => {
+                if let Some(case) = &mut app.case {
+                    case.freeze(now);
+                }
+            }
+            Act::Reviewed => {
+                if let Some(case) = &mut app.case {
+                    case.review_act(now);
+                }
+            }
+        }
+    }
+}
+
 /// PROTOTYPE: the loop's strip, the fires and scaffolding on the towers, and
 /// the feedback note.
 fn iterate_overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
-    if app.opened.is_none() {
+    // In a case the iterate screen has its own chrome; on its city view only
+    // the marks on the towers come from here.
+    let in_case = app.case.is_some();
+    let city = app.iterate_view.m(ui.input(|i| i.time)) > 0.5;
+    if app.opened.is_none() || (in_case && !city) {
         return;
     }
     let Some(it) = &mut app.iterate else {
@@ -1643,7 +1866,7 @@ fn iterate_overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
     let mut jump: Option<std::path::PathBuf> = None;
     let mut revert: Option<usize> = None;
     let mut retry = false;
-    egui::Area::new(egui::Id::new("iterate-strip"))
+    if !in_case { egui::Area::new(egui::Id::new("iterate-strip"))
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 40.0))
         .show(&ctx, |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
@@ -1718,6 +1941,7 @@ fn iterate_overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 ui.small("P pin · C capture · R close round · , . step");
             });
         });
+    }
     if let Some(k) = revert {
         it.revert(k);
     }
@@ -1777,7 +2001,7 @@ fn iterate_overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
     // The note.
     let mut send = false;
     let mut cancel = false;
-    if let Some(draft) = &mut it.draft {
+    if !in_case && let Some(draft) = &mut it.draft {
         egui::Window::new("Feedback")
             .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -40.0))
             .collapsible(false)

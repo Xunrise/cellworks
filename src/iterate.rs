@@ -15,6 +15,16 @@ Then wait: feedback arrives as messages that start with [round N]. \
 Each names a file:line anchor and/or a screenshot path; read the screenshot when given. \
 Make the change, keep the dev server running, and reply briefly.";
 
+/// One line of a file as the plan's code panel shows it: its number in the
+/// newer version (none for a removed line or a gap), its mark and text.
+#[derive(Clone)]
+pub struct CodeLine {
+    pub no: Option<usize>,
+    /// ' ' context, '+' added, '-' removed, '…' a gap between hunks.
+    pub mark: char,
+    pub text: String,
+}
+
 /// What the watcher thread reports once a second.
 #[derive(Default, Clone)]
 pub struct Status {
@@ -42,6 +52,7 @@ pub struct Iterate {
     pub worktree: PathBuf,
     pub slug: String,
     pub session_name: String,
+    brief: String,
     pub spawned: Option<Result<String, String>>,
     spawn_rx: Receiver<Result<String, String>>,
     rx: Receiver<Status>,
@@ -56,6 +67,8 @@ pub struct Iterate {
     /// Bytes to type into the pane, and when.
     queue: Vec<(Instant, Vec<u8>)>,
     pub log: Vec<String>,
+    /// The last thing sent or done, shown briefly over the feedback bar.
+    pub toast: Option<(String, Instant)>,
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -84,6 +97,13 @@ fn snapshot(worktree: &Path, message: &str) -> Result<String, String> {
     git_env(worktree, &["add", "-A", "."], Some(&index))?;
     let tree = git_env(worktree, &["write-tree"], Some(&index))?;
     git(worktree, &["commit-tree", &tree, "-p", "HEAD", "-m", message])
+}
+
+/// The ref round `n` of the loop in `worktree` is kept under. Worktrees of
+/// one repository share their refs, so each loop has its own folder.
+fn round_ref(worktree: &Path, n: usize) -> String {
+    let name = worktree.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    format!("refs/cellworks/{name}/rounds/{n}")
 }
 
 fn changed(worktree: &Path, from: &str, to: &str) -> Vec<String> {
@@ -119,6 +139,36 @@ impl Iterate {
                 &format!("proto/{slug}"),
             ],
         )?;
+        Iterate::begin(&worktree, slug.clone(), format!("{repo}-{slug}"), BRIEF.to_owned())
+    }
+
+    /// The iterate loop for a ticket case's fix: its worktree (made here
+    /// unless the plan session already made it), a session with the fix
+    /// prompt and the iterate brief.
+    pub fn start_at(
+        root: &Path,
+        worktree: &Path,
+        branch: &str,
+        base: &str,
+        name: &str,
+        prompt: &str,
+    ) -> Result<Iterate, String> {
+        if !worktree.is_dir() {
+            git(
+                root,
+                &["worktree", "add", &worktree.to_string_lossy(), "-b", branch, base],
+            )
+            .or_else(|_| git(root, &["worktree", "add", &worktree.to_string_lossy(), branch]))?;
+        }
+        Iterate::begin(
+            worktree,
+            branch.rsplit('/').next().unwrap_or(branch).to_owned(),
+            name.to_owned(),
+            format!("{prompt}\n\nWork in rounds with the engineer, who watches from Cellworks. {BRIEF}"),
+        )
+    }
+
+    fn begin(worktree: &Path, slug: String, session_name: String, brief: String) -> Result<Iterate, String> {
         let worktree = worktree.canonicalize().map_err(|e| e.to_string())?;
         std::fs::create_dir_all(worktree.join(".cellworks/shots")).map_err(|e| e.to_string())?;
         // Keep our own files out of the round snapshots.
@@ -132,11 +182,10 @@ impl Iterate {
             .map_err(|e| e.to_string())?;
         let _ = writeln!(f, ".cellworks/");
 
-        let session_name = format!("{repo}-{slug}");
-        let spawn_rx = spawn(&worktree, &session_name);
+        let spawn_rx = spawn(&worktree, &session_name, &brief);
 
         let base = snapshot(&worktree, "round 0")?;
-        let _ = git(&worktree, &["update-ref", "refs/cellworks/rounds/0", &base]);
+        let _ = git(&worktree, &["update-ref", &round_ref(&worktree, 0), &base]);
         let (tx, rx) = channel();
         let (base_tx, base_rx) = channel();
         watch(worktree.clone(), base.clone(), base_rx, tx);
@@ -144,6 +193,7 @@ impl Iterate {
             worktree,
             slug,
             session_name,
+            brief,
             spawned: None,
             spawn_rx,
             rx,
@@ -159,6 +209,7 @@ impl Iterate {
             capture: None,
             queue: Vec::new(),
             log: Vec::new(),
+            toast: None,
         })
     }
 
@@ -173,7 +224,7 @@ impl Iterate {
         let mut rounds = Vec::new();
         while let Ok(commit) = git(
             &worktree,
-            &["rev-parse", &format!("refs/cellworks/rounds/{}", rounds.len())],
+            &["rev-parse", &round_ref(&worktree, rounds.len())],
         ) {
             let k = rounds.len();
             rounds.push(Round {
@@ -198,6 +249,7 @@ impl Iterate {
             worktree,
             slug,
             session_name: session_name.to_owned(),
+            brief: BRIEF.to_owned(),
             spawned: Some(Ok("attached".into())),
             spawn_rx,
             rx,
@@ -209,13 +261,14 @@ impl Iterate {
             capture: None,
             queue: Vec::new(),
             log: Vec::new(),
+            toast: None,
         })
     }
 
     /// Starts the session again, after a failed start.
     pub fn respawn(&mut self) {
         self.spawned = None;
-        self.spawn_rx = spawn(&self.worktree, &self.session_name);
+        self.spawn_rx = spawn(&self.worktree, &self.session_name, &self.brief);
     }
 
     pub fn drain(&mut self) {
@@ -310,6 +363,7 @@ impl Iterate {
             let _ = writeln!(f, "{message}");
         }
         let at = Instant::now() + delay;
+        self.toast = Some((format!("Sent to {}: {message}", self.session_name), Instant::now()));
         self.queue.push((at, message.into_bytes()));
         // Enter on its own, so a paste-detecting TUI submits it.
         self.queue
@@ -335,13 +389,17 @@ impl Iterate {
                 let files = changed(&self.worktree, prev, &commit);
                 let _ = git(
                     &self.worktree,
-                    &["update-ref", &format!("refs/cellworks/rounds/{n}"), &commit],
+                    &["update-ref", &round_ref(&self.worktree, n), &commit],
                 );
                 let _ = self.base_tx.send(commit.clone());
                 // What the session did since the last feedback belongs to
                 // the round that feedback opened.
                 self.rounds[n - 1].files = files;
                 self.log.push(format!("round {n} closed"));
+                self.toast = Some((
+                    format!("Round {n} closed. Snapshot {}; round {} is open.", round_ref(&self.worktree, n), n + 1),
+                    Instant::now(),
+                ));
                 self.rounds.push(Round {
                     commit,
                     files: Vec::new(),
@@ -362,6 +420,95 @@ impl Iterate {
         {
             let _ = writeln!(f, "{line}");
         }
+    }
+
+    /// `rel` as the round on show changed it: the viewed round's diff, else
+    /// the open round's against its last snapshot, with three lines of
+    /// context; the whole file when the round did not touch it. The label
+    /// says which.
+    pub fn file_view(&self, rel: &str) -> (String, Vec<CodeLine>) {
+        let (from, to, label) = match self.viewing {
+            Some(k) if k + 1 < self.rounds.len() => (
+                self.rounds[k].commit.clone(),
+                Some(self.rounds[k + 1].commit.clone()),
+                format!("ROUND {}", k + 1),
+            ),
+            _ => (
+                self.rounds.last().map(|r| r.commit.clone()).unwrap_or_default(),
+                snapshot(&self.worktree, "view").ok(),
+                format!("ROUND {} · LIVE", self.rounds.len()),
+            ),
+        };
+        let Some(to) = to else {
+            return (label, Vec::new());
+        };
+        self.file_diff(&from, &to, label, rel)
+    }
+
+    /// What changed since `base` (committed and not): the files and the
+    /// commits.
+    pub fn since(&self, base: &str) -> (Vec<String>, Vec<String>) {
+        let from = git(&self.worktree, &["merge-base", base, "HEAD"]).unwrap_or_else(|_| base.to_owned());
+        let files = snapshot(&self.worktree, "review")
+            .map(|now| changed(&self.worktree, &from, &now))
+            .unwrap_or_default();
+        let commits = git(&self.worktree, &["log", "--oneline", &format!("{from}..HEAD")])
+            .map(|t| t.lines().map(str::to_owned).collect())
+            .unwrap_or_default();
+        (files, commits)
+    }
+
+    /// `rel` against `base`, for the review.
+    pub fn file_view_since(&self, base: &str, rel: &str) -> (String, Vec<CodeLine>) {
+        let from = git(&self.worktree, &["merge-base", base, "HEAD"]).unwrap_or_else(|_| base.to_owned());
+        match snapshot(&self.worktree, "review") {
+            Ok(to) => self.file_diff(&from, &to, format!("SINCE {}", base.to_uppercase()), rel),
+            Err(_) => (String::new(), Vec::new()),
+        }
+    }
+
+    fn file_diff(&self, from: &str, to: &str, label: String, rel: &str) -> (String, Vec<CodeLine>) {
+        let diff = git(&self.worktree, &["diff", "-U3", from, to, "--", rel]).unwrap_or_default();
+        if diff.is_empty() {
+            let text = git(&self.worktree, &["show", &format!("{to}:{rel}")]).unwrap_or_default();
+            let lines = text
+                .lines()
+                .take(600)
+                .enumerate()
+                .map(|(i, l)| CodeLine { no: Some(i + 1), mark: ' ', text: l.to_owned() })
+                .collect();
+            return (format!("{label} · UNCHANGED"), lines);
+        }
+        let mut lines = Vec::new();
+        let mut no = 0;
+        for line in diff.lines() {
+            if let Some(rest) = line.strip_prefix("@@") {
+                // @@ -a,b +c,d @@
+                let new = rest.split('+').nth(1).unwrap_or("1");
+                no = new.split([',', ' ']).next().and_then(|n| n.parse().ok()).unwrap_or(1);
+                if !lines.is_empty() {
+                    lines.push(CodeLine { no: None, mark: '…', text: "...".into() });
+                }
+            } else if line.starts_with("+++") || line.starts_with("---") || line.starts_with("diff ") || line.starts_with("index ") || line.starts_with("new file") || line.starts_with("\\") {
+            } else if let Some(t) = line.strip_prefix('+') {
+                lines.push(CodeLine { no: Some(no), mark: '+', text: t.to_owned() });
+                no += 1;
+            } else if let Some(t) = line.strip_prefix('-') {
+                lines.push(CodeLine { no: None, mark: '-', text: t.to_owned() });
+            } else if !lines.is_empty() || no > 0 {
+                lines.push(CodeLine { no: Some(no), mark: ' ', text: line.strip_prefix(' ').unwrap_or(line).to_owned() });
+                no += 1;
+            }
+        }
+        (label, lines)
+    }
+
+    /// Types `line` into the session's pane and submits it.
+    pub fn type_line(&mut self, line: String) {
+        let at = Instant::now();
+        self.toast = Some((format!("Sent to {}: {line}", self.session_name), at));
+        self.queue.push((at, line.into_bytes()));
+        self.queue.push((at + Duration::from_millis(400), b"\r".to_vec()));
     }
 
     /// Puts the worktree back to round `k`'s snapshot.
@@ -387,6 +534,10 @@ impl Iterate {
         match git(&self.worktree, &["restore", "--source", &target, "--worktree", "--", ":/"]) {
             Ok(_) => {
                 self.log.push(format!("undid round {} and later", k + 1));
+                self.toast = Some((
+                    format!("Undid round {} and later. The session was told.", k + 1),
+                    Instant::now(),
+                ));
                 self.append(&format!("--- undid round {} and later", k + 1));
                 let notice = format!(
                     "[undo] Cellworks reset the worktree to how it was before round {r}. \
@@ -422,13 +573,14 @@ impl Iterate {
     }
 }
 
-fn spawn(worktree: &Path, name: &str) -> Receiver<Result<String, String>> {
+fn spawn(worktree: &Path, name: &str, brief: &str) -> Receiver<Result<String, String>> {
+    let brief = brief.to_owned();
     let (spawn_tx, spawn_rx) = channel();
     let worktree = worktree.to_owned();
     let name = name.to_owned();
     std::thread::spawn(move || {
         let out = Command::new("claude")
-            .args(["--bg", "-n", &name, BRIEF])
+            .args(["--bg", "-n", &name, &brief])
             .current_dir(&worktree)
             .stdin(std::process::Stdio::null())
             .output();

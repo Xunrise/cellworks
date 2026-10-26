@@ -59,11 +59,17 @@ pub struct CaseFile {
 pub enum Status {
     #[default]
     Ingested,
+    /// PROTOTYPE: the iterate loop runs in the case's worktree.
+    Prototyping,
+    /// PROTOTYPE: the engineer froze the prototype.
+    Prototyped,
     Planning,
     Planned,
     Approved,
     Fixing,
     Fixed,
+    /// PROTOTYPE: the engineer reviewed the built change.
+    Reviewed,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -486,6 +492,9 @@ impl Status {
     pub fn name(self) -> &'static str {
         match self {
             Status::Ingested => "INGESTED",
+            Status::Prototyping => "PROTOTYPING",
+            Status::Prototyped => "PROTOTYPED",
+            Status::Reviewed => "REVIEWED",
             Status::Planning => "PLANNING",
             Status::Planned => "PLANNED",
             Status::Approved => "APPROVED",

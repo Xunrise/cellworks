@@ -28,30 +28,30 @@ use egui::{
     Stroke, StrokeKind, Ui, WidgetInfo, WidgetType, pos2, vec2,
 };
 
-const BG: Color32 = Color32::from_rgb(0x07, 0x09, 0x0c);
-const BG_DEEP: Color32 = Color32::from_rgb(0x04, 0x05, 0x07);
-const PANEL: Color32 = Color32::from_rgb(0x0d, 0x11, 0x17);
-const PANEL_RAISED: Color32 = Color32::from_rgb(0x14, 0x1a, 0x22);
-const LINE: Color32 = Color32::from_rgb(0x1e, 0x27, 0x31);
-const LINE_STRONG: Color32 = Color32::from_rgb(0x34, 0x50, 0x6a);
-const INK: Color32 = Color32::from_rgb(0xd7, 0xe2, 0xea);
-const INK_DIM: Color32 = Color32::from_rgb(0x7d, 0x8f, 0xa0);
-const ATTENTION: Color32 = Color32::from_rgb(0xfc, 0xee, 0x0a);
-const ATTENTION_SOFT: Color32 = Color32::from_rgb(0x3a, 0x36, 0x08);
-const ON_ATTENTION: Color32 = BG;
-const FLOW: Color32 = Color32::from_rgb(0x5e, 0xf6, 0xff);
-const LANE_CALLS: Color32 = Color32::from_rgb(0xb2, 0x6b, 0xff);
-const OK: Color32 = Color32::from_rgb(0x3d, 0xdc, 0x84);
-const INFO: Color32 = Color32::from_rgb(0x4a, 0xa8, 0xff);
-const WARN: Color32 = Color32::from_rgb(0xff, 0x9f, 0x1c);
-const DANGER: Color32 = Color32::from_rgb(0xff, 0x3b, 0x5c);
-const DANGER_TEXT: Color32 = Color32::from_rgb(0xff, 0x6f, 0x86);
-const DANGER_FILL: Color32 = Color32::from_rgb(0x3a, 0x0b, 0x16);
-const ADD_FILL: Color32 = Color32::from_rgba_premultiplied(7, 26, 16, 31);
-const TERRAIN: Color32 = Color32::from_rgb(0x0e, 0x13, 0x18);
-const TERRAIN_EDGE: Color32 = Color32::from_rgb(0x1b, 0x23, 0x2c);
-const TERRAIN_INK: Color32 = Color32::from_rgb(0x5f, 0x71, 0x83);
-const ZONE_FOREIGN: Color32 = Color32::from_rgb(0x2c, 0x3b, 0x4a);
+pub const BG: Color32 = Color32::from_rgb(0x07, 0x09, 0x0c);
+pub const BG_DEEP: Color32 = Color32::from_rgb(0x04, 0x05, 0x07);
+pub const PANEL: Color32 = Color32::from_rgb(0x0d, 0x11, 0x17);
+pub const PANEL_RAISED: Color32 = Color32::from_rgb(0x14, 0x1a, 0x22);
+pub const LINE: Color32 = Color32::from_rgb(0x1e, 0x27, 0x31);
+pub const LINE_STRONG: Color32 = Color32::from_rgb(0x34, 0x50, 0x6a);
+pub const INK: Color32 = Color32::from_rgb(0xd7, 0xe2, 0xea);
+pub const INK_DIM: Color32 = Color32::from_rgb(0x7d, 0x8f, 0xa0);
+pub const ATTENTION: Color32 = Color32::from_rgb(0xfc, 0xee, 0x0a);
+pub const ATTENTION_SOFT: Color32 = Color32::from_rgb(0x3a, 0x36, 0x08);
+pub const ON_ATTENTION: Color32 = BG;
+pub const FLOW: Color32 = Color32::from_rgb(0x5e, 0xf6, 0xff);
+pub const LANE_CALLS: Color32 = Color32::from_rgb(0xb2, 0x6b, 0xff);
+pub const OK: Color32 = Color32::from_rgb(0x3d, 0xdc, 0x84);
+pub const INFO: Color32 = Color32::from_rgb(0x4a, 0xa8, 0xff);
+pub const WARN: Color32 = Color32::from_rgb(0xff, 0x9f, 0x1c);
+pub const DANGER: Color32 = Color32::from_rgb(0xff, 0x3b, 0x5c);
+pub const DANGER_TEXT: Color32 = Color32::from_rgb(0xff, 0x6f, 0x86);
+pub const DANGER_FILL: Color32 = Color32::from_rgb(0x3a, 0x0b, 0x16);
+pub const ADD_FILL: Color32 = Color32::from_rgba_premultiplied(7, 26, 16, 31);
+pub const TERRAIN: Color32 = Color32::from_rgb(0x0e, 0x13, 0x18);
+pub const TERRAIN_EDGE: Color32 = Color32::from_rgb(0x1b, 0x23, 0x2c);
+pub const TERRAIN_INK: Color32 = Color32::from_rgb(0x5f, 0x71, 0x83);
+pub const ZONE_FOREIGN: Color32 = Color32::from_rgb(0x2c, 0x3b, 0x4a);
 
 /// Registers the case's typefaces, Chakra Petch for text and labels and
 /// JetBrains Mono for code, ahead of egui's defaults, which stay as the
@@ -317,6 +317,29 @@ fn layout(case: &CaseFile) -> (Vec<Place>, Vec<District>) {
 
 /// One open case: the stage shown, the step inspected, the animations under
 /// way, and the case file once there is one.
+/// PROTOTYPE: the rail: its number, name, the stage it goes to and the
+/// stages it lights for. Stages: 1 problem, 2 plan, 3 a step's detail,
+/// 4 iterate, 5 freeze, 6 review.
+pub const RAIL: [(u8, &str, u8, &[u8]); 5] = [
+    (1, "PROBLEM", 1, &[1]),
+    (2, "ITERATE", 4, &[4]),
+    (3, "FREEZE", 5, &[5]),
+    (4, "PLAN", 2, &[2, 3]),
+    (5, "REVIEW", 6, &[6]),
+];
+
+/// PROTOTYPE: what the app needs to start the iterate loop for a case.
+#[derive(Clone, Debug)]
+pub struct Prototype {
+    pub root: PathBuf,
+    pub worktree: PathBuf,
+    pub branch: String,
+    pub base: String,
+    pub name: String,
+    pub prompt: String,
+    pub factory: bool,
+}
+
 pub struct Case {
     /// The issue key, e.g. "SHOP-42".
     pub key: String,
@@ -347,6 +370,12 @@ pub struct Case {
     launched_act: Option<Act>,
     /// The note APPROVE writes with the approval.
     note: String,
+    /// PROTOTYPE: whether the iterate loop runs for this case (stages 4, 5).
+    pub iterating: bool,
+    /// PROTOTYPE: the prototype the PROTOTYPE act asked the app to start.
+    pub prototype: Option<Prototype>,
+    /// PROTOTYPE: a prompt for the app to type into the prototype's session.
+    pub typed: Option<String>,
     /// The folder an investigation starts in: the common parent of the
     /// projects Cellworks knows, set by the app.
     pub workspace: Option<PathBuf>,
@@ -382,6 +411,9 @@ impl Case {
             launched_act: None,
             note: String::new(),
             workspace: None,
+            iterating: false,
+            prototype: None,
+            typed: None,
             repo: 0,
             diagram: true,
             aim: None,
@@ -430,8 +462,8 @@ impl Case {
         }
     }
 
-    fn go(&mut self, stage: u8, now: f64) {
-        if stage == self.stage || (stage > 1 && !self.ready()) {
+    pub fn go(&mut self, stage: u8, now: f64) {
+        if stage == self.stage || (stage > 1 && !self.ready()) || (stage > 3 && !self.iterating) {
             return;
         }
         self.from = self.frame(now);
@@ -473,7 +505,7 @@ fn frame_of(stage: u8) -> [f32; 5] {
 }
 
 /// The CSS curve cubic-bezier(.2, .8, .2, 1) at `t` in 0..1.
-fn ease(t: f32) -> f32 {
+pub fn ease(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     let bezier = |a: f32, b: f32, s: f32| {
         3.0 * (1.0 - s) * (1.0 - s) * s * a + 3.0 * (1.0 - s) * s * s * b + s * s * s
@@ -493,7 +525,7 @@ fn ease(t: f32) -> f32 {
 // ---------------------------------------------------------------- drawing
 
 #[derive(Clone, Copy)]
-struct Font {
+pub struct Font {
     size: f32,
     family: &'static str,
     /// Extra letter spacing, in em.
@@ -502,7 +534,7 @@ struct Font {
     height: f32,
 }
 
-const fn font(size: f32, family: &'static str, spacing: f32, height: f32) -> Font {
+pub const fn font(size: f32, family: &'static str, spacing: f32, height: f32) -> Font {
     Font {
         size,
         family,
@@ -511,11 +543,11 @@ const fn font(size: f32, family: &'static str, spacing: f32, height: f32) -> Fon
     }
 }
 
-const LABEL: Font = font(12.0, "sans", 0.16, 1.25);
-const MONO11: Font = font(11.0, "mono", 0.0, 1.3);
-const MONO12: Font = font(12.0, "mono", 0.0, 1.4);
+pub const LABEL: Font = font(12.0, "sans", 0.16, 1.25);
+pub const MONO11: Font = font(11.0, "mono", 0.0, 1.3);
+pub const MONO12: Font = font(12.0, "mono", 0.0, 1.4);
 
-fn family(name: &str) -> FontFamily {
+pub fn family(name: &str) -> FontFamily {
     match name {
         "sans" => FontFamily::Proportional,
         "mono" => FontFamily::Monospace,
@@ -526,26 +558,26 @@ fn family(name: &str) -> FontFamily {
 /// The sheet the mockup is drawn on, scaled by `k` and placed at `o`; `dy`
 /// lifts a panel that is still rising into place.
 #[derive(Clone)]
-struct Sheet {
-    painter: Painter,
-    o: Pos2,
-    k: f32,
-    dy: f32,
+pub struct Sheet {
+    pub painter: Painter,
+    pub o: Pos2,
+    pub k: f32,
+    pub dy: f32,
 }
 
 impl Sheet {
-    fn p(&self, x: f32, y: f32) -> Pos2 {
+    pub fn p(&self, x: f32, y: f32) -> Pos2 {
         self.o + vec2(x, y + self.dy) * self.k
     }
 
-    fn r(&self, x: f32, y: f32, w: f32, h: f32) -> Rect {
+    pub fn r(&self, x: f32, y: f32, w: f32, h: f32) -> Rect {
         Rect::from_min_size(self.p(x, y), vec2(w, h) * self.k)
     }
 
     /// The same sheet, for the `index`-th panel of a stage entered at
     /// `entered`: it fades in and rises 18 units over 0.55 s, 90 ms after
     /// the panel before it.
-    fn rising(&self, entered: f64, now: f64, index: usize) -> Sheet {
+    pub fn rising(&self, entered: f64, now: f64, index: usize) -> Sheet {
         let t = ease(((now - entered - 0.09 * index as f64) / 0.55) as f32);
         let mut sheet = self.clone();
         sheet.painter.multiply_opacity(t);
@@ -553,7 +585,7 @@ impl Sheet {
         sheet
     }
 
-    fn galley(&self, text: &str, font: Font, colour: Color32, wrap: f32) -> Arc<Galley> {
+    pub fn galley(&self, text: &str, font: Font, colour: Color32, wrap: f32) -> Arc<Galley> {
         let size = font.size * self.k;
         let mut job = LayoutJob::single_section(
             text.to_owned(),
@@ -573,17 +605,17 @@ impl Sheet {
         self.painter.layout_job(job)
     }
 
-    fn width(&self, text: &str, font: Font) -> f32 {
+    pub fn width(&self, text: &str, font: Font) -> f32 {
         self.galley(text, font, INK, 0.0).size().x / self.k
     }
 
-    fn height(&self, text: &str, font: Font, wrap: f32) -> f32 {
+    pub fn height(&self, text: &str, font: Font, wrap: f32) -> f32 {
         self.galley(text, font, INK, wrap).size().y / self.k
     }
 
     /// Writes `text` with its top left at (`x`, `y`), wrapped at `wrap`
     /// units (none when 0), and returns its height.
-    fn text(&self, x: f32, y: f32, text: &str, font: Font, colour: Color32, wrap: f32) -> f32 {
+    pub fn text(&self, x: f32, y: f32, text: &str, font: Font, colour: Color32, wrap: f32) -> f32 {
         let galley = self.galley(text, font, colour, wrap);
         let height = galley.size().y / self.k;
         self.painter.galley(self.p(x, y), galley, colour);
@@ -593,7 +625,7 @@ impl Sheet {
     /// Like [`Sheet::text`], but the text can be selected and copied, and
     /// the web addresses in it open in the browser.
     #[allow(clippy::too_many_arguments)]
-    fn pick(
+    pub fn pick(
         &self,
         ui: &Ui,
         x: f32,
@@ -615,7 +647,7 @@ impl Sheet {
     /// `text` placed by `align` around (`x`, `y`), selectable; its links are
     /// the web addresses in it, or its first `head` bytes when that names one. Answers
     /// its height.
-    fn pick_at(
+    pub fn pick_at(
         &self,
         ui: &Ui,
         (x, y, align): (f32, f32, Align2),
@@ -696,7 +728,7 @@ impl Sheet {
     }
 
     /// Writes one line of `text` placed by `align` around (`x`, `y`).
-    fn put(&self, x: f32, y: f32, align: Align2, text: &str, font: Font, colour: Color32) {
+    pub fn put(&self, x: f32, y: f32, align: Align2, text: &str, font: Font, colour: Color32) {
         let galley = self.galley(text, font, colour, 0.0);
         let at = align.anchor_size(self.p(x, y), galley.size()).min;
         self.painter.galley(at, galley, colour);
@@ -704,7 +736,7 @@ impl Sheet {
 
     /// A panel or button: filled, edged, with its top-left and bottom-right
     /// corners cut by `cut` units.
-    fn plate(&self, rect: Rect, fill: Color32, edge: Color32, cut: f32) {
+    pub fn plate(&self, rect: Rect, fill: Color32, edge: Color32, cut: f32) {
         if cut <= 0.0 {
             self.painter.rect_filled(rect, 0.0, fill);
             if edge != Color32::TRANSPARENT {
@@ -732,7 +764,7 @@ impl Sheet {
             .add(Shape::convex_polygon(points, fill, stroke));
     }
 
-    fn rule(&self, x0: f32, x1: f32, y: f32, colour: Color32) {
+    pub fn rule(&self, x0: f32, x1: f32, y: f32, colour: Color32) {
         self.painter.hline(
             self.p(x0, y).x..=self.p(x1, y).x,
             self.p(x0, y).y,
@@ -770,7 +802,7 @@ fn selecting(style: &mut egui::Style) {
 }
 
 /// A clickable region named `label` for the accessibility tree.
-fn button(ui: &Ui, rect: Rect, label: &str) -> Response {
+pub fn button(ui: &Ui, rect: Rect, label: &str) -> Response {
     let response = ui.interact(rect, Id::new(("case", label)), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, label));
     response
@@ -877,31 +909,31 @@ pub fn show(ui: &mut Ui, case: &mut Case, jira: &mut Jira, live_map: Option<Live
     let ctx = ui.ctx().clone();
     let now = ctx.input(|input| input.time);
     case.refresh(now);
-    let (one, two, three, enter, esc) = ctx.input(|input| {
+    // A focused field or terminal owns the keyboard.
+    let typing = ctx.memory(|m| m.focused().is_some());
+    let (one, two, three, four, five, enter, esc) = ctx.input(|input| {
+        let k = |key| !typing && input.key_pressed(key);
         (
-            input.key_pressed(egui::Key::Num1),
-            input.key_pressed(egui::Key::Num2),
-            input.key_pressed(egui::Key::Num3),
-            input.key_pressed(egui::Key::Enter),
-            input.key_pressed(egui::Key::Escape),
+            k(egui::Key::Num1),
+            k(egui::Key::Num2),
+            k(egui::Key::Num3),
+            k(egui::Key::Num4),
+            k(egui::Key::Num5),
+            k(egui::Key::Enter),
+            k(egui::Key::Escape),
         )
     });
     let live_map = live_map.filter(|_| case.ready());
     if esc {
-        // On the map, Esc leaves the case and the map stays.
-        if case.stage == 1 || (case.stage == 2 && live_map.is_some()) {
+        if case.stage == 1 {
             return false;
         }
-        case.go(case.stage - 1, now);
-    } else if one {
-        case.go(1, now);
-    } else if two {
-        case.go(2, now);
-    } else if three {
-        case.go(3, now);
+        case.go(case.back(), now);
+    } else if let Some(n) = [one, two, three, four, five].iter().position(|k| *k) {
+        case.go(RAIL[n].2, now);
     } else if enter {
         match case.stage {
-            1 => case.go(2, now),
+            1 => case.forward(now),
             2 => case.pick(case.hover.unwrap_or(0), now),
             _ => {}
         }
@@ -922,6 +954,17 @@ pub fn show(ui: &mut Ui, case: &mut Case, jira: &mut Jira, live_map: Option<Live
     case.chrome.clear();
     let top = Rect::from_min_max(screen.min, pos2(screen.max.x, sheet.p(0.0, 64.0).y));
     block(ui, case, top, 0);
+    // PROTOTYPE: on stages 4 and 5 the iterate loop draws below the bar.
+    if case.stage >= 4 {
+        sheet.painter.rect_filled(top, 0.0, PANEL);
+        match top_bar(ui, &sheet, case, jira, live_map.is_some()) {
+            Some(0) => return false,
+            Some(stage) => case.go(stage, now),
+            None => {}
+        }
+        ctx.request_repaint();
+        return true;
+    }
     match (case.stage, &live_map) {
         (2, Some(_)) => {
             let [x, y, w, h] = MAP_AREA;
@@ -1087,18 +1130,18 @@ fn top_bar(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, live: bool) -> 
 
     let label = font(12.0, "semibold", 0.12, 1.25);
     let number = font(12.0, "mono", 0.0, 1.25);
-    let rail = [(1u8, "PROBLEM"), (2, "FIX IN PLACE"), (3, "EVIDENCE")];
+    let rail: Vec<(u8, &str)> = RAIL.iter().map(|(n, name, _, _)| (*n, *name)).collect();
     let widths: Vec<f32> = rail
         .iter()
         .map(|(n, name)| 24.0 + s.width(&n.to_string(), number) + 8.0 + s.width(name, label))
         .collect();
-    let mut x = 456.0;
+    let mut x = 392.0;
     let ready = case.ready();
     for ((n, name), w) in rail.iter().zip(&widths) {
-        let current = *n == case.stage;
+        let current = RAIL[(*n - 1) as usize].3.contains(&case.stage);
         let rect = s.r(x, 10.0, *w, 44.0);
         let mut s = s.clone();
-        if *n > 1 && !ready {
+        if (*n > 1 && !ready) || (matches!(*n, 2 | 3 | 5) && !case.iterating) {
             s.painter.multiply_opacity(0.35);
         }
         let response = button(ui, rect, &format!("{n} {name}"));
@@ -1110,7 +1153,7 @@ fn top_bar(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, live: bool) -> 
             (
                 Color32::TRANSPARENT,
                 LINE,
-                if *n < case.stage { INK } else { INK_DIM },
+                if *n < RAIL.iter().find(|r| r.3.contains(&case.stage)).map_or(1, |r| r.0) { INK } else { INK_DIM },
             )
         };
         s.plate(rect, fill, edge, 8.0);
@@ -1125,7 +1168,7 @@ fn top_bar(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, live: bool) -> 
         let nx = x + 12.0 + s.width(&n.to_string(), number) + 8.0;
         s.put(nx, 32.0, Align2::LEFT_CENTER, name, label, ink);
         if response.clicked() {
-            go = Some(*n);
+            go = Some(RAIL[(*n - 1) as usize].2);
         }
         x += w + 4.0;
     }
@@ -1151,11 +1194,8 @@ fn top_bar(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, live: bool) -> 
             INK,
         );
         if response.clicked() {
-            go = Some(if case.stage == 2 && live {
-                0
-            } else {
-                case.stage - 1
-            });
+            let _ = live;
+            go = Some(case.back());
         }
         right -= w + 16.0;
     }
@@ -1364,7 +1404,7 @@ pub struct Live<'a> {
 }
 
 /// Where the 1600 x 1000 sheet sits on `screen`, and its scale.
-fn sheet_frame(screen: Rect) -> (Pos2, f32) {
+pub fn sheet_frame(screen: Rect) -> (Pos2, f32) {
     let k = (screen.width() / 1600.0).min(screen.height() / 1000.0);
     (screen.center() - vec2(800.0, 500.0) * k, k)
 }
@@ -1378,6 +1418,57 @@ const HOLE: [f32; 4] = [1216.0, 80.0, 360.0, 230.0];
 impl Case {
     /// The folder whose map the case wants open, on stages 2 and 3: the
     /// shown repository's worktree, else its root.
+    /// The stage one step back along the rail.
+    pub fn back(&self) -> u8 {
+        match self.stage {
+            3 => 2,
+            2 => if self.iterating { 5 } else { 1 },
+            6 => 2,
+            5 => 4,
+            _ => 1,
+        }
+    }
+
+    /// From the problem: into the prototype, starting it when none runs.
+    fn forward(&mut self, now: f64) {
+        if self.iterating {
+            self.go(4, now);
+        } else {
+            self.act(Act::Prototype, now);
+        }
+    }
+
+    /// PROTOTYPE: runs the PROTOTYPE act, as its button does.
+    pub fn prototype_act(&mut self, now: f64) {
+        self.act(Act::Prototype, now);
+    }
+
+    /// PROTOTYPE: runs the REVIEW act.
+    pub fn review_act(&mut self, now: f64) {
+        self.act(Act::Review, now);
+    }
+
+    /// PROTOTYPE: the case's base branch, for the review's diff.
+    pub fn base_branch(&self) -> Option<String> {
+        self.main_repo().and_then(|r| r.base_branch)
+    }
+
+    pub fn stage(&self) -> u8 {
+        self.stage
+    }
+
+    pub fn entered(&self) -> f64 {
+        self.entered
+    }
+
+    /// The case's steps, as id and title.
+    pub fn steps(&self) -> Vec<(String, String)> {
+        self.loaded
+            .as_ref()
+            .map(|l| l.case.steps.iter().map(|s| (s.id.clone(), s.title.clone())).collect())
+            .unwrap_or_default()
+    }
+
     pub fn wants(&self) -> Option<PathBuf> {
         if self.stage < 2 || !self.ready() {
             return None;
@@ -2626,7 +2717,12 @@ fn problem(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, now: f64) -> f3
     if !ready {
         return bottom;
     }
-    let response = button(ui, cta, "SEE THE PROPOSED FIX");
+    let (cta_title, cta_sub) = if case.iterating {
+        ("BACK TO THE PROTOTYPE", "its rounds, its plan and the session".to_owned())
+    } else {
+        ("PROTOTYPE IT", "a worktree and a session; you iterate on it in rounds".to_owned())
+    };
+    let response = button(ui, cta, cta_title);
     let glow = if response.hovered() { 150 } else { 115 };
     c.painter.add(
         Shadow {
@@ -2643,7 +2739,7 @@ fn problem(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, now: f64) -> f3
         rx + 28.0,
         cy - 1.0,
         Align2::LEFT_BOTTOM,
-        "SEE THE PROPOSED FIX",
+        cta_title,
         font(16.0, "bold", 0.14, 1.25),
         ON_ATTENTION,
     );
@@ -2651,7 +2747,7 @@ fn problem(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, now: f64) -> f3
         rx + 28.0,
         cy + 1.0,
         Align2::LEFT_TOP,
-        &format!("{steps} steps, placed on the map of the code base"),
+        &{ let _ = steps; cta_sub },
         font(13.0, "sans", 0.0, 1.25),
         ON_ATTENTION,
     );
@@ -2664,7 +2760,7 @@ fn problem(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, now: f64) -> f3
         ON_ATTENTION,
     );
     if response.clicked() {
-        case.go(2, now);
+        case.forward(now);
     }
     bottom
 }
@@ -2696,7 +2792,10 @@ fn claude_fix(
     };
     let state = match status {
         None => "not ingested yet".to_owned(),
-        Some(Status::Ingested) => "ingested · not planned yet".to_owned(),
+        Some(Status::Ingested) => "ingested · not prototyped yet".to_owned(),
+        Some(Status::Prototyping) => format!("prototyping on {branch}"),
+        Some(Status::Prototyped) => format!("prototype frozen on {branch} · not planned yet"),
+        Some(Status::Reviewed) => format!("reviewed on {branch}"),
         Some(Status::Planning) => format!("planning · {}", flavour.name().to_lowercase()),
         Some(Status::Planned) => "planned · waiting for your approval".to_owned(),
         Some(Status::Approved) => "approved · not fixed yet".to_owned(),
@@ -2720,12 +2819,17 @@ fn claude_fix(
             ),
             Some((Act::Ingest, "a session reads the ticket and the code")),
         )),
-        (None, Some(Status::Ingested)) => Some((
-            "Not planned yet".to_owned(),
+        (None, Some(Status::Ingested | Status::Prototyping)) => Some((
+            "Not prototyped yet".to_owned(),
             format!(
-                "PLAN starts {who}. It creates the worktree {worktree} on branch {branch} and plans the fix there. The steps and the map unlock when the plan is written."
+                "The plan is written from a prototype. PROTOTYPE makes the worktree {worktree} on branch {branch} and starts a session there; you iterate on it in rounds and freeze it, and the plan follows."
             ),
-            Some((Act::Plan, "worktree, branch, approach and steps")),
+            Some((Act::Prototype, "worktree, session and the iterate loop")),
+        )),
+        (None, Some(Status::Prototyped)) => Some((
+            "Not planned yet".to_owned(),
+            format!("The prototype is frozen. PLAN asks {who} to write the steps from it."),
+            Some((Act::Plan, "the steps, from the prototype")),
         )),
         (None, Some(Status::Planning)) => Some((
             "Planning…".to_owned(),
@@ -2780,7 +2884,7 @@ fn claude_fix(
     a.plate(a.r(rx, top, w, h), PANEL, edge, 16.0);
     let lx = rx + 28.0;
     let mut y = top + 28.0;
-    y += a.pick(ui, lx, y, "CLAUDE'S FIX", LABEL, ATTENTION, 0.0) + 6.0;
+    y += a.pick(ui, lx, y, "4 · THE PLAN", LABEL, ATTENTION, 0.0) + 6.0;
     y += a.pick(ui, lx, y, &state, MONO11, INK_DIM, inner) + 18.0;
     match locked {
         Some((title, text, act)) => {
@@ -2824,7 +2928,8 @@ fn act_cta(
         Act::Ingest => "INGEST THE TICKET",
         Act::Plan => "PLAN THE FIX",
         Act::Approve => "APPROVE THE PLAN",
-        Act::Fix => "FIX IT",
+        Act::Prototype => "PROTOTYPE IT",
+        Act::Review => "REVIEWED",
     };
     let head = font(16.0, "bold", 0.14, 1.25);
     let small = font(13.0, "sans", 0.0, 1.25);
@@ -2877,7 +2982,8 @@ fn act_cta(
                 Act::Ingest => "INGESTING…",
                 Act::Plan => "PLANNING…",
                 Act::Approve => "APPROVING…",
-                Act::Fix => "FIXING…",
+                Act::Prototype => "PROTOTYPING…",
+                Act::Review => "REVIEWING…",
             };
             c.put(
                 x + 24.0,
@@ -2924,7 +3030,7 @@ fn fix(ui: &mut Ui, s: &Sheet, case: &mut Case, now: f64) {
     let lx = x + 24.0;
     let inner = w - 48.0;
     let mut y = top + 24.0;
-    y += a.text(lx, y, "2 · CLAUDE'S FIX", LABEL, ATTENTION, 0.0) + 6.0;
+    y += a.text(lx, y, "4 · THE PLAN", LABEL, ATTENTION, 0.0) + 6.0;
     let flavour = case.flavour().name().to_lowercase();
     let (_, branch) = case.worktree().unwrap_or_default();
     let state = match file.status {
@@ -2995,7 +3101,7 @@ fn fix(ui: &mut Ui, s: &Sheet, case: &mut Case, now: f64) {
     // The gate at the foot: approve the plan, then fix it.
     let gate = match file.status {
         Status::Planned => Some(Act::Approve),
-        Status::Approved | Status::Fixing => Some(Act::Fix),
+        Status::Fixed => Some(Act::Review),
         _ => None,
     };
     let mut bottom = top + h - 24.0;
@@ -3009,7 +3115,7 @@ fn fix(ui: &mut Ui, s: &Sheet, case: &mut Case, now: f64) {
             [lx, bottom, inner],
             match act {
                 Act::Approve => "writes the approval into the case file",
-                _ => "implements the plan, commits locally",
+                _ => "worktree, session and the iterate loop on its plan",
             },
             now,
         );
@@ -3048,7 +3154,7 @@ fn evidence(ui: &Ui, s: &Sheet, case: &mut Case, now: f64) {
     let a = s.rising(case.entered, now, 0);
     let (x, w) = (24.0, 330.0);
     let mut y = 80.0;
-    y += a.text(x, y, "3 · THE EVIDENCE", LABEL, INK_DIM, 0.0) + 16.0;
+    y += a.text(x, y, "4 · STEP DETAIL", LABEL, INK_DIM, 0.0) + 16.0;
     let n = steps.len() as f32;
     let tab_w = (w - 6.0 * (n - 1.0)) / n;
     for (index, other) in steps.iter().enumerate() {
@@ -3301,7 +3407,7 @@ fn code(ui: &Ui, s: &Sheet, case: &mut Case, now: f64) {
 /// Opens `path` at `line` in Neovim, in a new Terminal window, or in the
 /// editor, and says what ran. With `CELLWORKS_DRY_LAUNCH` set nothing runs,
 /// so the screenshot harness can press the buttons.
-fn launch(nvim: bool, path: &Path, line: usize) -> String {
+pub fn launch(nvim: bool, path: &Path, line: usize) -> String {
     let file = path.display().to_string();
     let (shown, command) = if nvim {
         let shell = format!("nvim +{line} '{file}'");
@@ -3371,20 +3477,22 @@ impl Flavour {
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Act {
     Ingest,
+    Prototype,
     Plan,
     Approve,
-    Fix,
+    Review,
 }
 
 impl Act {
-    const ALL: [Act; 4] = [Act::Ingest, Act::Plan, Act::Approve, Act::Fix];
+    const ALL: [Act; 5] = [Act::Ingest, Act::Prototype, Act::Plan, Act::Approve, Act::Review];
 
     fn name(self) -> &'static str {
         match self {
             Act::Ingest => "INGEST",
+            Act::Prototype => "PROTOTYPE",
             Act::Plan => "PLAN",
             Act::Approve => "APPROVE",
-            Act::Fix => "FIX",
+            Act::Review => "REVIEW",
         }
     }
 
@@ -3392,9 +3500,10 @@ impl Act {
     fn done(self) -> Status {
         match self {
             Act::Ingest => Status::Ingested,
+            Act::Prototype => Status::Prototyped,
             Act::Plan => Status::Planned,
             Act::Approve => Status::Approved,
-            Act::Fix => Status::Fixed,
+            Act::Review => Status::Reviewed,
         }
     }
 }
@@ -3430,9 +3539,10 @@ impl Case {
         let status = self.status();
         let running = match act {
             Act::Ingest => self.launched_act == Some(Act::Ingest) && status.is_none(),
+            Act::Prototype => status == Some(Status::Prototyping),
             Act::Plan => status == Some(Status::Planning),
             Act::Approve => false,
-            Act::Fix => status == Some(Status::Fixing),
+            Act::Review => false,
         };
         if running {
             return Standing::Running;
@@ -3442,15 +3552,20 @@ impl Case {
         }
         let next = match status {
             None => Act::Ingest,
-            Some(Status::Ingested | Status::Planning) => Act::Plan,
+            Some(Status::Ingested | Status::Prototyping) => Act::Prototype,
+            Some(Status::Prototyped | Status::Planning) => Act::Plan,
             Some(Status::Planned) => Act::Approve,
-            Some(_) => Act::Fix,
+            Some(_) => Act::Review,
         };
         if act != next {
             return Standing::Later;
         }
-        if act == Act::Fix && self.flavour() == Flavour::Factory {
-            return Standing::Blocked("runs in the Factory pipeline");
+        if act == Act::Review && status.is_some_and(|s| s < Status::Fixed) {
+            return Standing::Blocked(if self.flavour() == Flavour::Factory {
+                "the pipeline builds it"
+            } else {
+                "the session builds it"
+            });
         }
         Standing::Next
     }
@@ -3464,13 +3579,12 @@ impl Case {
         self.launched_act = Some(act);
         let shown = match act {
             Act::Ingest => ingest(&self.key, self.workspace.as_deref()),
+            Act::Prototype => self.prototype_fix(),
             Act::Plan => self.plan(),
-            Act::Approve => {
-                casefile::advance(&self.key, Status::Approved, self.note.trim(), |_| {})
-                    .map(|()| "approved; nothing ran".to_owned())
-                    .unwrap_or_else(|error| format!("could not approve: {error}"))
-            }
-            Act::Fix => self.fix(),
+            Act::Approve => self.approve(),
+            Act::Review => casefile::advance(&self.key, Status::Reviewed, self.note.trim(), |_| {})
+                .map(|()| "reviewed".to_owned())
+                .unwrap_or_else(|error| format!("could not write the review: {error}")),
         };
         self.investigating = Some(shown);
         self.checked = now - 2.0;
@@ -3504,13 +3618,74 @@ impl Case {
         };
         Some((
             format!("{}-{key}", repo.root.trim_end_matches('/')),
-            format!("fix/{key}{slug}"),
+            format!("proto/{key}{slug}"),
         ))
     }
 
+    /// PROTOTYPE: plans from the frozen prototype, in the prototype's own
+    /// session: the app types `typed` into its pane.
     fn plan(&mut self) -> String {
-        let (Some(repo), Some((worktree, branch))) = (self.main_repo(), self.worktree()) else {
+        let (Some(repo), Some((_, branch))) = (self.main_repo(), self.worktree()) else {
             return "no repository in the case file to plan in".to_owned();
+        };
+        let base = repo.base_branch.clone().unwrap_or_else(|| "main".to_owned());
+        let key = self.key.clone();
+        let file = casefile::path(&key).display().to_string();
+        let case_doc = skill("ticket-case");
+        let prompt = match self.flavour() {
+            Flavour::Factory => "/factory:freeze".to_owned(),
+            Flavour::Jarvis => format!(
+                "/jarvis-execute:plan-story {key} -- plan only, from the prototype on branch {branch}: what it changed against {base} and the rounds in .cellworks/feedback.log. Then write the approach and the steps into the case file {file} as {case_doc} says, and set its status to planned."
+            ),
+            Flavour::Claude => format!(
+                "The engineer froze the prototype. Read {} and write the plan for {key} into the case file {file} as {case_doc} says. Plan from what the prototype changed in this worktree (git diff {base}) and the rounds in .cellworks/feedback.log, so each step says where its change lands. Set the status to planned. Do not commit.",
+                skill("ticket-plan")
+            ),
+        };
+        if let Err(error) = casefile::advance(&key, Status::Planning, "", |_| {}) {
+            return format!("could not write the case file: {error}");
+        }
+        self.typed = Some(prompt.clone());
+        format!("planning in the prototype's session: {prompt}")
+    }
+
+    /// PROTOTYPE: approves the plan; outside the Factory the prototype's
+    /// session then builds it cleanly.
+    fn approve(&mut self) -> String {
+        let key = self.key.clone();
+        if let Err(error) = casefile::advance(&key, Status::Approved, self.note.trim(), |_| {}) {
+            return format!("could not approve: {error}");
+        }
+        if self.flavour() == Flavour::Factory {
+            return "approved; the pipeline builds it".to_owned();
+        }
+        let file = casefile::path(&key).display().to_string();
+        let branch = self.worktree().map(|(_, b)| b).unwrap_or_default();
+        self.typed = Some(format!(
+            "The plan is approved. Read {} and build {key} cleanly on branch {branch} as the approved plan in the case file {file} says, starting from the prototype. Commit locally, never push. Update the case file as {} says.",
+            skill("ticket-fix"),
+            skill("ticket-case")
+        ));
+        "approved; the prototype's session builds it".to_owned()
+    }
+
+    /// PROTOTYPE: the engineer froze the prototype; planning starts.
+    pub fn freeze(&mut self, now: f64) {
+        if self.status() == Some(Status::Prototyping) {
+            let _ = casefile::advance(&self.key, Status::Prototyped, "frozen from Cellworks", |_| {});
+            self.checked = now - 2.0;
+            self.refresh(now);
+        }
+        self.launched_act = None;
+        self.act(Act::Plan, now);
+        self.go(2, now);
+    }
+
+    /// PROTOTYPE: the PROTOTYPE act: the app starts the iterate loop in the
+    /// case's worktree with a session briefed from the problem.
+    fn prototype_fix(&mut self) -> String {
+        let (Some(repo), Some((worktree, branch))) = (self.main_repo(), self.worktree()) else {
+            return "no repository in the case file to prototype in".to_owned();
         };
         let base = repo
             .base_branch
@@ -3519,21 +3694,10 @@ impl Case {
             .unwrap_or_else(|| "main".to_owned());
         let key = self.key.clone();
         let file = casefile::path(&key).display().to_string();
-        let case_doc = skill("ticket-case");
-        let flavour = self.flavour();
-        let prompt = match flavour {
-            Flavour::Claude => format!(
-                "Read {} and follow it to plan {key}. Create the worktree {worktree} on a new branch {branch} from {base} and plan there. Write the plan into the case file {file} as {case_doc} says.",
-                skill("ticket-plan")
-            ),
-            Flavour::Jarvis => format!(
-                "/jarvis-execute:plan-story {key} -- plan only, in the worktree {worktree} on branch {branch} from {base}. Then write the approach and the steps into the case file {file} as {case_doc} says, and set its status to planned."
-            ),
-            Flavour::Factory => format!(
-                "/factory:design {key} -- then write the approach and the steps into the case file {file} as {case_doc} says, with the worktree {worktree} on branch {branch} from {base}, and set its status to planned."
-            ),
-        };
-        let written = casefile::advance(&key, Status::Planning, "", |case| {
+        let prompt = format!(
+            "Prototype a fix for {key}: the case file {file} describes the problem and when it is done. Make the smallest change that shows the behaviour, in this worktree on branch {branch}, and leave it UNCOMMITTED. The engineer iterates on it with you in rounds from Cellworks; planning and the clean build come after they freeze it."
+        );
+        let written = casefile::advance(&key, Status::Prototyping, "", |case| {
             if let Some(main) = case.repos.first_mut() {
                 main.worktree = Some(worktree.clone());
                 main.branch = Some(branch.clone());
@@ -3543,29 +3707,16 @@ impl Case {
         if let Err(error) = written {
             return format!("could not write the case file: {error}");
         }
-        session(&expand(&repo.root), &prompt)
-    }
-
-    fn fix(&mut self) -> String {
-        let Some((worktree, branch)) = self.worktree() else {
-            return "no worktree in the case file to fix in".to_owned();
-        };
-        let key = self.key.clone();
-        let file = casefile::path(&key).display().to_string();
-        let case_doc = skill("ticket-case");
-        let prompt = match self.flavour() {
-            Flavour::Jarvis => format!(
-                "/jarvis-execute:implement-story {key} -- on branch {branch}, commit locally and never push. Then set the case file {file} to fixed as {case_doc} says."
-            ),
-            _ => format!(
-                "Read {} and follow it to fix {key} on branch {branch}, as the approved plan in the case file {file} says. Commit locally, never push. Update the case file as {case_doc} says.",
-                skill("ticket-fix")
-            ),
-        };
-        if let Err(error) = casefile::advance(&key, Status::Fixing, "", |_| {}) {
-            return format!("could not write the case file: {error}");
-        }
-        session(&expand(&worktree), &prompt)
+        self.prototype = Some(Prototype {
+            root: expand(&repo.root),
+            worktree: expand(&worktree),
+            branch: branch.clone(),
+            base,
+            name: key.to_lowercase(),
+            prompt,
+            factory: self.flavour() == Flavour::Factory,
+        });
+        format!("prototype starting in {worktree} on {branch}")
     }
 }
 
