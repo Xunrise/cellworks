@@ -13,6 +13,7 @@ Terms specific to this context. Shared terms and cross-context collisions are in
 | Lens bar | The row of lenses above the map: the current one marked, each explained on hover. | lenses prototype 2026-10-12; EPIC-010; STORY-055 | Not to be confused with Layer (level of detail) |
 | Movement mode | How h/j/k/l move: spatial (nearest node in a direction) or list order. | prototype-findings L154-156 |  |
 | Palette | ⌘K search over projects, groups, nodes and sessions, listing every action once you type. | prototype-findings L182 |  |
+| Review mode | Reviewing a pull request: at most one at a time; Esc, the back control or "Leave review" leaves it before any other step, even from inside a tower; opening any project, including starting another review, also ends it. Leaving reopens the project's own city. | STORY-022 |  |
 | Selection | The node the keyboard acts on, shown with a pulsing outline. | prototype-findings L54, L173 | also called cursor |
 | Tree | The per-layer explorer (E) that frames the map on the row under its cursor. | prototype-findings L56, L186-204 |  |
 | Turned camera | The camera turned, as the zoom closes in, from looking from the corner to facing one facade; zooming out turns it back. | facade-camera prototype 2026-10-11; STORY-045 |  |

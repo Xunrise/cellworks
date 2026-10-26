@@ -41,3 +41,9 @@ Navigation holds what is framed (the Universe, the open project, a folder or a n
   selection nor the view.
 - The tree lists what the current layer holds (the districts on the Project layer, the folder view's contents below
   it), and its highlighted row is the selection, so the tree and the map never disagree.
+- At most one review is open at a time: opening a project, including implicitly by starting a different review, ends
+  whatever review was already open (STORY-022).
+- Esc leaves an open review first, before any other step, even from inside a tower; the back control and a button do
+  the same. Leaving reopens the project's own city (STORY-022).
+- A review's city is the pull request's head, opened as an ordinary project named `<project> · review #<n>`
+  (STORY-022).

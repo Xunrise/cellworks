@@ -18,6 +18,7 @@ mod history;
 mod lanes;
 mod layout;
 mod lens;
+mod review;
 mod rules;
 pub mod ui;
 mod view;
@@ -38,6 +39,7 @@ pub use graph::{
 pub use history::{Commit, LineHistory};
 pub use lanes::{LaneId, LaneKind, Lanes, Network};
 pub use lens::{Flight, Lens, relens};
+pub use review::{ReviewOverlay, TowerReview};
 pub use rules::{PREFIX_RULES, PrefixRule, default_prefix_rule, prefix_rule};
 pub use view::{Pivot, View, turn_at};
 pub use why::{PrKey, PrShare, Story, Why, floor_commit, why_of};

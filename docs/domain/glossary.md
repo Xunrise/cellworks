@@ -29,7 +29,7 @@ Every context's own glossary.
 | [CodeAnalysis](contexts/CodeAnalysis/glossary.md) | 7 |
 | [DomainKnowledge](contexts/DomainKnowledge/glossary.md) | 2 |
 | [Editing](contexts/Editing/glossary.md) | 2 |
-| [Map](contexts/Map/glossary.md) | 11 |
-| [Navigation](contexts/Navigation/glossary.md) | 7 |
-| [Sources](contexts/Sources/glossary.md) | 8 |
+| [Map](contexts/Map/glossary.md) | 15 |
+| [Navigation](contexts/Navigation/glossary.md) | 8 |
+| [Sources](contexts/Sources/glossary.md) | 9 |
 | [Workspace](contexts/Workspace/glossary.md) | 2 |

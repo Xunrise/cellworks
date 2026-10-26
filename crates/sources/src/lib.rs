@@ -5,3 +5,4 @@
 //! this crate is the seam the Sources stories grow into.
 
 pub mod pull_requests;
+pub mod stories;

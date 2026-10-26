@@ -35,7 +35,8 @@ We will list pull requests through read-only `gh pr list` and read their diffs t
   says why.
 - Fetching writes objects and `FETCH_HEAD` into the user's repository. It creates no branch and moves no ref the user
   owns.
-- Each opened pull request costs one temporary worktree, created and removed on a background thread.
+- Each opened pull request costs one temporary worktree, created and removed on a background thread. Review mode keeps
+  the head checkout for the whole review instead, see [ADR-0011](0011-review-mode-opens-the-pull-request-head-as-the-city.md).
 - The flags stay in step with the Factory's `critical.sh` only as long as `critical.yaml` keeps its simple shape (one
   flag per line, one quoted glob per list entry).
 

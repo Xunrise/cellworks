@@ -43,6 +43,11 @@ fn pull_request(base: String, head: String) -> PullRequest {
         base,
         author: "octocat".to_owned(),
         story: None,
+        additions: 0,
+        deletions: 0,
+        changed_files: 0,
+        files: Vec::new(),
+        flags: std::collections::BTreeMap::new(),
     }
 }
 

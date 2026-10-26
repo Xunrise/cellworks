@@ -24,7 +24,12 @@
 - The UI thread owns all application state. Nothing on it blocks on a process, a file system walk or the network.
 - Background work runs on `std::thread`; results come back as `<Context>Event` values over `std::sync::mpsc` and are
   drained once per frame.
+- A guard whose `Drop` runs a process (a checkout, a worktree) is never dropped on the UI thread: it spawns its own
+  background thread to run the process instead, so dropping it never blocks the frame it is dropped on. Example:
+  `cellworks_sources::pull_requests::HeadCheckout`.
 - No async runtime.
+- A guard that runs a process when dropped (a checkout, a worktree) is dropped on a background thread, never on the UI
+  thread.
 
 ## Errors
 
@@ -38,5 +43,5 @@
 - git, kubectl, nvim, curl and gh are run as child processes behind a small adapter per tool in the crate that uses it.
 - Secrets reach curl through stdin config or private temp files, never through arguments.
 - Cluster calls are `kubectl get` only.
-- `gh` runs read-only commands only (`gh pr list`), never a write command.
+- `gh` runs read-only commands only (`gh pr list`, `gh issue list`), never a write command.
 - Tool output is parsed tolerantly: unknown fields and events are ignored.

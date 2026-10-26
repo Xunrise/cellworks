@@ -21,8 +21,9 @@ use cellworks_agent_sessions::{Session, SessionSources};
 use cellworks_code_analysis::{CodeAnalysisEvent, GitCli, GitListing, start_details, start_load};
 use cellworks_map::View;
 use cellworks_map::ui::{Drawn, DrawnBridge, DrawnBuilding, DrawnLane, DrawnTower, Outline};
-use cellworks_map::{Lens, ProjectMap, Why, default_prefix_rule, prefix_rule};
+use cellworks_map::{Lens, ProjectMap, ReviewOverlay, Why, default_prefix_rule, prefix_rule};
 use cellworks_navigation::{Moved, Navigation};
+use cellworks_sources::pull_requests::forge::{Checkout, Forge};
 use cellworks_workspace::ui::LauncherAction;
 use cellworks_workspace::{
     ArrangementKeeper, ArrangementStore, HostProbe, Launcher, Project, ProjectId, RecentKeeper,
@@ -30,6 +31,7 @@ use cellworks_workspace::{
 };
 
 use crate::opened::{OpenedNotice, OpenedProject, ProjectState};
+use crate::review::{self, PanelAction, ReviewSession};
 
 /// Shown from the moment a project is opened until its map arrives.
 const READING: &str = "Reading the project…";
@@ -132,6 +134,14 @@ pub struct CellworksApp {
     /// The open project's own git common dir, cached by its root so it is
     /// read from disk once per project, not every frame.
     common_dir_cache: Option<(std::path::PathBuf, Option<std::path::PathBuf>)>,
+    /// How a pull request's open and merged lists, and a diff and worktree
+    /// checkout, are read (STORY-022). Real `gh`/`git` by default; every test
+    /// passes a fake through `with_forge`/`with_checkout`.
+    forge: Arc<dyn Forge + Send + Sync>,
+    checkout: Arc<dyn Checkout + Send + Sync>,
+    /// The review panel's own state, while it is open or a review is shown;
+    /// `None` otherwise (STORY-022).
+    review: Option<ReviewSession>,
 }
 
 /// What the keyboard and the pointer asked for in one frame.
@@ -141,6 +151,8 @@ struct Keys {
     ignored: bool,
     lock: bool,
     tree: bool,
+    /// P: toggles the review panel (STORY-022).
+    review: bool,
     /// Arrows down less arrows up, and right less left.
     rows: isize,
     columns: isize,
@@ -216,6 +228,9 @@ impl CellworksApp {
                 lanes: Vec::new(),
                 lane_hovered: None,
                 why: None,
+                forge: Arc::new(cellworks_sources::pull_requests::forge::GhCli),
+                checkout: Arc::new(cellworks_sources::pull_requests::forge::GitCli),
+                review: None,
             },
             None => CellworksApp {
                 arrangements: None,
@@ -253,6 +268,9 @@ impl CellworksApp {
                 lanes: Vec::new(),
                 lane_hovered: None,
                 why: None,
+                forge: Arc::new(cellworks_sources::pull_requests::forge::GhCli),
+                checkout: Arc::new(cellworks_sources::pull_requests::forge::GitCli),
+                review: None,
             },
         }
     }
@@ -293,6 +311,9 @@ impl CellworksApp {
             lanes: Vec::new(),
             lane_hovered: None,
             why: None,
+            forge: Arc::new(cellworks_sources::pull_requests::forge::GhCli),
+            checkout: Arc::new(cellworks_sources::pull_requests::forge::GitCli),
+            review: None,
         }
     }
 
@@ -308,6 +329,19 @@ impl CellworksApp {
             auto_detail: true,
             ..self
         }
+    }
+
+    /// The same app, listing and checking pull requests out through `forge`
+    /// instead of the real `gh`, so a test never runs it (STORY-022).
+    pub fn with_forge(self, forge: Arc<dyn Forge + Send + Sync>) -> CellworksApp {
+        CellworksApp { forge, ..self }
+    }
+
+    /// The same app, diffing and checking a pull request's head out through
+    /// `checkout` instead of the real `git`, so a test never runs it
+    /// (STORY-022).
+    pub fn with_checkout(self, checkout: Arc<dyn Checkout + Send + Sync>) -> CellworksApp {
+        CellworksApp { checkout, ..self }
     }
 
     /// The same app, keeping custom arrangements in `store`.
@@ -471,6 +505,15 @@ impl CellworksApp {
                         .to_owned(),
                 ),
                 ProjectState::Reading | ProjectState::Failed => {}
+            }
+        }
+        if let Some(session) = self.review.as_mut()
+            && let Some(action) = session.drain(&self.git, self.show_ignored)
+        {
+            match action {
+                review::ReviewAction::OpenHead { project, number } => {
+                    self.open_review_head(project, number);
+                }
             }
         }
     }
@@ -644,8 +687,34 @@ impl CellworksApp {
         }
     }
 
-    /// Opens `project` and starts reading it.
+    /// Opens `project` and starts reading it. Ends any review in progress
+    /// first (design decision, STORY-022: "at most one review is open at a
+    /// time", `docs/domain/contexts/Navigation/Navigation.md`) — dropping
+    /// `self.review` drops its `HeadCheckout` guard, if it already has one,
+    /// removing its worktree on a background thread, and lets go of any
+    /// listing, checkout or mapping still in flight for a pull request the
+    /// engineer is no longer opening. Opening a review's own head goes
+    /// through [`CellworksApp::open_review_head`] instead, which does not end
+    /// the very review it is completing.
     pub fn open(&mut self, project: Project) {
+        self.review = None;
+        self.open_reading(project);
+    }
+
+    /// Opens a review's own head as a project, once it has been checked out
+    /// and the engineer's pull-request pick has not changed meanwhile
+    /// (requirement 11): unlike [`CellworksApp::open`], this does not clear
+    /// `self.review`, since it is this very session completing.
+    fn open_review_head(&mut self, project: Project, number: u32) {
+        self.open_reading(project);
+        self.navigation.enter_review(number);
+    }
+
+    /// The shared body of [`CellworksApp::open`] and
+    /// [`CellworksApp::open_review_head`]: starts reading `project` and
+    /// updates the recent list, the launcher, custom arrangements, domain
+    /// knowledge and `Navigation`'s own notion of what is open.
+    fn open_reading(&mut self, project: Project) {
         let path = project
             .id
             .local_path()
@@ -679,6 +748,21 @@ impl CellworksApp {
         self.navigation.opened(path);
         // Another project's towers: nothing explained carries over.
         self.why = None;
+    }
+
+    /// Ends the open review, if any (STORY-022): `self.review` is dropped,
+    /// which drops its `HeadCheckout` guard and removes the worktree on a
+    /// background thread; the project that was open before the review
+    /// started is reopened (design decision: leaving reopens the home
+    /// project, a re-read). Called from the Esc path, where
+    /// `Navigation::esc` has already cleared `Navigation`'s own review state;
+    /// harmless to call again.
+    fn leave_review(&mut self) {
+        let Some(session) = self.review.take() else {
+            return;
+        };
+        self.navigation.leave_review();
+        self.open(session.into_home());
     }
 
     /// Switches ignored files on or off and reads the open project again,
@@ -775,6 +859,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         ignored,
         lock,
         tree,
+        review,
         rows,
         columns,
         turn,
@@ -803,6 +888,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             ignored: !typing && plain && pressed(egui::Key::I),
             lock: !typing && plain && pressed(egui::Key::Z),
             tree: !typing && plain && pressed(egui::Key::E),
+            review: !typing && plain && pressed(egui::Key::P),
             rows: towards(egui::Key::ArrowUp, egui::Key::ArrowDown),
             columns: towards(egui::Key::ArrowLeft, egui::Key::ArrowRight),
             turn: if typing {
@@ -924,6 +1010,9 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     if tree && app.opened.is_some() {
         app.tree_open = !app.tree_open;
     }
+    if review && app.opened.is_some() {
+        toggle_review_panel(app);
+    }
     if app.tree_open
         && !inside
         && !walking
@@ -944,9 +1033,21 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         app.launcher.request_focus();
     } else if esc && app.sessions.deselect() {
         // handled: a session selection is cleared before anything else.
-    } else if esc && app.navigation.esc(mapped(&app.opened)) == Some(Moved::Closed) {
-        app.opened = None;
-        app.launcher.request_focus();
+    } else if esc {
+        match app.navigation.esc(mapped(&app.opened)) {
+            Some(Moved::Closed) => {
+                // A review still listing, checking out or mapping would
+                // otherwise reopen its head after the project was closed.
+                app.review = None;
+                app.opened = None;
+                app.launcher.request_focus();
+            }
+            // Esc leaves an open review before any other step
+            // (`Navigation::esc`'s own doc comment); `Navigation`'s own review
+            // state is already clear by the time this arm runs.
+            Some(Moved::LeftReview) => app.leave_review(),
+            Some(Moved::Opened(_)) | None => {}
+        }
     }
     if enter
         && (app.opened.is_some()
@@ -975,6 +1076,10 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     // What the lens bar and the lane toggles asked for: applied once the
     // frame no longer borrows the opened project.
     let mut bar: (Option<Lens>, (bool, bool)) = (None, (false, false));
+    // "Leave review" was clicked (STORY-022): reopening the home project
+    // replaces `app.opened`, which this match still borrows as `opened`
+    // below, so it waits until the match is over.
+    let mut leaving: Option<ReviewSession> = None;
     match &app.opened {
         None => match cellworks_workspace::ui::launcher(ui, &app.universe, &mut app.launcher) {
             Some(LauncherAction::Selected(project)) => {
@@ -1050,7 +1155,49 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                             .show(ui, |ui| cellworks_map::ui::why_panel(ui, why, floor));
                     });
             }
+            // The review panel, in its own right column (STORY-022): the
+            // list, or the review once the picked pull request's head is
+            // mapped. Taken out of `app.review` for the duration, so its own
+            // mutation never conflicts with `app.navigation`, `app.checkout`
+            // or `app.forge` beside it; leaving reopens the home project once
+            // this match no longer borrows `app.opened` (`leaving`, handled
+            // below), since `opened` is still borrowed from it here.
+            if let Some(mut session) = app.review.take() {
+                let picked_tower = app.navigation.review().and_then(|mode| mode.picked.clone());
+                let action = egui::Panel::right("review")
+                    .exact_size(review::REVIEW_WIDTH)
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .show(ui, |ui| {
+                                review::panel(ui, &mut session, picked_tower.as_deref())
+                            })
+                            .inner
+                    })
+                    .inner;
+                match action {
+                    Some(PanelAction::Pick(pull_request)) => {
+                        session.pick(
+                            pull_request,
+                            Arc::clone(&app.checkout),
+                            Arc::clone(&app.forge),
+                        );
+                        app.review = Some(session);
+                    }
+                    Some(PanelAction::PickTower(path)) => {
+                        if let Some(map) = mapped(&app.opened) {
+                            app.navigation.pick_in_review(map, path);
+                        }
+                        app.review = Some(session);
+                    }
+                    Some(PanelAction::Leave) => {
+                        app.navigation.leave_review();
+                        leaving = Some(session);
+                    }
+                    None => app.review = Some(session),
+                }
+            }
             let tint = why.as_ref().map(|why| why.floors.as_slice());
+            let review_overlay = app.review.as_ref().and_then(ReviewSession::overlay);
             let mut sidebar_centre: Option<egui::Pos2> = None;
             if app.sessions.has_sources()
                 && let Some(map) = mapped(&app.opened)
@@ -1071,7 +1218,14 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::central_panel(ui.style()).inner_margin(0.0))
                     .show(ui, |ui| {
-                        let drawn = project(ui, opened, &app.navigation, app.underground, tint);
+                        let drawn = project(
+                            ui,
+                            opened,
+                            &app.navigation,
+                            app.underground,
+                            tint,
+                            review_overlay,
+                        );
                         let (Some(shown), ProjectState::Mapped(map)) = (&drawn, opened.state())
                         else {
                             return (drawn, None, None, (Vec::new(), None, false));
@@ -1208,6 +1362,11 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             }
         }
     }
+    // "Leave review" was clicked: `app.opened` is free to replace now that
+    // the match above, which borrowed it as `opened`, is over.
+    if let Some(session) = leaving {
+        app.open(session.into_home());
+    }
     let (picked, (import_lanes, call_lanes)) = bar;
     if let Some(opened) = &mut app.opened {
         if let Some(lens) = picked {
@@ -1219,6 +1378,24 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         if call_lanes {
             opened.toggle_call_lanes();
         }
+    }
+}
+
+/// `p`: opens the review panel listing `app`'s pull requests, or closes it
+/// again while it is still just the list (STORY-022). Once a row is picked —
+/// mid-checkout, mapping, or the review itself — `p` is a no-op; only Esc,
+/// the back control or the "Leave review" button end it (requirement 8).
+fn toggle_review_panel(app: &mut CellworksApp) {
+    let listing_only = app
+        .review
+        .as_ref()
+        .is_some_and(ReviewSession::is_listing_only);
+    if app.review.is_none() {
+        if let Some(home) = app.opened.as_ref().map(|opened| opened.project().clone()) {
+            app.review = ReviewSession::start(home, Arc::clone(&app.forge));
+        }
+    } else if listing_only {
+        app.review = None;
     }
 }
 
@@ -1238,6 +1415,7 @@ fn project(
     navigation: &Navigation,
     underground: bool,
     tint: Option<&[usize]>,
+    review: Option<&ReviewOverlay>,
 ) -> Option<Drawn> {
     for notice in opened.notices() {
         ui.label(notice_text(notice));
@@ -1271,6 +1449,7 @@ fn project(
                 network: opened.network(),
                 cables: navigation.shows_cables(),
                 tint,
+                review,
             },
         )),
     }

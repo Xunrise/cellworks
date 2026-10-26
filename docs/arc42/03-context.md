@@ -37,7 +37,7 @@ flowchart LR
 | Engineer | Navigates the map, edits files, creates and steers Claude Code sessions. |
 | Project folders | Scans code, domain docs, Knex migrations, proto files and DTOs; watches for changes to rescan. |
 | git | Reads the files a repository shows (`ls-files`), status, numstat, diff, branches and worktrees; fetches pull-request heads; switches branches and adds worktrees on request, and adds and removes temporary detached worktrees. |
-| GitHub | Lists a project's pull requests through the read-only `gh` CLI. |
+| GitHub | Lists a project's pull requests and the issue text of their stories through the read-only `gh` CLI. |
 | Claude Code | Creates and steers sessions that survive restarts of Cellworks. |
 | Claude transcripts | Discovers every session on the machine and follows what it reads and writes. |
 | Neovim | Embedded editor. |
@@ -82,8 +82,9 @@ tools; there is no SLA.
 
 ### GitHub (via gh)
 
-- **Protocol:** the `gh` CLI over HTTPS, read-only (`gh pr list`).
-- **Data:** pull requests with number, state, title, branch, head and base commits and author.
+- **Protocol:** the `gh` CLI over HTTPS, read-only (`gh pr list`, `gh issue list`).
+- **Data:** pull requests with number, state, title, branch, head and base commits and author; for story text, the
+  issue title and the As a / I want / So that lines of its body.
 - **Auth:** the user's own `gh auth login`; Cellworks never handles its credentials.
 - **Quirks:** the forge refuses diffs above 20,000 lines, so diffs come from git; the API is rate limited; a repository
   whose `origin` is not on GitHub has no pull requests.

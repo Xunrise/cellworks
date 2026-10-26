@@ -7,15 +7,17 @@ use std::path::{Path, PathBuf};
 
 use cellworks_map::{Item, ProjectMap};
 
-use super::diff::{Diff, FileChange};
+use super::diff::{Diff, FileChange, Removal};
 
 /// Where one tower's own lines of a changed file landed: the new-side line
-/// numbers added to it, and the old-side line numbers removed from it.
+/// numbers added to it, and the removals (old line and the new-side line each
+/// sat just before) taken from it, so a removal's strike can be drawn at the
+/// floor it sat before, not a floor number that no longer exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TowerPlacement {
     pub tower: PathBuf,
     pub added: Vec<usize>,
-    pub removed: Vec<usize>,
+    pub removed: Vec<Removal>,
 }
 
 /// Where one changed file's lines landed: every tower the city holds for it
@@ -71,7 +73,7 @@ fn place_file(file: &str, change: &FileChange, map: &ProjectMap, root: &Path) ->
 
     for removal in &change.removed {
         match place_removal(&towers, removal.before_new_line) {
-            Some(index) => by_tower[index].removed.push(removal.old_line),
+            Some(index) => by_tower[index].removed.push(removal.clone()),
             None => outside_removed += 1,
         }
     }
@@ -262,7 +264,10 @@ mod tests {
         let placement = towers_of(&placements, file);
         assert_eq!(
             tower_named(placement, "second").removed,
-            vec![50],
+            vec![Removal {
+                old_line: 50,
+                before_new_line: 6
+            }],
             "line 6 is inside second's own range"
         );
         assert!(
@@ -297,7 +302,10 @@ mod tests {
         let placement = towers_of(&placements, file);
         assert_eq!(
             tower_named(placement, "first").removed,
-            vec![42],
+            vec![Removal {
+                old_line: 42,
+                before_new_line: 6
+            }],
             "first's last floor is 5, one less than before_new_line 6"
         );
         assert!(tower_named(placement, "second").removed.is_empty());
@@ -331,7 +339,13 @@ mod tests {
         let placement = towers_of(&placements, file);
         let method = tower_named(placement, "Account::deposit");
         assert_eq!(method.added, vec![9]);
-        assert_eq!(method.removed, vec![7]);
+        assert_eq!(
+            method.removed,
+            vec![Removal {
+                old_line: 7,
+                before_new_line: 9
+            }]
+        );
         let type_tower = tower_named(placement, "Account");
         assert!(
             type_tower.added.is_empty() && type_tower.removed.is_empty(),

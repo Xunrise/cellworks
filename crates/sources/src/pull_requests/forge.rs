@@ -18,7 +18,18 @@ use super::PullRequestState;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ForgeUnavailable(pub String);
 
-/// What the forge lists about a project's pull requests.
+/// An issue, read only far enough to find a story's text in it
+/// (`crate::stories`, STORY-022 requirement 9): its number, title (checked
+/// for the `"<id>: "` prefix that names the story it is) and body (the
+/// Gherkin-shaped prose an `As a`/`I want`/`So that` is read out of).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Issue {
+    pub number: u32,
+    pub title: String,
+    pub body: String,
+}
+
+/// What the forge lists about a project's pull requests and issues.
 ///
 /// The binary passes [`GhCli`]; every test passes a fake, so no test runs
 /// `gh` or touches the network.
@@ -32,6 +43,12 @@ pub trait Forge {
         repo: &Path,
         limit: usize,
     ) -> Result<Vec<super::PullRequest>, ForgeUnavailable>;
+
+    /// Every issue (open or closed) matching `search`, read for its title and
+    /// body. `crate::stories::read` always calls this with a story id
+    /// (`"STORY-012"`, say) as `search`, never with text an outside party
+    /// chose; still passed as a plain `gh` argument, never shell-interpolated.
+    fn story_issues(&self, repo: &Path, search: &str) -> Result<Vec<Issue>, ForgeUnavailable>;
 }
 
 /// A pull request's diff and the temporary worktree its head is checked out
@@ -61,15 +78,40 @@ pub struct GhCli;
 /// [`Checkout`] by running `git` as a child process.
 pub struct GitCli;
 
-/// The six fields a pull request listing needs, in the order [`TEMPLATE`]
-/// prints them.
-const JSON_FIELDS: &str = "number,state,headRefName,headRefOid,baseRefOid,author,title";
+/// The fields a pull request listing needs, in the order [`TEMPLATE`] prints
+/// them (requirement: size, file count and flags with the listing, STORY-022
+/// requirement 2).
+const JSON_FIELDS: &str = "number,state,headRefName,headRefOid,baseRefOid,author,title,additions,deletions,changedFiles,files";
 
-/// One tab-separated line per pull request: number, state, head branch, head
-/// commit, base commit, author login, title. The `state` column is never
-/// parsed back (the caller already knows which call produced the line); it
-/// is kept only because `gh` always prints it.
-const TEMPLATE: &str = "{{range .}}{{.number}}\t{{.state}}\t{{.headRefName}}\t{{.headRefOid}}\t{{.baseRefOid}}\t{{.author.login}}\t{{.title}}\n{{end}}";
+/// One record per pull request: number, state, head branch, head commit, base
+/// commit, author login, additions, deletions, changed files, its files
+/// (themselves joined by the ASCII unit separator `\x1f`, since `gh` itself
+/// prints `files` as a nested list of `{path, ...}` objects), then title last
+/// — each field separated by the ASCII group separator `\x1d` and each record
+/// by the ASCII record separator `\x1e`, the same three-level convention
+/// [`ISSUE_TEMPLATE`] uses (record > field > unit), rather than a tab/newline
+/// convention a `files` entry or a title holding a literal tab or newline
+/// (both plain, unremarkable bytes in a real path or a real title) would
+/// otherwise forge a second record out of, with every one of its fields —
+/// including `head`/`base` — then attacker-chosen (`parse_listing`'s own
+/// `looks_like_a_commit` guard only protects against what reaches `git`, not
+/// against the record boundary itself moving). The `state` column is never
+/// parsed back (the caller already knows which call produced the line); it is
+/// kept only because `gh` always prints it.
+const TEMPLATE: &str = "{{range .}}{{.number}}\u{1d}{{.state}}\u{1d}{{.headRefName}}\u{1d}{{.headRefOid}}\u{1d}{{.baseRefOid}}\u{1d}{{.author.login}}\u{1d}{{.additions}}\u{1d}{{.deletions}}\u{1d}{{.changedFiles}}\u{1d}{{range $i, $f := .files}}{{if $i}}\u{1f}{{end}}{{$f.path}}{{end}}\u{1d}{{.title}}\u{1e}{{end}}";
+
+/// The fields one `gh issue list` listing needs, in the order [`ISSUE_TEMPLATE`]
+/// prints them.
+const ISSUE_JSON_FIELDS: &str = "number,title,body";
+
+/// One record per issue: number, title and body (which can itself hold any
+/// text, including tab and newline characters, since it is prose an outside
+/// author wrote), each field separated by the ASCII unit separator `\x1f` and
+/// each record by the ASCII record separator `\x1e`, rather than this
+/// module's usual tab/newline convention, which a multi-line issue body would
+/// break (a literal newline inside it would otherwise look like a second
+/// record to [`parse_issues`]).
+const ISSUE_TEMPLATE: &str = "{{range .}}{{.number}}\u{1f}{{.title}}\u{1f}{{.body}}\u{1e}{{end}}";
 
 impl Forge for GhCli {
     fn open_pull_requests(&self, repo: &Path) -> Result<Vec<super::PullRequest>, ForgeUnavailable> {
@@ -115,6 +157,27 @@ impl Forge for GhCli {
             ],
         ))?;
         Ok(parse_listing(&output, super::PullRequestState::Merged))
+    }
+
+    fn story_issues(&self, repo: &Path, search: &str) -> Result<Vec<Issue>, ForgeUnavailable> {
+        let search_in_title = format!("{search} in:title");
+        let output = run(command(
+            "gh",
+            repo,
+            &[
+                "issue",
+                "list",
+                "--state",
+                "all",
+                "--search",
+                &search_in_title,
+                "--json",
+                ISSUE_JSON_FIELDS,
+                "--template",
+                ISSUE_TEMPLATE,
+            ],
+        ))?;
+        Ok(parse_issues(&output))
     }
 }
 
@@ -196,30 +259,46 @@ fn exists(repo: &Path, commit: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// Parses `TEMPLATE`'s tab-separated output into pull requests, one per line.
-/// A line with fewer than seven fields, a non-numeric number, or a head or
-/// base that is not a plain commit hash is skipped rather than failing the
-/// whole listing (tolerant parsing). The `state` column `gh` prints is
-/// ignored; `state` is the one the caller already knows it asked for.
+/// Parses `TEMPLATE`'s output into pull requests, one per record.
+/// A record with fewer than eleven fields, a non-numeric number, additions,
+/// deletions or changed-files count, or a head or base that is not a plain
+/// commit hash is skipped rather than failing the whole listing (tolerant
+/// parsing, same as today's non-numeric `number`). The `state` column `gh`
+/// prints is ignored; `state` is the one the caller already knows it asked
+/// for. `flags` is left empty here: [`super::list`] fills it once, from
+/// `files`, after merging the open and merged listings.
 ///
-/// `head`/`base` are checked against [`looks_like_a_commit`] before they ever
-/// reach a `git` argument vector elsewhere in this module: a pull request's
-/// title is the one field an outside author fully controls, and a title
-/// holding a literal newline would otherwise split `output.lines()` into a
-/// forged second record whose every field, head and base included, is
-/// attacker-chosen — and an unchecked head or base starting with `-` can be
-/// read by `git` as an option rather than a revision.
+/// Records are split on the ASCII record separator `\x1e`, never on a literal
+/// newline: a pull request's title or one of its file paths is free text an
+/// outside author fully controls, and a plain, unremarkable byte in either
+/// (a literal tab or newline in a path is valid on most filesystems and
+/// `gh`/GitHub never reject it) would otherwise be read as a field or record
+/// boundary under a tab/newline convention. `head`/`base` are additionally
+/// checked against [`looks_like_a_commit`] before they ever reach a `git`
+/// argument vector elsewhere in this module: an unchecked head or base
+/// starting with `-` can be read by `git` as an option rather than a
+/// revision.
 fn parse_listing(output: &str, state: super::PullRequestState) -> Vec<super::PullRequest> {
     output
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.splitn(7, '\t');
+        .split('\u{1e}')
+        .filter(|record| !record.is_empty())
+        .filter_map(|record| {
+            let mut fields = record.splitn(11, '\u{1d}');
             let number = fields.next()?.parse().ok()?;
             let _state = fields.next()?;
             let branch = fields.next()?.to_owned();
             let head = fields.next()?.to_owned();
             let base = fields.next()?.to_owned();
             let author = fields.next()?.to_owned();
+            let additions = fields.next()?.parse().ok()?;
+            let deletions = fields.next()?.parse().ok()?;
+            let changed_files = fields.next()?.parse().ok()?;
+            let files_field = fields.next()?;
+            let files = if files_field.is_empty() {
+                Vec::new()
+            } else {
+                files_field.split('\u{1f}').map(str::to_owned).collect()
+            };
             let title = fields.next()?.to_owned();
             if !looks_like_a_commit(&head) || !looks_like_a_commit(&base) {
                 return None;
@@ -234,6 +313,34 @@ fn parse_listing(output: &str, state: super::PullRequestState) -> Vec<super::Pul
                 base,
                 author,
                 story,
+                additions,
+                deletions,
+                changed_files,
+                files,
+                flags: std::collections::BTreeMap::new(),
+            })
+        })
+        .collect()
+}
+
+/// Parses [`ISSUE_TEMPLATE`]'s output into issues: records separated by the
+/// ASCII record separator `\x1e`, each holding number, title and body
+/// separated by the ASCII unit separator `\x1f`. A record with fewer than
+/// three fields, or a non-numeric number, is skipped rather than failing the
+/// whole read (tolerant parsing, same convention as [`parse_listing`]).
+fn parse_issues(output: &str) -> Vec<Issue> {
+    output
+        .split('\u{1e}')
+        .filter(|record| !record.is_empty())
+        .filter_map(|record| {
+            let mut fields = record.splitn(3, '\u{1f}');
+            let number = fields.next()?.parse().ok()?;
+            let title = fields.next()?.to_owned();
+            let body = fields.next()?.to_owned();
+            Some(Issue {
+                number,
+                title,
+                body,
             })
         })
         .collect()
@@ -304,6 +411,23 @@ mod tests {
             pulls[1].story, None,
             "neither the title nor the branch of this one names a story"
         );
+        assert_eq!(pulls[0].additions, 12);
+        assert_eq!(pulls[0].deletions, 4);
+        assert_eq!(pulls[0].changed_files, 3);
+        assert_eq!(
+            pulls[0].files,
+            vec![
+                "crates/sources/src/pull_requests/mod.rs".to_owned(),
+                "crates/sources/src/pull_requests/forge.rs".to_owned(),
+                "Cargo.lock".to_owned(),
+            ],
+            "files are split on the unit separator, not the comma or pipe a path could hold"
+        );
+        assert!(
+            pulls[0].flags.is_empty(),
+            "the listing parser never fills flags itself, list() does: {:?}",
+            pulls[0].flags
+        );
     }
 
     #[test]
@@ -330,6 +454,64 @@ mod tests {
             pulls.iter().all(|p| p.state == PullRequestState::Merged),
             "{pulls:?}"
         );
+        assert!(
+            pulls[0].files.is_empty(),
+            "an empty files field is no files, not one empty path: {:?}",
+            pulls[0].files
+        );
+        assert_eq!(
+            pulls[1].files,
+            vec!["src/release.rs".to_owned(), "CHANGELOG.md".to_owned()]
+        );
+        assert_eq!(pulls[1].additions, 20);
+        assert_eq!(pulls[1].deletions, 3);
+        assert_eq!(pulls[1].changed_files, 2);
+    }
+
+    #[test]
+    fn a_non_numeric_additions_column_is_skipped_like_a_non_numeric_number() {
+        let output = "41\u{1d}OPEN\u{1d}feature/x\u{1d}1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b\u{1d}9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e\u{1d}xunrise\u{1d}many\u{1d}2\u{1d}2\u{1d}Cargo.lock\u{1d}title\u{1e}";
+
+        let pulls = parse_listing(output, PullRequestState::Open);
+
+        assert!(pulls.is_empty(), "{pulls:?}");
+    }
+
+    #[test]
+    fn a_literal_tab_or_newline_in_a_file_path_or_title_never_forges_a_second_record() {
+        // Both bytes are valid, unremarkable in a real path or title; neither
+        // may be read as a field or record boundary the way the old
+        // tab/newline convention would have read them.
+        let output = "41\u{1d}OPEN\u{1d}feature/x\u{1d}1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b\u{1d}9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e\u{1d}xunrise\u{1d}3\u{1d}1\u{1d}1\u{1d}weird\tpath\nhere\u{1d}STORY-012: a\ttitle\nwith a newline\u{1e}";
+
+        let pulls = parse_listing(output, PullRequestState::Open);
+
+        assert_eq!(pulls.len(), 1, "{pulls:?}");
+        assert_eq!(pulls[0].files, vec!["weird\tpath\nhere".to_owned()]);
+        assert_eq!(pulls[0].title, "STORY-012: a\ttitle\nwith a newline");
+    }
+
+    #[test]
+    fn issues_are_parsed_from_the_gh_template_output_body_newlines_and_all() {
+        let output = include_str!("../../tests/fixtures/gh_issue_list.txt");
+
+        let issues = parse_issues(output);
+
+        assert_eq!(
+            issues.iter().map(|issue| issue.number).collect::<Vec<_>>(),
+            vec![83, 90],
+            "the malformed trailing record must not appear and must not panic: {issues:?}"
+        );
+        assert_eq!(
+            issues[0].title,
+            "STORY-012: Give engineers a price breakdown"
+        );
+        assert!(
+            issues[0].body.contains("As a shopper comparing prices"),
+            "a multi-line body survives intact: {:?}",
+            issues[0].body
+        );
+        assert!(issues[0].body.lines().count() >= 4, "{:?}", issues[0].body);
     }
 
     #[test]

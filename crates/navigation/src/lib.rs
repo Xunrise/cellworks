@@ -34,6 +34,15 @@ pub enum Moved {
     Opened(PathBuf),
     /// Esc out of the open project.
     Closed,
+    /// Esc, the back control or the button left the open review.
+    LeftReview,
+}
+
+/// Reviewing a pull request: the engineer picked a row from its list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewMode {
+    pub number: u32,
+    pub picked: Option<PathBuf>,
 }
 
 /// What the view is framed on.
@@ -94,6 +103,8 @@ pub struct Navigation {
     cables: bool,
     /// The lane picked, kept lit until another click.
     lane: Option<LaneId>,
+    /// The pull request under review, if any; at most one at a time.
+    review: Option<ReviewMode>,
 }
 
 /// The tower whose facade a turned camera faces, and where its pivot is: a
@@ -146,6 +157,7 @@ impl Default for Navigation {
             underground: false,
             cables: false,
             lane: None,
+            review: None,
         }
     }
 }
@@ -234,6 +246,7 @@ impl Navigation {
         self.framed = Framed::Project;
         self.project = Some(path);
         self.selection = None;
+        self.review = None;
     }
 
     /// The open project was read again into `map`: a framed or selected path
@@ -299,12 +312,17 @@ impl Navigation {
         }
     }
 
-    /// One layer out: from inside a tower back to the city as it was, the
-    /// tower still selected; from a node to the folder view of the folder holding it,
-    /// keeping the node selected; from a folder view to the whole project,
-    /// selecting the district the folder lies in; from the project to the
-    /// Universe, selecting the project. In the Universe it stays there.
+    /// Leaves an open review first, before any other step, even from inside a
+    /// tower. Otherwise, one layer out: from inside a tower back to the city
+    /// as it was, the tower still selected; from a node to the folder view of
+    /// the folder holding it, keeping the node selected; from a folder view to
+    /// the whole project, selecting the district the folder lies in; from the
+    /// project to the Universe, selecting the project. In the Universe it
+    /// stays there.
     pub fn esc(&mut self, map: Option<&ProjectMap>) -> Option<Moved> {
+        if let Some(moved) = self.leave_review() {
+            return Some(moved);
+        }
         if self.inside.take().is_some() {
             return None;
         }
@@ -352,6 +370,47 @@ impl Navigation {
             (_, None) => Framed::Project,
         };
         self.selection = Some(path);
+    }
+
+    /// Enters review mode for pull request `number`: called once the
+    /// review's head has been opened as a project, after [`Navigation::opened`]
+    /// so its own clearing of a previous review does not immediately undo
+    /// this.
+    pub fn enter_review(&mut self, number: u32) {
+        self.review = Some(ReviewMode {
+            number,
+            picked: None,
+        });
+    }
+
+    /// The review in progress, if any.
+    pub fn review(&self) -> Option<&ReviewMode> {
+        self.review.as_ref()
+    }
+
+    /// Marks `path` picked in the review's changed or impacted tower list and
+    /// moves the view to it, keeping the Project layer: the review's city
+    /// stays whole-project-framed throughout. Nothing while no review is
+    /// open.
+    pub fn pick_in_review(&mut self, map: &ProjectMap, path: PathBuf) {
+        let Some(review) = &mut self.review else {
+            return;
+        };
+        review.picked = Some(path.clone());
+        let Some(found) = map.find(&path) else {
+            return;
+        };
+        let centre = found.area.center();
+        self.select(path);
+        let visible = self.camera.unwrap_or(map.extent);
+        self.centre_on(visible, centre);
+    }
+
+    /// Leaves the review, if one is open: `Some(Moved::LeftReview)` when one
+    /// was, `None` otherwise, so the caller can tell whether leaving actually
+    /// happened.
+    pub fn leave_review(&mut self) -> Option<Moved> {
+        self.review.take().map(|_| Moved::LeftReview)
     }
 
     /// The camera has turned `turn` of the way from the corner towards a
@@ -1149,5 +1208,73 @@ mod tests {
             navigation.breadcrumb("shop", Some(&map)),
             "Universe › shop › shop › README.md"
         );
+    }
+
+    #[test]
+    fn esc_leaves_a_review_before_any_other_step_even_inside_a_tower() {
+        let map = shop();
+        let mut navigation = in_project();
+        navigation.inside = Some((at("catalog/pricing/rules/discount.rs"), 0));
+        navigation.enter_review(41);
+
+        assert_eq!(navigation.esc(Some(&map)), Some(Moved::LeftReview));
+        assert_eq!(navigation.review(), None);
+        assert_eq!(
+            navigation.inside(),
+            Some((at("catalog/pricing/rules/discount.rs").as_path(), 0)),
+            "esc leaves the review as one step, not also popping a layer"
+        );
+    }
+
+    #[test]
+    fn esc_without_a_review_falls_through_to_the_usual_layer_it_already_had() {
+        let mut navigation = in_project();
+
+        assert_eq!(navigation.esc(None), Some(Moved::Closed));
+        assert_eq!(navigation.layer(), Layer::Universe);
+    }
+
+    #[test]
+    fn opening_a_project_ends_a_review() {
+        let mut navigation = in_project();
+        navigation.enter_review(7);
+
+        navigation.opened(PathBuf::from(ROOT));
+
+        assert_eq!(navigation.review(), None);
+    }
+
+    #[test]
+    fn pick_in_review_marks_the_row_and_moves_the_view_to_it() {
+        let map = shop();
+        let mut navigation = in_project();
+        navigation.enter_review(41);
+
+        navigation.pick_in_review(&map, at("catalog/pricing/rules/discount.rs"));
+
+        assert_eq!(
+            navigation.review().unwrap().picked,
+            Some(at("catalog/pricing/rules/discount.rs"))
+        );
+        assert_eq!(
+            navigation.selection(),
+            Some(at("catalog/pricing/rules/discount.rs").as_path())
+        );
+        assert_eq!(
+            navigation.layer(),
+            Layer::Project,
+            "the review's city stays whole-project-framed"
+        );
+    }
+
+    #[test]
+    fn pick_in_review_does_nothing_while_no_review_is_open() {
+        let map = shop();
+        let mut navigation = in_project();
+        let before = navigation.clone();
+
+        navigation.pick_in_review(&map, at("catalog/pricing/rules/discount.rs"));
+
+        assert_eq!(navigation, before);
     }
 }

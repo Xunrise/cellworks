@@ -23,6 +23,11 @@ fn pull_request(number: u32, state: PullRequestState, title: &str, branch: &str)
         base: "basecommit".to_owned(),
         author: "octocat".to_owned(),
         story: None,
+        additions: 0,
+        deletions: 0,
+        changed_files: 0,
+        files: Vec::new(),
+        flags: BTreeMap::new(),
     }
 }
 
@@ -63,6 +68,14 @@ impl Forge for FakeForge {
             .expect("lock")
             .take()
             .expect("merged_pull_requests asked more than once")
+    }
+
+    fn story_issues(
+        &self,
+        _repo: &Path,
+        _search: &str,
+    ) -> Result<Vec<cellworks_sources::pull_requests::forge::Issue>, ForgeUnavailable> {
+        unimplemented!("STORY-021's own tests never read a story's issue")
     }
 }
 
@@ -292,7 +305,13 @@ diff --git a/src/lib.rs b/src/lib.rs
             .unwrap_or_else(|| panic!("no tower named {name} among {:?}", lib.towers))
     };
     assert_eq!(named("new_one").added, vec![3]);
-    assert_eq!(named("new_one").removed, vec![3]);
+    assert_eq!(
+        named("new_one").removed,
+        vec![cellworks_sources::pull_requests::Removal {
+            old_line: 3,
+            before_new_line: 3
+        }]
+    );
     assert_eq!(named("new_two").added, vec![4]);
     assert!(named("new_two").removed.is_empty());
 

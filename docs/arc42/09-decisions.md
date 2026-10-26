@@ -14,3 +14,4 @@ Index of the architecture decision records in [`docs/adr/`](../adr/README.md).
 - [ADR-0008: Per-line provenance from git blame, joined to pull requests and stories by commit message](../adr/0008-per-line-provenance-from-git-blame.md) — Accepted — technology · CodeAnalysis, Map
 - [ADR-0009: Read pull requests through gh and git](../adr/0009-pull-requests-through-gh-and-git.md) — Accepted — technology · Sources
 - [ADR-0010: Drive Claude Code sessions as Claude Code background sessions](../adr/0010-claude-code-background-sessions.md) — Accepted — integration · AgentSessions
+- [ADR-0011: Review mode opens the pull request head as the city](../adr/0011-review-mode-opens-the-pull-request-head-as-the-city.md) — Accepted — structure · Map, Navigation, Sources
