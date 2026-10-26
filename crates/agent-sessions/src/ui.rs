@@ -428,7 +428,7 @@ impl SessionsView {
 
         ui.horizontal(|ui| {
             use cellworks_map::ui::case::{FLOW, INK, INK_DIM, OK};
-            let fold = if self.collapsed { "▸" } else { "▾" };
+            let fold = if self.collapsed { "+" } else { "-" };
             if nr_ctl(ui, fold, Kind::Plain)
                 .on_hover_text(if self.collapsed { "Expand" } else { "Collapse" })
                 .clicked()

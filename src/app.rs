@@ -1566,6 +1566,10 @@ fn iterate_drive(ui: &mut egui::Ui, app: &mut CellworksApp) {
                         it.draft.get_or_insert_with(draft).image = Some(arg.into());
                     }
                     "send" => {
+                        let typed = std::mem::take(&mut app.iterate_view.note);
+                        if !typed.trim().is_empty() {
+                            it.draft.get_or_insert_with(draft).note = typed;
+                        }
                         let session = app
                             .sessions
                             .sessions()

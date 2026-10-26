@@ -690,7 +690,7 @@ fn code_panel(ui: &mut Ui, s0: &Sheet, vs: &ViewState, it: &Iterate, [wx, wy, ww
     let ed_w = s.width("OPEN IN EDITOR", CTL) + 32.0;
     let nv_w = s.width("OPEN IN NVIM", CTL_BOLD) + 32.0;
     let mut bx = x + w - 16.0 - close_w;
-    if ctl(ui, &s, s.r(bx, y + 16.0, close_w, 44.0), "✕", None, 0) {
+    if ctl(ui, &s, s.r(bx, y + 16.0, close_w, 44.0), "X", None, 0) {
         acts.push(Act::CloseFile);
     }
     bx -= ed_w + 8.0;

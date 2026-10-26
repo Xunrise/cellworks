@@ -463,7 +463,11 @@ impl Case {
     }
 
     pub fn go(&mut self, stage: u8, now: f64) {
-        if stage == self.stage || (stage > 1 && !self.ready()) || (stage > 3 && !self.iterating) {
+        // The plan needs its steps; the prototype's stages need it running.
+        if stage == self.stage
+            || (matches!(stage, 2 | 3) && !self.ready())
+            || (stage > 3 && !self.iterating)
+        {
             return;
         }
         self.from = self.frame(now);
@@ -1141,7 +1145,7 @@ fn top_bar(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, live: bool) -> 
         let current = RAIL[(*n - 1) as usize].3.contains(&case.stage);
         let rect = s.r(x, 10.0, *w, 44.0);
         let mut s = s.clone();
-        if (*n > 1 && !ready) || (matches!(*n, 2 | 3 | 5) && !case.iterating) {
+        if (*n == 4 && !ready) || (matches!(*n, 2 | 3 | 5) && !case.iterating) {
             s.painter.multiply_opacity(0.35);
         }
         let response = button(ui, rect, &format!("{n} {name}"));
@@ -1470,7 +1474,7 @@ impl Case {
     }
 
     pub fn wants(&self) -> Option<PathBuf> {
-        if self.stage < 2 || !self.ready() {
+        if self.stage < 2 || self.loaded.is_none() || (matches!(self.stage, 2 | 3) && !self.ready()) {
             return None;
         }
         let loaded = self.loaded.as_ref()?;
@@ -2819,7 +2823,12 @@ fn claude_fix(
             ),
             Some((Act::Ingest, "a session reads the ticket and the code")),
         )),
-        (None, Some(Status::Ingested | Status::Prototyping)) => Some((
+        (None, Some(Status::Prototyping)) => Some((
+            "Prototyping".to_owned(),
+            format!("The session works in {worktree} on branch {branch}. Iterate on it in rounds on stage 2, then freeze it on stage 3; the plan is written from it."),
+            Some((Act::Prototype, "")),
+        )),
+        (None, Some(Status::Ingested)) => Some((
             "Not prototyped yet".to_owned(),
             format!(
                 "The plan is written from a prototype. PROTOTYPE makes the worktree {worktree} on branch {branch} and starts a session there; you iterate on it in rounds and freeze it, and the plan follows."
