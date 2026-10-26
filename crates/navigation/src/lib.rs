@@ -672,6 +672,16 @@ impl Navigation {
         self.pan(visible, at - visible.center());
     }
 
+    /// PROTOTYPE: points the camera at `area`, a square of ground at the
+    /// layout's scale, on whatever layer is framed.
+    pub fn look_at(&mut self, area: Rect) {
+        if self.framed == Framed::Universe {
+            self.framed = Framed::Project;
+        }
+        self.camera = Some(area);
+        self.facing = None;
+    }
+
     /// Brings the whole project into view, on the Project layer, keeping the
     /// selection.
     pub fn fit(&mut self) {

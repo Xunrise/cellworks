@@ -7,3 +7,5 @@ publish = false
 [dependencies]
 cellworks-workspace = { path = "../workspace" }
 egui = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

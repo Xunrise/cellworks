@@ -13,8 +13,12 @@ use std::path::{Path, PathBuf};
 use egui::{Color32, Pos2, Rect, RichText, Sense, Shape, Stroke, StrokeKind, Vec2, pos2, vec2};
 
 mod buildings;
+pub mod case;
+pub mod casefile;
 mod explain;
+pub mod jira;
 mod lanes;
+pub mod ticket;
 mod why;
 
 pub use buildings::{DrawnBridge, DrawnBuilding, bridge_card};
@@ -461,6 +465,15 @@ struct Painter<'a> {
     /// The palette index of each floor of the selected tower, while one is
     /// explained; every other tower is dimmed then (STORY-019).
     tint: Option<&'a [usize]>,
+}
+
+/// PROTOTYPE: a file or folder of a case lit on the city: everything under
+/// `path`, at `light`, with a pulsing outline when `pulse`.
+#[derive(Clone, Debug)]
+pub struct Spot {
+    pub path: PathBuf,
+    pub light: f32,
+    pub pulse: bool,
 }
 
 /// A name to put on the map: the ground it names, how it is written, the

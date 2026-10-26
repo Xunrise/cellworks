@@ -631,6 +631,8 @@ version = "0.0.0"
 dependencies = [
  "cellworks-workspace",
  "egui",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

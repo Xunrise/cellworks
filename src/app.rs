@@ -136,6 +136,14 @@ pub struct CellworksApp {
     iterate: Option<crate::iterate::Iterate>,
     /// PROTOTYPE: whether the iterate session's pane was opened once.
     iterate_pane: bool,
+    /// PROTOTYPE: the open case, which takes over the window.
+    case: Option<cellworks_map::ui::case::Case>,
+    /// PROTOTYPE: the ticket menu (T), from which a case opens.
+    tickets_open: bool,
+    /// PROTOTYPE: Jira, read-only, with the issues fetched this session.
+    jira: cellworks_map::ui::jira::Jira,
+    /// PROTOTYPE: the key typed into the ticket picker.
+    typed_key: String,
 }
 
 /// What the keyboard and the pointer asked for in one frame.
@@ -201,6 +209,10 @@ impl CellworksApp {
                 common_dir_cache: None,
                 iterate: None,
                 iterate_pane: false,
+                case: None,
+                tickets_open: false,
+                jira: cellworks_map::ui::jira::Jira::new(),
+                typed_key: String::new(),
                 universe: Universe::scanning(&sources),
                 events: Some(start_scan(sources)),
                 opened: None,
@@ -240,6 +252,10 @@ impl CellworksApp {
                 common_dir_cache: None,
                 iterate: None,
                 iterate_pane: false,
+                case: None,
+                tickets_open: false,
+                jira: cellworks_map::ui::jira::Jira::new(),
+                typed_key: String::new(),
                 universe: Universe::without_home(),
                 events: None,
                 opened: None,
@@ -282,6 +298,10 @@ impl CellworksApp {
             common_dir_cache: None,
                 iterate: None,
                 iterate_pane: false,
+                case: None,
+                tickets_open: false,
+                jira: cellworks_map::ui::jira::Jira::new(),
+                typed_key: String::new(),
             universe,
             events: Some(events),
             opened: None,
@@ -672,6 +692,30 @@ impl CellworksApp {
         }
     }
 
+    /// PROTOTYPE: the folder holding every project Cellworks knows, where an
+    /// investigation starts.
+    fn workspace(&self) -> Option<std::path::PathBuf> {
+        let ScanState::Reported(projects) = self.universe.scan() else {
+            return None;
+        };
+        let mut paths = projects.iter().filter_map(|project| project.id.local_path());
+        let mut common = paths.next()?.parent()?.to_path_buf();
+        for path in paths {
+            while !path.starts_with(&common) {
+                common = common.parent()?.to_path_buf();
+            }
+        }
+        Some(common)
+    }
+
+    /// PROTOTYPE: opens the case for the ticket `key`.
+    pub fn open_case(&mut self, key: &str, now: f64) {
+        let mut case = cellworks_map::ui::case::Case::new(key, now);
+        case.workspace = self.workspace();
+        self.case = Some(case);
+        self.tickets_open = false;
+    }
+
     /// Opens `project` and starts reading it.
     pub fn open(&mut self, project: Project) {
         let path = project
@@ -783,6 +827,44 @@ impl eframe::App for CellworksApp {
 /// block, and Enter or a double-click on a tower steps inside it, where j and
 /// k or the arrows move between floors.
 pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
+    // PROTOTYPE: an open case lies over the app. From stage 2 on it wants the
+    // map of the repository it is shown on, and the camera gliding onto the
+    // case's buildings.
+    if let Some(base) = app
+        .case
+        .as_ref()
+        .and_then(cellworks_map::ui::case::Case::wants)
+        && base.is_dir()
+    {
+        let base = base.canonicalize().unwrap_or(base);
+        if app
+            .opened
+            .as_ref()
+            .is_none_or(|opened| opened.project().id.local_path() != Some(base.as_path()))
+        {
+            let project = app.project_at(&base).unwrap_or_else(|| Project::at(base));
+            app.open(project);
+        }
+    }
+    let case_now = ui.input(|input| input.time);
+    if let Some(case) = &mut app.case
+        && let Some(map) = mapped(&app.opened)
+        && let Some(area) = case.camera(
+            map,
+            app.view.map(|view| view.visible),
+            ui.ctx().content_rect(),
+            case_now,
+        )
+    {
+        app.navigation.look_at(area);
+        ui.ctx().request_repaint();
+    }
+    let spots = app
+        .case
+        .as_ref()
+        .zip(mapped(&app.opened))
+        .and_then(|(case, map)| case.spots(map));
+    let casing = app.case.is_some();
     if app.opened.is_none() {
         app.towers.clear();
         app.buildings.clear();
@@ -800,6 +882,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     // not. The keys are read here, before `ui::launcher` draws the field, so
     // the field never gets to swallow them itself.
     let typing = app.sessions.search_focused(ui)
+        || ui.ctx().egui_wants_keyboard_input()
         || (app.opened.is_none() && cellworks_workspace::ui::search_focused(ui))
         || terminal;
     let Keys {
@@ -866,6 +949,24 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             session_next: !typing && plain && pressed(egui::Key::CloseBracket),
         }
     });
+
+    // PROTOTYPE: T opens the ticket menu or closes the open case.
+    // The case keeps Enter, Esc and the digits.
+    if !typing && ui.input(|input| input.modifiers.is_none() && input.key_pressed(egui::Key::T)) {
+        if casing {
+            app.case = None;
+        } else {
+            app.tickets_open = !app.tickets_open;
+        }
+    }
+    let (enter, esc, tree, turn) = if casing {
+        (false, false, false, 0)
+    } else {
+        (enter, esc, tree, turn)
+    };
+    let over_case =
+        pointer.is_some_and(|pointer| app.case.as_ref().is_some_and(|case| case.covers(pointer)));
+    let mut case_key: Option<(String, f64)> = None;
     // Esc with a pane open but its terminal unfocused ends the attach and
     // does nothing else that frame.
     if !terminal && app.sessions.pane_open() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -1011,6 +1112,20 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     // frame no longer borrows the opened project.
     let mut bar: (Option<Lens>, (bool, bool)) = (None, (false, false));
     match &app.opened {
+        None if app.tickets_open => {
+            // PROTOTYPE: the ticket picker stands in for the launcher.
+            egui::Panel::top("picker tabs").show(ui, |ui| {
+                if ui.button("PROJECTS (T)").clicked() {
+                    app.tickets_open = false;
+                }
+            });
+            let picked = egui::CentralPanel::default()
+                .show(ui, |ui| {
+                    cellworks_map::ui::case::picker(ui, &mut app.jira, &mut app.typed_key)
+                })
+                .inner;
+            case_key = picked.map(|key| (key, ui.input(|input| input.time)));
+        }
         None => match cellworks_workspace::ui::launcher(ui, &app.universe, &mut app.launcher) {
             Some(LauncherAction::Selected(project)) => {
                 app.launcher.select(Some(project.id.clone()));
@@ -1137,9 +1252,35 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 app.drawn_sessions = Vec::new();
                 app.view = None;
                 app.panel = None;
+                // The tickets stay at hand while the project is read.
+                let picked = if app.tickets_open {
+                    tickets_window(ui, app)
+                } else {
+                    None
+                };
+                show_case(ui, app);
+                if let Some((key, now)) = picked {
+                    app.open_case(&key, now);
+                }
                 return;
             };
             app.towers = drawn.towers;
+            // PROTOTYPE: the case's buildings outlined on the live map (the
+            // source branch also receded the rest; skipped here).
+            if let Some(spots) = &spots {
+                let pulse = 0.5 + 0.5 * (case_now as f32 * 4.0).sin();
+                for tower in &app.towers {
+                    if let Some(spot) = spots.iter().find(|spot| tower.path.starts_with(&spot.path)) {
+                        let width = if spot.pulse { 1.5 + 1.5 * pulse } else { 1.5 };
+                        ui.painter().rect_stroke(
+                            tower.outline,
+                            2.0,
+                            egui::Stroke::new(width, egui::Color32::from_rgb(255, 190, 60).gamma_multiply(spot.light.clamp(0.2, 1.0))),
+                            egui::StrokeKind::Outside,
+                        );
+                    }
+                }
+            }
             app.buildings = drawn.buildings;
             app.bridges = drawn.bridges;
             app.cables = drawn.cables;
@@ -1228,6 +1369,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 app.navigation.step_inside(map, tower);
             }
             if zoom != 1.0
+                && !over_case
                 && let Some(map) = mapped(&app.opened)
             {
                 // Turned towards a facade, zooming anchors on it.
@@ -1242,6 +1384,13 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 ui.ctx().request_repaint();
             }
         }
+    }
+    if app.opened.is_some() && app.tickets_open {
+        case_key = tickets_window(ui, app);
+    }
+    show_case(ui, app);
+    if let Some((key, now)) = case_key {
+        app.open_case(&key, now);
     }
     iterate_overlay(ui, app);
     let (picked, (import_lanes, call_lanes)) = bar;
@@ -1682,6 +1831,33 @@ fn iterate_overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
     }
 }
 
+/// PROTOTYPE: the ticket picker over an open project, and the ticket picked
+/// in it, with when.
+fn tickets_window(ui: &mut egui::Ui, app: &mut CellworksApp) -> Option<(String, f64)> {
+    egui::Window::new("Tickets")
+        .anchor(egui::Align2::RIGHT_TOP, [-12.0, 40.0])
+        .resizable(false)
+        .collapsible(false)
+        .show(ui.ctx(), |ui| {
+            cellworks_map::ui::case::picker(ui, &mut app.jira, &mut app.typed_key)
+        })
+        .and_then(|shown| shown.inner.flatten())
+        .map(|key| (key, ui.input(|input| input.time)))
+}
+
+/// PROTOTYPE: lays the open case over whatever the frame drew.
+fn show_case(ui: &mut egui::Ui, app: &mut CellworksApp) {
+    if let Some(case) = &mut app.case {
+        let live = mapped(&app.opened).map(|map| cellworks_map::ui::case::Live {
+            map,
+            towers: &app.towers,
+        });
+        if !cellworks_map::ui::case::show(ui, case, &mut app.jira, live) {
+            app.case = None;
+        }
+    }
+}
+
 /// The part of the ground in view, `visible`, after zooming by `factor`
 /// around the ground point `fixed`, which stays where it is on screen.
 fn zoomed(visible: egui::Rect, fixed: egui::Pos2, factor: f32) -> egui::Rect {
@@ -1808,7 +1984,19 @@ pub fn run() -> eframe::Result {
         Box::new(|cc| {
             // The city is drawn at night, whatever the system's appearance.
             cc.egui_ctx.set_theme(egui::Theme::Dark);
-            Ok(Box::new(CellworksApp::start()))
+            cellworks_map::ui::case::install_fonts(&cc.egui_ctx);
+            let mut app = CellworksApp::start();
+            // PROTOTYPE: CELLWORKS_OPEN_CASE=<KEY> starts with that case open
+            // (any other value opens SHOP-42).
+            if let Ok(key) = std::env::var("CELLWORKS_OPEN_CASE") {
+                let key = if key.contains('-') {
+                    key
+                } else {
+                    "SHOP-42".into()
+                };
+                app.open_case(&key, 0.0);
+            }
+            Ok(Box::new(app))
         }),
     )
 }
