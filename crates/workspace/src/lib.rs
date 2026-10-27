@@ -32,7 +32,7 @@ use std::sync::mpsc;
 pub use arrangement::{Arrangement, ArrangementKeeper, ArrangementStore};
 pub use event::WorkspaceEvent;
 pub use hosts::{HostProbe, SshProbe, start_probes};
-pub use launcher::{HostState, Launcher, Location, Pick, ProjectDetails, ProjectKind};
+pub use launcher::{HostState, Launcher, Location, Pick, ProjectDetails, ProjectKind, Sort};
 pub use project::{Project, ProjectId};
 pub use recent::{RecentKeeper, RecentStore};
 pub use universe::{Notice, NoticeKind, ScanState, Universe};

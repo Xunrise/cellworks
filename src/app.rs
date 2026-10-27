@@ -26,8 +26,9 @@ use cellworks_map::{Lens, ProjectMap, Why, default_prefix_rule, prefix_rule};
 use cellworks_navigation::{Moved, Navigation};
 use cellworks_workspace::ui::LauncherAction;
 use cellworks_workspace::{
-    ArrangementKeeper, ArrangementStore, HostProbe, Launcher, Project, ProjectId, RecentKeeper,
-    RecentStore, ScanState, Sources, SshProbe, Universe, WorkspaceEvent, start_probes, start_scan,
+    ArrangementKeeper, ArrangementStore, HostProbe, Launcher, Project, ProjectDetails, ProjectId,
+    RecentKeeper, RecentStore, ScanState, Sources, SshProbe, Universe, WorkspaceEvent,
+    start_probes, start_scan,
 };
 
 use crate::opened::{OpenedNotice, OpenedProject, ProjectState};
@@ -453,7 +454,17 @@ impl CellworksApp {
                         project,
                         branch,
                         files,
-                    }) => launcher.detailed(project, branch, files),
+                        committed,
+                        changed,
+                    }) => launcher.detailed(
+                        project,
+                        ProjectDetails {
+                            branch,
+                            files,
+                            committed,
+                            changed,
+                        },
+                    ),
                     Ok(_) => {}
                     Err(std::sync::mpsc::TryRecvError::Empty) => return true,
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => return false,
@@ -857,6 +868,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     }
     let mut launcher_rows = if launcher_shown { rows } else { 0 };
     let mut jumped = false;
+    let mut page = 0;
     // A NAV frame: egui's own focus moves (Tab, the arrows) must not leave
     // the focus on the field or a row once the frame is drawn.
     let mut nav_frame = false;
@@ -864,6 +876,15 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         // ⌘K flips between the modes; in NAV ":" and "/" enter CMD and are
         // taken off the frame's events, so the field never types them.
         let cmd_k = ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::K));
+        // Ctrl+D / Ctrl+U: a page down / up, in NAV and CMD alike (STORY-083
+        // requirement 14), taken off the frame so the field never types them.
+        let (page_down, page_up) = ui.input_mut(|input| {
+            (
+                input.consume_key(egui::Modifiers::CTRL, egui::Key::D),
+                input.consume_key(egui::Modifiers::CTRL, egui::Key::U),
+            )
+        });
+        page = isize::from(page_down) - isize::from(page_up);
         if in_field {
             if cmd_k {
                 app.launcher.request_unfocus();
@@ -899,13 +920,24 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             }
         }
     }
-    if launcher_rows != 0 || jumped {
+    if page != 0 {
+        let rows = cellworks_workspace::ui::list_page_rows(ui) as isize;
+        app.launcher.move_selection_clamped(page * rows);
+    }
+    if launcher_rows != 0 || jumped || page != 0 {
         app.launcher.move_selection(launcher_rows);
         app.request_details();
         match app.launcher.selected().and_then(ProjectId::local_path) {
             Some(path) => app.navigation.select(path.to_owned()),
             None => app.navigation.deselect(),
         }
+    }
+    // Shift+Tab cycles the sort (STORY-083 requirement 15); it is taken
+    // first so the plain Tab below never sees it.
+    let launcher_sort = launcher_shown
+        && ui.input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab));
+    if launcher_sort {
+        app.launcher.cycle_sort();
     }
     let launcher_tab = launcher_shown
         && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Tab));

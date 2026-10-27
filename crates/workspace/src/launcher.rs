@@ -91,13 +91,53 @@ pub enum ProjectKind {
     Remote,
 }
 
-/// A local project's branch and file count, read off the frame loop; each
-/// `None` until it is known, and a plain folder's `files` stays `None`
-/// rather than becoming zero (requirement 9).
+/// A local project's branch, file count, last commit time and folder
+/// modification time, read off the frame loop; each `None` until it is
+/// known, and a plain folder's `files` and `committed` stay `None` rather
+/// than becoming zero (requirement 9). Times are seconds since the Unix
+/// epoch.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProjectDetails {
     pub branch: Option<String>,
     pub files: Option<usize>,
+    pub committed: Option<i64>,
+    pub changed: Option<i64>,
+}
+
+/// How the rows inside each location group are ordered (STORY-083
+/// requirement 15). Cycled by the sort chip and Shift+Tab.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Sort {
+    /// By parent folder, then name: the folders read as blocks.
+    #[default]
+    Dir,
+    /// Last opened in Cellworks first, then the never-opened by name.
+    Opened,
+    /// Newest last git commit first, the unknown by name.
+    Commit,
+    /// Newest folder modification first, the unknown by name.
+    Changed,
+}
+
+impl Sort {
+    /// The sort chip's text; the same with theme words on or off.
+    pub fn label(self) -> &'static str {
+        match self {
+            Sort::Dir => "Sort: dir",
+            Sort::Opened => "Sort: opened",
+            Sort::Commit => "Sort: commit",
+            Sort::Changed => "Sort: changed",
+        }
+    }
+
+    fn next(self) -> Sort {
+        match self {
+            Sort::Dir => Sort::Opened,
+            Sort::Opened => Sort::Commit,
+            Sort::Commit => Sort::Changed,
+            Sort::Changed => Sort::Dir,
+        }
+    }
 }
 
 /// The view model the launcher draws: what the scan has found, which
@@ -113,6 +153,7 @@ pub struct Launcher {
     projects: Vec<Project>,
     search: String,
     pick: Pick,
+    sort: Sort,
     selected: Option<ProjectId>,
     recent: Vec<ProjectId>,
     hosts: HashMap<String, HostState>,
@@ -139,6 +180,7 @@ impl Launcher {
             projects: Vec::new(),
             search: String::new(),
             pick: Pick::All,
+            sort: Sort::default(),
             selected: None,
             recent: Vec::new(),
             hosts: HashMap::new(),
@@ -212,6 +254,16 @@ impl Launcher {
         &self.pick
     }
 
+    /// The order the rows inside each group are in.
+    pub fn sort(&self) -> Sort {
+        self.sort
+    }
+
+    /// Moves to the next sort, wrapping from the last back to the first.
+    pub fn cycle_sort(&mut self) {
+        self.sort = self.sort.next();
+    }
+
     /// Selects `id`, or clears the selection.
     pub fn select(&mut self, id: Option<ProjectId>) {
         self.selected = id;
@@ -247,6 +299,27 @@ impl Launcher {
         self.selected = Some(order[next as usize].clone());
     }
 
+    /// Moves the selection `by` rows through every group like
+    /// [`Launcher::move_selection`], but stopping at the first and last row
+    /// instead of wrapping: a page move (STORY-083 requirement 14).
+    pub fn move_selection_clamped(&mut self, by: isize) {
+        let order = self.visible_order();
+        if order.is_empty() {
+            return;
+        }
+        let at = self
+            .selected
+            .as_ref()
+            .and_then(|id| order.iter().position(|shown| shown == id));
+        let last = order.len() as isize - 1;
+        let next = match at {
+            Some(at) => (at as isize + by).clamp(0, last),
+            None if by >= 0 => 0,
+            None => last,
+        };
+        self.selected = Some(order[next as usize].clone());
+    }
+
     /// Every selectable id, in the order the view draws the group rows: what
     /// `move_selection` steps through. The recent row is left out: it never
     /// shows the selection, so stepping onto it would make the highlight jump.
@@ -266,10 +339,9 @@ impl Launcher {
         self.recent.truncate(5);
     }
 
-    /// Records `project`'s branch and file count, read off the frame loop.
-    pub fn detailed(&mut self, project: PathBuf, branch: Option<String>, files: Option<usize>) {
-        self.details
-            .insert(project, ProjectDetails { branch, files });
+    /// Records `project`'s details, read off the frame loop.
+    pub fn detailed(&mut self, project: PathBuf, details: ProjectDetails) {
+        self.details.insert(project, details);
     }
 
     /// `id`'s details, for a local project whose read has come back.
@@ -513,9 +585,10 @@ impl Launcher {
     /// Each group is narrowed by the current pick and search (requirements 1
     /// and 8).
     ///
-    /// Local projects keep STORY-078's order inside the group — by parent
-    /// folder, then by name — so the folders still read as blocks, and each
-    /// row names its own folder through the path beside it.
+    /// Inside a group the rows follow the current [`Sort`]; by default local
+    /// projects keep STORY-078's order — by parent folder, then by name — so
+    /// the folders still read as blocks, and each row names its own folder
+    /// through the path beside it.
     pub fn groups(&self) -> Vec<(String, Vec<&Project>)> {
         let mut local: Vec<&Project> = Vec::new();
         let mut remote: BTreeMap<&str, Vec<&Project>> = BTreeMap::new();
@@ -531,20 +604,57 @@ impl Launcher {
 
         let mut groups = Vec::new();
         if !local.is_empty() {
-            local.sort_by_key(|project| {
-                let path = project.id.local_path().unwrap_or(Path::new("/"));
-                (
-                    path.parent().unwrap_or(Path::new("/")).to_path_buf(),
-                    project.name.clone(),
-                )
-            });
+            self.sort_rows(&mut local);
             groups.push((self.words.this_mac_label.to_owned(), local));
         }
         for (host, mut projects) in remote {
-            projects.sort_by(|one, other| one.name.cmp(&other.name));
+            self.sort_rows(&mut projects);
             groups.push((host.to_owned(), projects));
         }
         groups
+    }
+
+    /// Orders one group's rows by the current sort. `Dir` is the parent
+    /// folder for a local project and just the name for a remote one (a
+    /// remote host has no folders of ours); `Commit` and `Changed` have
+    /// nothing to read for a remote project, so those fall back to the name.
+    fn sort_rows(&self, rows: &mut [&Project]) {
+        let time = |project: &Project, read: fn(&ProjectDetails) -> Option<i64>| {
+            std::cmp::Reverse(self.details_of(&project.id).and_then(read))
+        };
+        match self.sort {
+            Sort::Dir => rows.sort_by_key(|project| {
+                let parent = project
+                    .id
+                    .local_path()
+                    .and_then(Path::parent)
+                    .map(Path::to_path_buf);
+                (parent, project.name.clone())
+            }),
+            Sort::Opened => rows.sort_by_key(|project| {
+                let place = self.recent.iter().position(|id| id == &project.id);
+                (place.unwrap_or(usize::MAX), project.name.clone())
+            }),
+            Sort::Commit => rows.sort_by_key(|project| {
+                (
+                    time(project, |details| details.committed),
+                    project.name.clone(),
+                )
+            }),
+            Sort::Changed => rows.sort_by_key(|project| {
+                (
+                    time(project, |details| details.changed),
+                    project.name.clone(),
+                )
+            }),
+        }
+    }
+
+    /// The folder `project` sits in, as a row's path shows it (`~/Projects`),
+    /// for the view's folder subheading; `None` for a remote project.
+    pub fn folder_of(&self, project: &Project) -> Option<String> {
+        let path = project.id.local_path()?;
+        Some(self.tilde(path.parent().unwrap_or(Path::new("/"))))
     }
 
     /// `path` as the engineer wrote it, with this machine's home folder shown
@@ -1085,8 +1195,11 @@ mod tests {
 
         launcher.detailed(
             local.id.local_path().unwrap().to_path_buf(),
-            Some("main".to_owned()),
-            Some(2),
+            ProjectDetails {
+                branch: Some("main".to_owned()),
+                files: Some(2),
+                ..ProjectDetails::default()
+            },
         );
         assert_eq!(launcher.branch_label(&local.id), Some("main".to_owned()));
     }
@@ -1103,7 +1216,10 @@ mod tests {
         let local = Project::at(PathBuf::from("/Users/engineer/scratch/tool"));
         launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![local.clone()]));
 
-        launcher.detailed(local.id.local_path().unwrap().to_path_buf(), None, None);
+        launcher.detailed(
+            local.id.local_path().unwrap().to_path_buf(),
+            ProjectDetails::default(),
+        );
 
         assert_eq!(launcher.branch_label(&local.id), Some("folder".to_owned()));
     }
@@ -1198,5 +1314,153 @@ mod tests {
         assert_eq!(launcher.selected(), Some(&b.id));
         launcher.select_end(false);
         assert_eq!(launcher.selected(), Some(&a.id));
+    }
+
+    /// A launcher over `paths`, all local, with theme words as they are.
+    fn local_launcher(paths: &[&str]) -> Launcher {
+        let mut launcher = Launcher::new(None);
+        launcher.apply(WorkspaceEvent::ProjectsDiscovered(
+            paths
+                .iter()
+                .map(|p| Project::at(PathBuf::from(p)))
+                .collect(),
+        ));
+        launcher
+    }
+
+    fn timed(launcher: &mut Launcher, path: &str, committed: Option<i64>, changed: Option<i64>) {
+        launcher.detailed(
+            PathBuf::from(path),
+            ProjectDetails {
+                committed,
+                changed,
+                ..ProjectDetails::default()
+            },
+        );
+    }
+
+    /// STORY-083 requirement 15: dir orders by parent folder, then name.
+    #[test]
+    fn dir_sort_orders_by_parent_folder_then_name() {
+        let launcher = local_launcher(&["/b/x", "/a/z", "/a/y"]);
+
+        assert_eq!(launcher.sort(), Sort::Dir);
+        assert_eq!(group_names(&launcher), ["y", "z", "x"]);
+    }
+
+    /// Requirement 15: opened puts the recent list first, in its order, then
+    /// the never-opened by name.
+    #[test]
+    fn opened_sort_follows_the_recent_list_then_names() {
+        let mut launcher = local_launcher(&["/p/a", "/p/b", "/p/c", "/p/d"]);
+        launcher.opened(Project::at(PathBuf::from("/p/c")).id);
+        launcher.opened(Project::at(PathBuf::from("/p/d")).id);
+        launcher.cycle_sort();
+
+        assert_eq!(launcher.sort(), Sort::Opened);
+        assert_eq!(group_names(&launcher), ["d", "c", "a", "b"]);
+    }
+
+    /// Requirement 15: commit puts the newest commit first and a project
+    /// with no known commit time last, by name.
+    #[test]
+    fn commit_sort_puts_the_newest_commit_first_and_unknown_last() {
+        let mut launcher = local_launcher(&["/p/a", "/p/b", "/p/c", "/p/d"]);
+        timed(&mut launcher, "/p/b", Some(100), None);
+        timed(&mut launcher, "/p/c", Some(200), None);
+        timed(&mut launcher, "/p/d", None, None);
+        launcher.cycle_sort();
+        launcher.cycle_sort();
+
+        assert_eq!(launcher.sort(), Sort::Commit);
+        assert_eq!(group_names(&launcher), ["c", "b", "a", "d"]);
+    }
+
+    /// Requirement 15: changed puts the newest folder modification first and
+    /// the unknown last, by name.
+    #[test]
+    fn changed_sort_puts_the_newest_modification_first_and_unknown_last() {
+        let mut launcher = local_launcher(&["/p/a", "/p/b", "/p/c"]);
+        timed(&mut launcher, "/p/a", None, Some(10));
+        timed(&mut launcher, "/p/c", None, Some(20));
+        for _ in 0..3 {
+            launcher.cycle_sort();
+        }
+
+        assert_eq!(launcher.sort(), Sort::Changed);
+        assert_eq!(group_names(&launcher), ["c", "a", "b"]);
+    }
+
+    /// Requirement 15: the sort cycles dir, opened, commit, changed and back,
+    /// and its chip text is the same in either vocabulary.
+    #[test]
+    fn the_sort_cycles_and_reads_the_same_in_both_vocabularies() {
+        let mut launcher = Launcher::new(None);
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            seen.push(launcher.sort().label());
+            launcher.cycle_sort();
+        }
+        assert_eq!(
+            seen,
+            [
+                "Sort: dir",
+                "Sort: opened",
+                "Sort: commit",
+                "Sort: changed",
+                "Sort: dir"
+            ]
+        );
+        let mut plain = Launcher::new(None);
+        plain.apply(WorkspaceEvent::ThemeWordsTurnedOff);
+        assert_eq!(plain.sort().label(), "Sort: dir");
+    }
+
+    /// Requirement 15: `visible_order` follows `groups` under every sort, so
+    /// j and k still walk the rows as drawn.
+    #[test]
+    fn walking_the_rows_follows_the_current_sort() {
+        let mut launcher = local_launcher(&["/p/a", "/p/b", "/p/c"]);
+        timed(&mut launcher, "/p/c", Some(5), None);
+        launcher.cycle_sort();
+        launcher.cycle_sort();
+
+        launcher.select_end(false);
+        assert_eq!(launcher.selected_project().unwrap().name, "c");
+        launcher.move_selection(1);
+        assert_eq!(launcher.selected_project().unwrap().name, "a");
+    }
+
+    /// Requirement 14: a page move steps that many rows and stops at either
+    /// end instead of wrapping.
+    #[test]
+    fn a_page_move_clamps_at_the_first_and_last_row() {
+        let mut launcher = local_launcher(&["/p/a", "/p/b", "/p/c", "/p/d", "/p/e"]);
+
+        launcher.move_selection_clamped(3);
+        assert_eq!(launcher.selected_project().unwrap().name, "a");
+        launcher.move_selection_clamped(3);
+        assert_eq!(launcher.selected_project().unwrap().name, "d");
+        launcher.move_selection_clamped(3);
+        assert_eq!(launcher.selected_project().unwrap().name, "e");
+        launcher.move_selection_clamped(-3);
+        assert_eq!(launcher.selected_project().unwrap().name, "b");
+        launcher.move_selection_clamped(-3);
+        assert_eq!(launcher.selected_project().unwrap().name, "a");
+    }
+
+    /// Requirement 16: a search naming a folder lists every project in it,
+    /// because search matches the displayed path.
+    #[test]
+    fn a_folder_search_lists_the_whole_folder() {
+        let mut launcher = local_launcher(&["/h/Projects/a", "/h/Projects/b", "/h/Other/c"]);
+        launcher.search("projects".to_owned());
+
+        assert_eq!(group_names(&launcher), ["a", "b"]);
+        let projects = launcher.groups().remove(0).1;
+        assert_eq!(
+            launcher.folder_of(projects[0]),
+            Some("/h/Projects".to_owned())
+        );
     }
 }

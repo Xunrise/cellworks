@@ -101,6 +101,30 @@ and the words of the launcher only.
 13. Every local project listed under the current pick and search shows its
     branch on its row as soon as it is read; each is read once, in the
     background, and remote projects are never read.
+14. Ctrl+D and Ctrl+U move the selection one page down and up, in NAV and in
+    CMD (Ctrl exactly, so a Cmd combination is untouched; the key never
+    reaches the search field or the map). A page is the number of project rows
+    that fit in the list as drawn, at least one. The selection stops at the
+    first and last row and does not wrap; the list scrolls to follow it.
+15. A sort chip follows the location chips, in the same chip style, reading
+    "Sort: dir", "Sort: opened", "Sort: commit" or "Sort: changed" (the same
+    text with theme words on or off). A click, or Shift+Tab in NAV and CMD,
+    moves to the next sort; the footer hints say "⇧Tab sort". Default is dir.
+    Within each location group:
+    - dir: by parent folder, then name (the order before this story);
+    - opened: last opened in Cellworks first (the recent list order), then
+      never-opened projects by name;
+    - commit: newest last git commit first, projects with no known commit time
+      last, by name;
+    - changed: newest folder modification time first, unknown last, by name.
+    A remote host's group has no details, so commit and changed fall back to
+    the name there; opened uses the recent list. The j/k walk follows the rows
+    as drawn under every sort.
+16. In dir sort the local group draws a small folder subheading (the displayed
+    parent path, such as "~/Projects", in the dim mono hint style) whenever the
+    parent folder changes. It is not a location group: groups stay one per
+    location (STORY-082 requirement 5). A search that matches a folder lists
+    the whole folder, because search matches the displayed path.
 
 ## Decisions
 
@@ -152,6 +176,13 @@ and the words of the launcher only.
     broken. One background thread per listed project, each once. Rejected:
     reading only the rows in view (more code for a list that is short in
     practice; the upgrade path if a discovery lists hundreds of repositories).
+13. Shift+Tab cycles the sort so that Tab keeps cycling the locations
+    (STORY-082 requirement 4). The folder subheadings are drawn inside the
+    location group, not as one group per folder. Rejected: per-folder groups,
+    which break STORY-082 requirement 5. The last commit time and the folder
+    modification time are read with the branch, in the same background read
+    of each listed project. Rejected: a separate read, which would spawn a
+    second thread and a second event per project.
 
 ## Order of work
 

@@ -691,3 +691,237 @@ fn letters_in_nav_do_not_reach_the_map_shortcuts() {
         "no letter reaches the field"
     );
 }
+
+// STORY-083 requirements 14 to 16: paging, the sort chip, folder subheadings.
+
+/// The name of the row the frame draws as selected, if any.
+fn selected_row(harness: &Harness<'_, CellworksApp>) -> Option<String> {
+    let root = harness.root();
+    std::iter::once(root)
+        .chain(root.children_recursive())
+        .find(|node| node.accesskit_node().is_selected() == Some(true))
+        .and_then(|node| node.accesskit_node().value().map(|text| text.to_string()))
+}
+
+/// The project names of `names` that the frame shows, in the order it draws
+/// them (a row's label is exactly its project's name).
+fn row_order(harness: &Harness<'_, CellworksApp>, names: &[&str]) -> Vec<String> {
+    labels(harness)
+        .into_iter()
+        .filter(|label| names.contains(&label.as_str()))
+        .collect()
+}
+
+fn press_ctrl(harness: &mut Harness<'_, CellworksApp>, key: Key) {
+    harness.key_press_modifiers(egui::Modifiers::CTRL, key);
+    harness.run();
+}
+
+/// Ctrl+D and Ctrl+U move a page, clamped at either end
+#[test]
+fn ctrl_d_and_ctrl_u_move_a_page_clamped_at_either_end() {
+    let fixture = Fixture::new();
+    fixture.settings(true);
+    for number in 1..=14 {
+        repository(fixture.path(), &format!("Projects/p{number:02}"), &["a.rs"]);
+    }
+    let mut harness = harness_over(app(&fixture));
+
+    press_ctrl(&mut harness, Key::D);
+    let first = selected_row(&harness).expect("the first Ctrl+D selects the first row");
+    assert_eq!(first, "The-Factory");
+
+    press_ctrl(&mut harness, Key::D);
+    let second = selected_row(&harness).expect("a row stays selected");
+    assert_ne!(second, "cellworks", "a page is more than one row");
+    assert_ne!(second, first);
+
+    press_ctrl(&mut harness, Key::U);
+    assert_eq!(selected_row(&harness), Some(first.clone()));
+    press_ctrl(&mut harness, Key::U);
+    assert_eq!(
+        selected_row(&harness),
+        Some(first),
+        "no wrap above the first row"
+    );
+
+    for _ in 0..6 {
+        press_ctrl(&mut harness, Key::D);
+    }
+    assert_eq!(selected_row(&harness).as_deref(), Some("factory-evals"));
+    press_ctrl(&mut harness, Key::D);
+    assert_eq!(
+        selected_row(&harness).as_deref(),
+        Some("factory-evals"),
+        "no wrap below the last row"
+    );
+}
+
+/// Ctrl+D pages in CMD too and never reaches the field
+#[test]
+fn ctrl_d_pages_in_cmd_without_typing_into_the_field() {
+    let fixture = Fixture::new();
+    fixture.settings(true);
+    let mut harness = harness_over(app(&fixture));
+
+    harness.get_by_role(Role::TextInput).click();
+    harness.run();
+    press_ctrl(&mut harness, Key::D);
+
+    assert!(selected_row(&harness).is_some(), "the selection moved");
+    assert_eq!(
+        harness.get_by_role(Role::TextInput).value(),
+        Some(String::new()),
+        "the field typed nothing"
+    );
+}
+
+/// Shift+Tab and a click cycle the sort chip
+#[test]
+fn shift_tab_and_a_click_cycle_the_sort_chip() {
+    let fixture = Fixture::new();
+    fixture.settings(false);
+    let mut harness = harness_over(app(&fixture));
+
+    assert!(shown_contains(&labels(&harness), "Sort: dir"));
+
+    harness.key_press_modifiers(egui::Modifiers::SHIFT, Key::Tab);
+    harness.run();
+    assert!(shown_contains(&labels(&harness), "Sort: opened"));
+
+    harness.get_by_label("Sort: opened").click_accesskit();
+    harness.run();
+    assert!(shown_contains(&labels(&harness), "Sort: commit"));
+
+    harness.key_press_modifiers(egui::Modifiers::SHIFT, Key::Tab);
+    harness.run();
+    harness.key_press_modifiers(egui::Modifiers::SHIFT, Key::Tab);
+    harness.run();
+    assert!(
+        shown_contains(&labels(&harness), "Sort: dir"),
+        "the fourth Shift+Tab wraps back to dir"
+    );
+    assert!(
+        !harness.get_by_role(Role::TextInput).is_focused(),
+        "Shift+Tab leaves NAV alone"
+    );
+}
+
+/// Tab keeps cycling the locations, not the sort
+#[test]
+fn tab_keeps_cycling_the_locations() {
+    let fixture = Fixture::new();
+    fixture.settings(true);
+    let mut harness = harness_over(app(&fixture));
+
+    harness.key_press(Key::Tab);
+    harness.run();
+
+    assert!(shown_contains(&labels(&harness), "Sort: dir"));
+    assert_eq!(
+        count_of_label(&labels(&harness), "factory-evals"),
+        0,
+        "Tab narrowed the list to This Mac"
+    );
+}
+
+/// The opened sort lists the last opened first, then the rest by name
+#[test]
+fn the_opened_sort_lists_the_last_opened_first() {
+    let fixture = Fixture::new();
+    fixture.settings(true);
+    fs::write(
+        fixture.path().join("recent"),
+        format!("{}\n", fixture.path().join("Projects/cellworks").display()),
+    )
+    .expect("write the recent file");
+    let mut harness = harness_over(app(&fixture));
+    let names = ["cellworks", "The-Factory"];
+
+    assert_eq!(row_order(&harness, &names), ["The-Factory", "cellworks"]);
+
+    harness.key_press_modifiers(egui::Modifiers::SHIFT, Key::Tab);
+    harness.run();
+
+    assert_eq!(row_order(&harness, &names), ["cellworks", "The-Factory"]);
+}
+
+/// The changed sort lists the most recently modified folder first
+#[test]
+fn the_changed_sort_lists_the_newest_folder_first() {
+    let fixture = Fixture::new();
+    fixture.settings(true);
+    let now = std::time::SystemTime::now();
+    for (name, age) in [("cellworks", 10), ("The-Factory", 5000)] {
+        fs::File::open(fixture.path().join("Projects").join(name))
+            .and_then(|folder| folder.set_modified(now - std::time::Duration::from_secs(age)))
+            .expect("set the folder's modification time");
+    }
+    let mut harness = harness_over(app(&fixture));
+    let names = ["cellworks", "The-Factory"];
+
+    for _ in 0..3 {
+        harness.key_press_modifiers(egui::Modifiers::SHIFT, Key::Tab);
+        harness.run();
+    }
+
+    assert!(shown_contains(&labels(&harness), "Sort: changed"));
+    assert_eq!(row_order(&harness, &names), ["cellworks", "The-Factory"]);
+}
+
+/// A second folder: `Elsewhere/alpha`, added by hand beside `Projects`.
+fn with_second_folder(fixture: &Fixture) -> PathBuf {
+    let alpha = repository(fixture.path(), "Elsewhere/alpha", &["a.rs"]);
+    fixture.settings(true);
+    let settings = fixture.path().join("settings.toml");
+    let text = fs::read_to_string(&settings).expect("read the settings file");
+    fs::write(
+        &settings,
+        format!("added_folders = [\"{}\"]\n\n{text}", alpha.display()),
+    )
+    .expect("write the settings file");
+    alpha
+}
+
+/// In dir sort the local group names each folder once
+#[test]
+fn dir_sort_names_each_folder_inside_the_local_group() {
+    let fixture = Fixture::new();
+    with_second_folder(&fixture);
+    let mut harness = harness_over(app(&fixture));
+
+    let shown = labels(&harness);
+    for folder in ["~/Projects", "~/Elsewhere"] {
+        assert_eq!(count_of_label(&shown, folder), 1, "{folder:?} in {shown:?}");
+    }
+    assert_eq!(
+        count_of_label(&shown, "This Mac"),
+        2,
+        "the chip and one group heading, not one group per folder: {shown:?}"
+    );
+
+    harness.key_press_modifiers(egui::Modifiers::SHIFT, Key::Tab);
+    harness.run();
+    let shown = labels(&harness);
+    assert_eq!(
+        count_of_label(&shown, "~/Projects"),
+        0,
+        "no folder subheadings outside dir sort: {shown:?}"
+    );
+}
+
+/// A search naming a folder lists the whole folder
+#[test]
+fn a_folder_search_lists_the_whole_folder() {
+    let fixture = Fixture::new();
+    with_second_folder(&fixture);
+    let mut harness = harness_over(app(&fixture));
+
+    search(&mut harness, "Projects");
+
+    let shown = labels(&harness);
+    for name in ["cellworks", "The-Factory"] {
+        assert!(count_of_label(&shown, name) >= 1, "{name} in {shown:?}");
+    }
+    assert_eq!(count_of_label(&shown, "alpha"), 0, "{shown:?}");
+}

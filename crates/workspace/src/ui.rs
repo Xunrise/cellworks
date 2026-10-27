@@ -12,7 +12,7 @@
 //! Decision 5); this module only draws and reports clicks.
 
 use crate::Sources;
-use crate::launcher::{HostState, Launcher, ProjectKind, match_range};
+use crate::launcher::{HostState, Launcher, ProjectKind, Sort, match_range};
 use crate::project::{Project, ProjectId};
 use crate::universe::{Notice, NoticeKind, ScanState, Universe};
 use crate::words::Words;
@@ -200,10 +200,10 @@ const FAILED: &str = "Could not finish scanning for projects.";
 
 /// The card's footer hints (STORY-082 requirement 9), as one accessible
 /// string; the footer draws each key in its own key box.
-const HINTS_NAV: &str = "↑ ↓ j k move   Enter open   Tab scope   : search";
+const HINTS_NAV: &str = "↑ ↓ j k move   Enter open   Tab scope   ⇧Tab sort   : search";
 
 /// The same footer while the search field has focus.
-const HINTS_CMD: &str = "↑ ↓ move   Enter open   Tab scope   Esc nav";
+const HINTS_CMD: &str = "↑ ↓ move   Enter open   Tab scope   ⇧Tab sort   Esc nav";
 
 // STORY-083: the launcher's metrics, in points, taken from the approved mock.
 /// The header bar's height.
@@ -281,6 +281,17 @@ const CTA_CUT: f32 = 10.0;
 const CONTROL_CUT: f32 = 8.0;
 /// A host state glyph's diameter.
 const GLYPH_SIZE: f32 = 8.0;
+
+/// Where [`card`] leaves how many project rows the list's viewport shows, for
+/// [`list_page_rows`].
+const PAGE_ROWS_ID: &str = "cellworks-launcher-page-rows";
+
+/// How many project rows fit in the list as last drawn, at least one: what
+/// Ctrl+D and Ctrl+U move the selection by (STORY-083 requirement 14).
+pub fn list_page_rows(ui: &egui::Ui) -> usize {
+    ui.data(|data| data.get_temp::<usize>(egui::Id::new(PAGE_ROWS_ID)))
+        .unwrap_or(1)
+}
 
 /// The `egui::Id` the search field is given, so [`search_focused`] can check
 /// the same id `search_row` builds its `TextEdit` with.
@@ -779,6 +790,8 @@ fn card(
         body.max,
     );
     let list_rect = egui::Rect::from_min_max(body.min, egui::pos2(aside.left(), body.bottom()));
+    let page_rows = (((list_rect.height() - LIST_TOP_PADDING) / ROW_HEIGHT) as usize).max(1);
+    ui.data_mut(|data| data.insert_temp(egui::Id::new(PAGE_ROWS_ID), page_rows));
     let fade = egui::Rect::from_min_max(
         aside.min,
         egui::pos2(aside.right(), aside.top() + aside.height() * 0.4),
@@ -874,9 +887,19 @@ fn card_footer(ui: &egui::Ui, rect: egui::Rect) {
         rect.left() + ROW_PADDING,
         centre_y,
         if cmd {
-            &[("↑↓", "move"), ("⏎", "open"), ("Tab", "scope")]
+            &[
+                ("↑↓", "move"),
+                ("⏎", "open"),
+                ("Tab", "scope"),
+                ("⇧Tab", "sort"),
+            ]
         } else {
-            &[("↑↓/jk", "move"), ("⏎", "open"), ("Tab", "scope")]
+            &[
+                ("↑↓/jk", "move"),
+                ("⏎", "open"),
+                ("Tab", "scope"),
+                ("⇧Tab", "sort"),
+            ]
         },
         18.0,
     );
@@ -1123,8 +1146,31 @@ fn chip_row(ui: &mut egui::Ui, rect: egui::Rect, launcher: &mut Launcher) {
         text_at(ui, chip_id.with("count"), pos, count, &count_text);
         x = chip_rect.right() + CHIP_GAP;
     }
+    // The sort chip after the locations: same chip, no count (STORY-083
+    // requirement 15). Its text is the same with theme words on or off.
+    let sort_text = launcher.sort().label();
+    let sort = galley(ui, styled(&sort_text.to_uppercase(), 11.0, sans, INK, 0.12));
+    let chip_rect = egui::Rect::from_min_size(
+        egui::pos2(x, top),
+        egui::vec2(2.0 * CHIP_PADDING + sort.size().x, CHIP_HEIGHT),
+    );
+    ui.painter().add(egui::Shape::convex_polygon(
+        chamfer(chip_rect, CONTROL_CUT, Corners::TopLeftBottomRight).to_vec(),
+        egui::Color32::TRANSPARENT,
+        egui::Stroke::new(1.0, LINE),
+    ));
+    let sort_id = id.with("sort");
+    let response = ui.interact(chip_rect, sort_id, egui::Sense::click());
+    labelled(&response, egui::WidgetType::Label, sort_text);
+    let sort_clicked = response.clicked();
+    let pos = left_centred(chip_rect, chip_rect.left() + CHIP_PADDING, &sort);
+    ui.painter().galley(pos, sort, INK);
+
     if let Some(pick) = clicked {
         launcher.pick(pick);
+    }
+    if sort_clicked {
+        launcher.cycle_sort();
     }
 }
 
@@ -1224,7 +1270,17 @@ fn list(ui: &mut egui::Ui, universe: &Universe, launcher: &mut Launcher) -> Opti
                     // is unchanged (design Order of work step 2).
                     let state = host_state(launcher, label);
                     group_heading_label(ui, &group_heading(launcher, label), state);
+                    let mut folder: Option<String> = None;
                     for project in projects {
+                        // In dir sort the local group names each folder once,
+                        // where the parent changes (requirement 16).
+                        if launcher.sort() == Sort::Dir
+                            && let Some(parent) = launcher.folder_of(project)
+                            && folder.as_ref() != Some(&parent)
+                        {
+                            folder_subheading(ui, &parent);
+                            folder = Some(parent);
+                        }
                         let click =
                             project_row(ui, launcher, project, selected.as_ref(), &project.name);
                         take(click, project, launcher);
@@ -1283,6 +1339,22 @@ fn group_heading_label(ui: &mut egui::Ui, text: &str, state: Option<HostState>) 
             egui::Stroke::new(1.0, LINE),
         );
     }
+}
+
+/// A folder subheading inside the local group: the folder's displayed path in
+/// the dim mono hint style, its node reading the path itself.
+fn folder_subheading(ui: &mut egui::Ui, text: &str) {
+    let path = galley(ui, styled(text, 11.0, jetbrains_mono(ui), DIM_INK, 0.0));
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), path.size().y + HEADING_SPACE.1),
+        egui::Sense::hover(),
+    );
+    labelled(&response, egui::WidgetType::Label, text);
+    ui.painter().galley(
+        egui::pos2(rect.left() + ROW_PADDING, rect.top()),
+        path,
+        DIM_INK,
+    );
 }
 
 /// `label`'s host state, when `label` names a remote host's group.
