@@ -761,15 +761,17 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     }
     // A focused session terminal owns the keyboard: the map's keys do nothing.
     let terminal = app.sessions.has_keyboard(ui);
-    // So does the launcher's search field, which is focused from the first
-    // frame (STORY-082 requirement 2): without this, every "u", "m" and "z"
-    // of a typed project name would also toggle underground, the cables and
-    // the navigation lock, since those three act whether a project is open or
-    // not. The keys are read here, before `ui::launcher` draws the field, so
-    // the field never gets to swallow them itself.
-    let typing = app.sessions.search_focused(ui)
-        || (app.opened.is_none() && cellworks_workspace::ui::search_focused(ui))
-        || terminal;
+    // So does the launcher, whole: in CMD the search field takes the letters,
+    // and in NAV the launcher reads them itself (j, k, g, G, ":", "/"), so
+    // none of them may also toggle underground, the cables or the navigation
+    // lock, which act whether a project is open or not (STORY-083
+    // requirement 8). The keys are read here, before `ui::launcher` draws the
+    // field, so the field never gets to swallow them itself.
+    let launcher_shown = app.opened.is_none();
+    let sessions_search = app.sessions.search_focused(ui);
+    let in_field = launcher_shown && cellworks_workspace::ui::search_focused(ui);
+    let was_in_field = launcher_shown && cellworks_workspace::ui::search_was_focused(ui);
+    let typing = sessions_search || launcher_shown || terminal;
     let Keys {
         enter,
         esc,
@@ -846,15 +848,59 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     {
         app.navigation.turned(centre, turn);
     }
-    if app.opened.is_none() && rows != 0 {
-        app.launcher.move_selection(rows);
+    let mut launcher_rows = if launcher_shown { rows } else { 0 };
+    let mut jumped = false;
+    // A NAV frame: egui's own focus moves (Tab, the arrows) must not leave
+    // the focus on the field or a row once the frame is drawn.
+    let mut nav_frame = false;
+    if launcher_shown && !terminal && !sessions_search {
+        // ⌘K flips between the modes; in NAV ":" and "/" enter CMD and are
+        // taken off the frame's events, so the field never types them.
+        let cmd_k = ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::K));
+        if in_field {
+            if cmd_k {
+                app.launcher.request_unfocus();
+            }
+        } else {
+            let (enter_cmd, down, up, first, last) = ui.input_mut(|input| {
+                let is_cmd_text =
+                    |event: &egui::Event| matches!(event, egui::Event::Text(t) if t == ":" || t == "/");
+                let mut enter_cmd = input.events.iter().any(is_cmd_text);
+                input.events.retain(|event| !is_cmd_text(event));
+                let slash = input.modifiers.is_none() && input.key_pressed(egui::Key::Slash);
+                let colon = input.key_pressed(egui::Key::Colon)
+                    || (input.modifiers.shift_only() && input.key_pressed(egui::Key::Semicolon));
+                enter_cmd |= slash || colon;
+                let plain = input.modifiers.is_none();
+                (
+                    cmd_k || enter_cmd,
+                    plain && input.key_pressed(egui::Key::J),
+                    plain && input.key_pressed(egui::Key::K),
+                    plain && input.key_pressed(egui::Key::G),
+                    input.modifiers.shift_only() && input.key_pressed(egui::Key::G),
+                )
+            });
+            if enter_cmd {
+                app.launcher.request_focus();
+            } else {
+                nav_frame = true;
+            }
+            launcher_rows += isize::from(down) - isize::from(up);
+            if first || last {
+                app.launcher.select_end(last);
+                jumped = true;
+            }
+        }
+    }
+    if launcher_rows != 0 || jumped {
+        app.launcher.move_selection(launcher_rows);
         app.request_details();
         match app.launcher.selected().and_then(ProjectId::local_path) {
             Some(path) => app.navigation.select(path.to_owned()),
             None => app.navigation.deselect(),
         }
     }
-    let launcher_tab = app.opened.is_none()
+    let launcher_tab = launcher_shown
         && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
     if launcher_tab {
         app.launcher.cycle_pick();
@@ -887,7 +933,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     if cables {
         app.navigation.toggle_cables();
     }
-    app.underground = app.navigation.is_underground() || held_underground;
+    app.underground = app.navigation.is_underground() || (held_underground && !launcher_shown);
     if cycle && let Some(map) = mapped(&app.opened) {
         app.navigation.next_in_block(map);
     }
@@ -937,17 +983,17 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         app.navigation.toggle_lock();
     }
     if esc && app.opened.is_none() {
-        app.launcher.clear_search();
-        // Requirement 10: Esc clears the text "and nothing else". egui drops
-        // the focus of whatever widget holds it on an unmodified Escape, so
-        // the launcher asks for it straight back — otherwise the next letter
-        // typed would miss the field and reach the map's shortcuts.
-        app.launcher.request_focus();
+        // egui drops the field's focus on an unmodified Escape itself, which
+        // is the whole of leaving CMD: the text stays. Only an Esc pressed in
+        // NAV clears it.
+        if !was_in_field {
+            app.launcher.clear_search();
+        }
     } else if esc && app.sessions.deselect() {
         // handled: a session selection is cleared before anything else.
     } else if esc && app.navigation.esc(mapped(&app.opened)) == Some(Moved::Closed) {
         app.opened = None;
-        app.launcher.request_focus();
+        app.launcher.request_unfocus();
     }
     if enter
         && (app.opened.is_some()
@@ -962,10 +1008,10 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     }
     // A single-line `TextEdit` ends its input by surrendering the focus on
     // Enter, including on the frames where the launcher opens nothing — a
-    // remote project (requirement 8), or no selection at all. The field is
-    // drawn after this block, so asking now puts the focus back the same
-    // frame.
-    if enter && app.opened.is_none() {
+    // remote project (requirement 8), or no selection at all. CMD stays CMD:
+    // the field is drawn after this block, so asking now puts the focus back
+    // the same frame.
+    if enter && in_field && app.opened.is_none() {
         app.launcher.request_focus();
     }
 
@@ -977,22 +1023,28 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     // frame no longer borrows the opened project.
     let mut bar: (Option<Lens>, (bool, bool)) = (None, (false, false));
     match &app.opened {
-        None => match cellworks_workspace::ui::launcher(ui, &app.universe, &mut app.launcher) {
-            Some(LauncherAction::Selected(project)) => {
-                app.launcher.select(Some(project.id.clone()));
-                app.request_details();
-                // Clicking a row gives it the focus, which the search field
-                // then no longer has: the palette stays keyboard-first, so
-                // the field takes it back on the next frame.
-                app.launcher.request_focus();
-                match project.id.local_path() {
-                    Some(path) => app.navigation.select(path.to_owned()),
-                    None => app.navigation.deselect(),
+        None => {
+            let action = cellworks_workspace::ui::launcher(ui, &app.universe, &mut app.launcher);
+            if nav_frame && let Some(id) = ui.memory(|memory| memory.focused()) {
+                let clicked_field = cellworks_workspace::ui::search_focused(ui)
+                    && ui.input(|input| input.pointer.any_pressed());
+                if !clicked_field {
+                    ui.memory_mut(|memory| memory.surrender_focus(id));
                 }
             }
-            Some(LauncherAction::Opened(project)) => app.open(project),
-            None => {}
-        },
+            match action {
+                Some(LauncherAction::Selected(project)) => {
+                    app.launcher.select(Some(project.id.clone()));
+                    app.request_details();
+                    match project.id.local_path() {
+                        Some(path) => app.navigation.select(path.to_owned()),
+                        None => app.navigation.deselect(),
+                    }
+                }
+                Some(LauncherAction::Opened(project)) => app.open(project),
+                None => {}
+            }
+        }
         Some(opened) => {
             let crumbs = app.navigation.breadcrumb(&opened.project().name, app.map());
             let mode = if app.navigation.is_locked() {

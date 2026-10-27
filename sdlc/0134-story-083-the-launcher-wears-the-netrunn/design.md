@@ -78,6 +78,23 @@ and the words of the launcher only.
 10. The Gherkin's quoted strings are matched case-insensitively against the
     displayed text, because the themed table displays several of them upper
     case (for example "Local net 2" is drawn "LOCAL NET 2").
+11. The launcher has two modes, matching the status-bar badge. NAV is the
+    default at launch and the search field has no focus. In NAV, j or ArrowDown
+    moves the selection down and k or ArrowUp up (the first move from nothing
+    selected picks row 0), g selects the first row and Shift+G the last, Enter
+    opens the selected project (offline hosts still cannot be opened), and Tab
+    cycles the chips without moving egui's focus to any widget. No other letter
+    does anything, and none reaches the map shortcuts behind the launcher.
+    CMD is the search field having focus: entered by Cmd+K, ":" or "/" from NAV
+    (the ":" or "/" is not typed into the field) or by a click into the field.
+    In CMD, typing filters, the arrows still move the selection, and Enter opens
+    it. Cmd+K again or Esc returns to NAV and keeps the filter text; a click
+    elsewhere also returns to NAV. Esc in NAV with a filter clears it.
+    The badge reads "NAV" with the status text, or "CMD" with ":" and the query,
+    from the field's focus, not from whether the query is empty. The hints read
+    "j/k move", ": search", "Enter open" in NAV and "Enter open", "Esc nav" in
+    CMD; the card footer reads "↑↓/jk move · ⏎ open · Tab scope · : search" in
+    NAV and the same with "Esc nav" in CMD.
 
 ## Decisions
 
@@ -115,6 +132,14 @@ and the words of the launcher only.
 10. The STORY-078 and STORY-082 acceptance tests run with theme words off; only
     their open-action assertions move to "Open project" and "Connect the host
     first". Rejected: rewriting them to themed strings.
+11. The NAV and CMD modes replace STORY-082's rule that the search field is
+    focused from the first frame and grabbed back after Tab, Enter and Esc. The
+    mode is whether the search field has focus, plus explicit focus and unfocus
+    requests (Cmd+K, ":", "/", Esc), so there is no second state to drift. In
+    NAV, egui's own focus move on Tab or an arrow is given back after the frame,
+    so it never rests on the field, a row or a chip. Rejected: the search stays
+    focused and Ctrl-j/k move the selection (every plain letter would stay
+    reserved for the field, and the badge could not tell a mode from a query).
 
 ## Order of work
 

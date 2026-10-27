@@ -230,8 +230,8 @@ fn the_launcher_lists_recent_projects_first_then_each_location() {
     let mut harness = harness_over(launcher_app(&fixture));
 
     assert!(
-        harness.get_by_role(Role::TextInput).is_focused(),
-        "the search field has the focus on the first frame"
+        !harness.get_by_role(Role::TextInput).is_focused(),
+        "the launcher opens in NAV: the search field has no focus (STORY-083 requirement 8)"
     );
 
     let shown = labels(&harness);
@@ -326,18 +326,18 @@ fn the_engineer_moves_through_the_locations_from_the_keyboard() {
 
     harness.key_press(Key::Tab);
     harness.run();
+    // egui moves its focus on Tab in its own pass, before the key block can
+    // consume the key: the launcher gives it back, so NAV stays NAV and the
+    // next letter reaches no widget.
     assert!(
-        harness.get_by_role(Role::TextInput).is_focused(),
-        "the search field still has the focus after the first Tab"
+        !harness.get_by_role(Role::TextInput).is_focused(),
+        "Tab does not move the focus into the search field"
     );
     harness.key_press(Key::Tab);
     harness.run();
-    // egui moves the focus on Tab in its own pass, before the key block can
-    // consume the key: the launcher asks for it straight back, or the next
-    // letter typed would reach the map's shortcuts instead of the field.
     assert!(
-        harness.get_by_role(Role::TextInput).is_focused(),
-        "the search field still has the focus after the second Tab"
+        !harness.get_by_role(Role::TextInput).is_focused(),
+        "nor does the second Tab"
     );
 
     let shown = labels(&harness);
@@ -353,9 +353,9 @@ fn the_engineer_moves_through_the_locations_from_the_keyboard() {
     }
 }
 
-/// A letter typed into the search field stays in it: the field is focused
-/// from the first frame (requirement 2), and requirement 10's "does not reach
-/// the map handling" holds for the letters as well as for Esc. "u", "m" and
+/// A letter typed into the search field stays in it, and requirement 10's
+/// "does not reach the map handling" holds for the letters as well as for Esc,
+/// in CMD (the field focused) just as in NAV. "u", "m" and
 /// "z" are the three map shortcuts that act whether a project is open or not,
 /// so they are the ones a typed project name ("surface-kit", "minikube") can
 /// silently fire behind the launcher.
@@ -364,9 +364,11 @@ fn letters_typed_into_the_search_field_do_not_reach_the_map_shortcuts() {
     let fixture = fixture();
     let mut harness = harness_over(launcher_app(&fixture));
 
+    harness.get_by_role(Role::TextInput).click();
+    harness.run();
     assert!(
         harness.get_by_role(Role::TextInput).is_focused(),
-        "the search field has the focus on the first frame"
+        "a click puts the search field in CMD"
     );
 
     let locked = harness.state().navigation().is_locked();
@@ -424,6 +426,15 @@ fn clearing_the_search_brings_the_full_list_back() {
     let mut harness = harness_over(launcher_app(&fixture));
 
     search(&mut harness, "fac");
+    // STORY-083 requirement 8: the first Esc leaves CMD and keeps the text;
+    // Esc in NAV clears it.
+    harness.key_press(Key::Escape);
+    harness.run();
+    assert_eq!(
+        harness.get_by_role(Role::TextInput).value(),
+        Some("fac".to_owned()),
+        "Esc in CMD keeps the filter"
+    );
     harness.key_press(Key::Escape);
     harness.run();
 
@@ -432,12 +443,9 @@ fn clearing_the_search_brings_the_full_list_back() {
         Some(String::new()),
         "the search field is empty"
     );
-    // Requirement 10: Esc clears the text "and nothing else". A single-line
-    // field surrenders its focus on Escape, so the launcher asks for it back
-    // — otherwise the next letter typed would reach the map's shortcuts.
     assert!(
-        harness.get_by_role(Role::TextInput).is_focused(),
-        "the search field still has the focus after Esc"
+        !harness.get_by_role(Role::TextInput).is_focused(),
+        "and the launcher is in NAV"
     );
 
     let shown = labels(&harness);
@@ -531,12 +539,8 @@ fn a_project_on_an_offline_remote_host_cannot_be_opened() {
         harness.state().opened().is_none(),
         "Enter on surface-kit opens nothing"
     );
-    // The launcher is still the only thing on screen, so it is still the
-    // keyboard's owner: a single-line field surrenders its focus on Enter
-    // (and the click on the row took it away before that), and the launcher
-    // asks for it back both times.
     assert!(
-        harness.get_by_role(Role::TextInput).is_focused(),
-        "the search field still has the focus after an Enter that opened nothing"
+        !harness.get_by_role(Role::TextInput).is_focused(),
+        "an Enter that opened nothing leaves the launcher in NAV"
     );
 }

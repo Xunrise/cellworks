@@ -117,10 +117,12 @@ pub struct Launcher {
     recent: Vec<ProjectId>,
     hosts: HashMap<String, HostState>,
     details: HashMap<PathBuf, ProjectDetails>,
-    /// Whether the search field should take focus this frame: set on launch
-    /// and on ⌘K, read (and cleared) once by the view (STORY-082 requirement
-    /// 2).
-    focus_requested: bool,
+    /// What the view should do with the search field's focus this frame:
+    /// `Some(true)` takes it (CMD), `Some(false)` gives it up (NAV), read
+    /// (and cleared) once by the view. The mode itself is whether the field
+    /// has focus, so there is no second state to drift (STORY-083
+    /// requirement 8).
+    focus_request: Option<bool>,
     /// The vocabulary the launcher currently speaks (STORY-083 requirement
     /// 6): themed by default, switched to [`PLAIN`] once the settings file's
     /// `ThemeWordsTurnedOff` is applied.
@@ -141,7 +143,7 @@ impl Launcher {
             recent: Vec::new(),
             hosts: HashMap::new(),
             details: HashMap::new(),
-            focus_requested: true,
+            focus_request: None,
             words: &THEMED,
         }
     }
@@ -466,17 +468,30 @@ impl Launcher {
         self.search.clear();
     }
 
-    /// Asks the search field to take focus on the next frame, as ⌘K does
-    /// (STORY-082 requirement 2).
+    /// Asks the search field to take focus (CMD mode) on the next frame.
     pub fn request_focus(&mut self) {
-        self.focus_requested = true;
+        self.focus_request = Some(true);
     }
 
-    /// Reads and clears the focus request: true on the first frame or right
-    /// after [`Launcher::request_focus`], false otherwise, so the view asks
-    /// for focus exactly once per request (STORY-082 requirement 2).
-    pub fn take_focus_request(&mut self) -> bool {
-        std::mem::take(&mut self.focus_requested)
+    /// Asks the search field to give up focus (NAV mode) on the next frame.
+    pub fn request_unfocus(&mut self) {
+        self.focus_request = Some(false);
+    }
+
+    /// Reads and clears the focus request, so the view acts on each exactly
+    /// once.
+    pub fn take_focus_request(&mut self) -> Option<bool> {
+        self.focus_request.take()
+    }
+
+    /// Selects the first (`false`) or last (`true`) row shown, as g and G do.
+    /// Nothing while nothing is shown.
+    pub fn select_end(&mut self, last: bool) {
+        let order = self.visible_order();
+        let end = if last { order.last() } else { order.first() };
+        if let Some(id) = end.cloned() {
+            self.selected = Some(id);
+        }
     }
 
     /// Up to five of the most recently opened projects, most recent first,
@@ -1156,21 +1171,40 @@ mod tests {
         assert_eq!(names, expected, "every project is listed again");
     }
 
-    /// STORY-082 requirement 2: the search field asks for focus on the very
-    /// first frame, and the request is read exactly once, until something
-    /// (⌘K) asks again.
+    /// STORY-083 requirement 8: the launcher opens in NAV (no focus request),
+    /// and each request is read exactly once.
     #[test]
-    fn take_focus_request_is_true_once_then_false_until_asked_again() {
+    fn take_focus_request_reads_each_request_once() {
         let mut launcher = Launcher::new(None);
-
-        assert!(
-            launcher.take_focus_request(),
-            "the first frame autofocuses the search field"
-        );
-        assert!(!launcher.take_focus_request(), "reading the flag clears it");
+        assert_eq!(launcher.take_focus_request(), None, "NAV at launch");
 
         launcher.request_focus();
-        assert!(launcher.take_focus_request(), "⌘K asks again");
-        assert!(!launcher.take_focus_request());
+        assert_eq!(launcher.take_focus_request(), Some(true));
+        assert_eq!(launcher.take_focus_request(), None);
+
+        launcher.request_unfocus();
+        assert_eq!(launcher.take_focus_request(), Some(false));
+        assert_eq!(launcher.take_focus_request(), None);
+    }
+
+    #[test]
+    fn select_end_picks_the_first_and_last_row_shown() {
+        let mut launcher = Launcher::new(None);
+        launcher.select_end(true);
+        assert!(
+            launcher.selected().is_none(),
+            "nothing shown, nothing picked"
+        );
+
+        let a = Project::at(PathBuf::from("/p/a"));
+        let b = Project::at(PathBuf::from("/p/b"));
+        launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![
+            a.clone(),
+            b.clone(),
+        ]));
+        launcher.select_end(true);
+        assert_eq!(launcher.selected(), Some(&b.id));
+        launcher.select_end(false);
+        assert_eq!(launcher.selected(), Some(&a.id));
     }
 }

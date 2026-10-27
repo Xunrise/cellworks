@@ -200,7 +200,10 @@ const FAILED: &str = "Could not finish scanning for projects.";
 
 /// The card's footer hints (STORY-082 requirement 9), as one accessible
 /// string; the footer draws each key in its own key box.
-const HINTS: &str = "↑ ↓ move   Enter open   Tab scope   Esc clear search";
+const HINTS_NAV: &str = "↑ ↓ j k move   Enter open   Tab scope   : search";
+
+/// The same footer while the search field has focus.
+const HINTS_CMD: &str = "↑ ↓ move   Enter open   Tab scope   Esc nav";
 
 // STORY-083: the launcher's metrics, in points, taken from the approved mock.
 /// The header bar's height.
@@ -285,11 +288,18 @@ const SEARCH_ID: &str = "cellworks-launcher-search";
 
 /// Whether the launcher's search field currently has keyboard focus, so the
 /// caller can suppress the map's letter shortcuts while a project name is
-/// typed into it. The field is focused from the first frame (requirement 2),
-/// so this is the launcher's ordinary state, not a corner of it — `src/app.rs`
-/// reads the keys before this module draws, so only the id tells it apart.
+/// typed into it. That focus is the launcher's CMD mode (STORY-083
+/// requirement 8); without it the launcher is in NAV. `src/app.rs` reads the
+/// keys before this module draws, so only the id tells it apart.
 pub fn search_focused(ui: &egui::Ui) -> bool {
     ui.memory(|memory| memory.has_focus(egui::Id::new(SEARCH_ID)))
+}
+
+/// Whether the search field had focus at the end of the previous frame: egui
+/// drops the focus on an Escape before the app reads the key, so this tells
+/// an Esc that leaves CMD from an Esc pressed in NAV.
+pub fn search_was_focused(ui: &egui::Ui) -> bool {
+    ui.memory(|memory| memory.had_focus_last_frame(egui::Id::new(SEARCH_ID)))
 }
 
 /// A click the launcher reports upward: everything else (search text, the
@@ -656,7 +666,7 @@ fn status_bar(ui: &egui::Ui, rect: egui::Rect, launcher: &Launcher) {
         rect.top() + 0.5,
         egui::Stroke::new(1.0, LINE),
     );
-    let searching = !launcher.search_text().is_empty();
+    let searching = search_focused(ui);
     let (mode, text, color) = if searching {
         ("CMD", format!(":{}", launcher.search_text()), INK)
     } else {
@@ -685,9 +695,9 @@ fn status_bar(ui: &egui::Ui, rect: egui::Rect, launcher: &Launcher) {
         &text,
     );
     let hints: &[(&str, &str)] = if searching {
-        &[("⏎", "open"), ("Esc", "clear"), ("?", "keys")]
+        &[("⏎", "open"), ("Esc", "nav"), ("⌘K", "nav")]
     } else {
-        &[(":", "command"), ("⌘K", "search"), ("?", "keys")]
+        &[("j/k", "move"), (":", "search"), ("⏎", "open")]
     };
     let width = key_hints_width(ui, hints, 16.0);
     key_hints(
@@ -852,16 +862,29 @@ fn card_footer(ui: &egui::Ui, rect: egui::Rect) {
         egui::Id::new("cellworks-launcher-hints"),
         egui::Sense::hover(),
     );
-    labelled(&response, egui::WidgetType::Label, HINTS);
+    let cmd = search_focused(ui);
+    labelled(
+        &response,
+        egui::WidgetType::Label,
+        if cmd { HINTS_CMD } else { HINTS_NAV },
+    );
     let centre_y = rect.center().y;
     key_hints(
         ui,
         rect.left() + ROW_PADDING,
         centre_y,
-        &[("↑↓", "move"), ("⏎", "open"), ("Tab", "scope")],
+        if cmd {
+            &[("↑↓", "move"), ("⏎", "open"), ("Tab", "scope")]
+        } else {
+            &[("↑↓/jk", "move"), ("⏎", "open"), ("Tab", "scope")]
+        },
         18.0,
     );
-    let right: &[(&str, &str)] = &[("Esc", "clear search")];
+    let right: &[(&str, &str)] = if cmd {
+        &[("Esc", "nav")]
+    } else {
+        &[(":", "search")]
+    };
     let width = key_hints_width(ui, right, 18.0);
     key_hints(
         ui,
@@ -872,9 +895,9 @@ fn card_footer(ui: &egui::Ui, rect: egui::Rect) {
     );
 }
 
-/// The search well, focused on the first frame and again on ⌘K; while
-/// searching, the match count and the "Esc clear" key (STORY-082 requirement
-/// 2). A deep well with a cyan, glowing edge when focused, a cyan ":" prompt
+/// The search well, focused in CMD mode only (⌘K, ":", "/" or a click; the
+/// keys are read in `src/app.rs`); while text is typed, the match count and
+/// the "Esc clear" key (STORY-082 requirement 2, STORY-083 requirement 8). A deep well with a cyan, glowing edge when focused, a cyan ":" prompt
 /// before the text, and a yellow caret (STORY-083 requirements 4 and 5) that
 /// blinks or not exactly as egui's native text cursor already does —
 /// `src/app.rs` makes that reduced-motion-aware globally, so only its colour
@@ -916,7 +939,8 @@ fn search_row(ui: &mut egui::Ui, rect: egui::Rect, launcher: &mut Launcher) {
     let searching = !launcher.search_text().is_empty();
     let right = rect.right() - SEARCH_PADDING;
     let (escape, matches) = if searching {
-        let escape = galley(ui, styled("Esc clear", 11.0, mono.clone(), DIM_INK, 0.0));
+        let escape_word = if focused { "Esc nav" } else { "Esc clear" };
+        let escape = galley(ui, styled(escape_word, 11.0, mono.clone(), DIM_INK, 0.0));
         let matches = format!("{} matches", launcher.match_count());
         let matches_galley = galley(ui, styled(&matches, 12.0, mono.clone(), CYAN, 0.0));
         (Some(escape), Some((matches, matches_galley)))
@@ -973,7 +997,11 @@ fn search_row(ui: &mut egui::Ui, rect: egui::Rect, launcher: &mut Launcher) {
             let escape_x = right - escape.size().x - 10.0;
             let cap = key_cap(ui, escape_x, centre_y, escape);
             let response = ui.interact(cap, search_id.with("escape"), egui::Sense::hover());
-            labelled(&response, egui::WidgetType::Label, "Esc clear");
+            labelled(
+                &response,
+                egui::WidgetType::Label,
+                if focused { "Esc nav" } else { "Esc clear" },
+            );
             let pos = egui::pos2(
                 escape_x - 12.0 - matches_galley.size().x,
                 centre_y - matches_galley.size().y / 2.0,
@@ -985,11 +1013,10 @@ fn search_row(ui: &mut egui::Ui, rect: egui::Rect, launcher: &mut Launcher) {
         }
     }
 
-    if ui.input(|input| input.modifiers.command && input.key_pressed(egui::Key::K)) {
-        launcher.request_focus();
-    }
-    if launcher.take_focus_request() {
-        ui.memory_mut(|memory| memory.request_focus(search_id));
+    match launcher.take_focus_request() {
+        Some(true) => ui.memory_mut(|memory| memory.request_focus(search_id)),
+        Some(false) => ui.memory_mut(|memory| memory.surrender_focus(search_id)),
+        None => {}
     }
 }
 

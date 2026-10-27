@@ -404,9 +404,11 @@ fn switching_words_does_not_change_behaviour() {
         "cellworks does not match \"fac\": {shown:?}"
     );
 
-    // The search is cleared the way Esc already does (STORY-082 requirement
-    // 10), so "cellworks" is reachable again before it is opened: switching
-    // the words changed none of this.
+    // Esc leaves CMD and a second one clears the search (requirement 8), so
+    // "cellworks" is reachable again before it is opened: switching the words
+    // changed none of this.
+    harness.key_press(Key::Escape);
+    harness.run();
     harness.key_press(Key::Escape);
     harness.run();
 
@@ -464,5 +466,228 @@ fn a_reduced_motion_harness_settles_with_no_repaint_scheduled() {
         repaint_delay,
         std::time::Duration::MAX,
         "reduced motion schedules no repaint for the launcher's own motion"
+    );
+}
+
+/// The name of the project the launcher has selected, as the navigation
+/// layer sees it: none for nothing selected or for a project on another host.
+fn selected(harness: &Harness<'_, CellworksApp>) -> Option<String> {
+    harness
+        .state()
+        .navigation()
+        .selection()
+        .and_then(|path| path.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+}
+
+/// Types `text` into whatever has the keyboard, as the platform does: a text
+/// event per character.
+fn type_text(harness: &mut Harness<'_, CellworksApp>, text: &str) {
+    for letter in text.chars() {
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::Text(letter.to_string()));
+    }
+    harness.run();
+}
+
+/// Requirement 8: the launcher opens in NAV, with j and k moving the selection
+/// like the arrows
+#[test]
+fn the_launcher_opens_in_nav_and_j_and_k_move_the_selection() {
+    let fixture = Fixture::new();
+    fixture.settings(false);
+    let mut harness = harness_over(app(&fixture));
+
+    assert!(
+        !harness.get_by_role(Role::TextInput).is_focused(),
+        "the search field has no focus at launch"
+    );
+    assert_eq!(selected(&harness), None, "nothing is selected yet");
+
+    harness.key_press(Key::J);
+    harness.run();
+    let first = selected(&harness);
+    assert!(first.is_some(), "the first j selects the first row");
+
+    harness.key_press(Key::J);
+    harness.run();
+    let second = selected(&harness);
+    assert_ne!(second, first, "the second j moves down");
+
+    harness.key_press(Key::K);
+    harness.run();
+    assert_eq!(selected(&harness), first, "k moves back up");
+
+    harness.key_press(Key::ArrowDown);
+    harness.run();
+    assert_eq!(selected(&harness), second, "the arrows still move too");
+    assert!(
+        !harness.get_by_role(Role::TextInput).is_focused(),
+        "moving in NAV leaves the field unfocused"
+    );
+    assert_eq!(
+        harness.get_by_role(Role::TextInput).value(),
+        Some(String::new()),
+        "no letter was typed into it"
+    );
+}
+
+/// Requirement 8: g selects the first row and G the last
+#[test]
+fn g_selects_the_first_row_and_shift_g_the_last() {
+    let fixture = Fixture::new();
+    fixture.settings(false);
+    let mut harness = harness_over(app(&fixture));
+
+    harness.key_press(Key::J);
+    harness.run();
+    let first = selected(&harness);
+    assert!(first.is_some());
+
+    harness.key_press_modifiers(egui::Modifiers::SHIFT, Key::G);
+    harness.run();
+    assert_ne!(selected(&harness), first, "G leaves the first row");
+    assert_eq!(
+        selected(&harness),
+        None,
+        "the last row is a project on another host"
+    );
+
+    harness.key_press(Key::G);
+    harness.run();
+    assert_eq!(selected(&harness), first, "g is back on the first row");
+    assert!(
+        !harness.state().navigation().is_underground(),
+        "shift+g does not show the view underground behind the launcher"
+    );
+}
+
+/// Requirement 8: ⌘K focuses the search field, and ⌘K again leaves it with the
+/// filter kept
+#[test]
+fn cmd_k_enters_cmd_and_cmd_k_again_returns_to_nav_keeping_the_filter() {
+    let fixture = Fixture::new();
+    fixture.settings(false);
+    let mut harness = harness_over(app(&fixture));
+
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, Key::K);
+    harness.run();
+    assert!(
+        harness.get_by_role(Role::TextInput).is_focused(),
+        "⌘K focuses the search field"
+    );
+
+    type_text(&mut harness, "fac");
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, Key::K);
+    harness.run();
+    assert!(
+        !harness.get_by_role(Role::TextInput).is_focused(),
+        "⌘K again leaves the field"
+    );
+    assert_eq!(
+        harness.get_by_role(Role::TextInput).value(),
+        Some("fac".to_owned()),
+        "the filter text stays"
+    );
+}
+
+/// Requirement 8: "/" and ":" enter CMD without being typed into the field
+#[test]
+fn slash_and_colon_enter_cmd_without_being_typed() {
+    for key in ["/", ":"] {
+        let fixture = Fixture::new();
+        fixture.settings(false);
+        let mut harness = harness_over(app(&fixture));
+
+        type_text(&mut harness, key);
+        harness.run();
+        assert!(
+            harness.get_by_role(Role::TextInput).is_focused(),
+            "{key} focuses the search field"
+        );
+        assert_eq!(
+            harness.get_by_role(Role::TextInput).value(),
+            Some(String::new()),
+            "{key} is not typed into it"
+        );
+
+        type_text(&mut harness, "fac");
+        assert_eq!(
+            harness.get_by_role(Role::TextInput).value(),
+            Some("fac".to_owned()),
+            "what follows is typed"
+        );
+    }
+}
+
+/// Requirement 8: Esc in CMD returns to NAV keeping the filter, and Esc in NAV
+/// clears it
+#[test]
+fn esc_leaves_cmd_keeping_the_filter_and_clears_it_in_nav() {
+    let fixture = Fixture::new();
+    fixture.settings(false);
+    let mut harness = harness_over(app(&fixture));
+
+    search(&mut harness, "fac");
+    harness.key_press(Key::Escape);
+    harness.run();
+    assert!(!harness.get_by_role(Role::TextInput).is_focused());
+    assert_eq!(
+        harness.get_by_role(Role::TextInput).value(),
+        Some("fac".to_owned()),
+        "Esc in CMD keeps the filter"
+    );
+
+    harness.key_press(Key::Escape);
+    harness.run();
+    assert_eq!(
+        harness.get_by_role(Role::TextInput).value(),
+        Some(String::new()),
+        "Esc in NAV clears it"
+    );
+    assert!(!harness.get_by_role(Role::TextInput).is_focused());
+}
+
+/// Requirement 8: no letter in NAV reaches the map shortcuts behind the
+/// launcher, nor the search field
+#[test]
+fn letters_in_nav_do_not_reach_the_map_shortcuts() {
+    let fixture = Fixture::new();
+    fixture.settings(false);
+    let mut harness = harness_over(app(&fixture));
+
+    let locked = harness.state().navigation().is_locked();
+    for key in [
+        Key::U,
+        Key::M,
+        Key::Z,
+        Key::I,
+        Key::E,
+        Key::F,
+        Key::L,
+        Key::A,
+        Key::Q,
+        Key::H,
+    ] {
+        harness.key_press(key);
+        harness.run();
+    }
+    harness.key_press_modifiers(egui::Modifiers::SHIFT, Key::U);
+    harness.run();
+
+    let navigation = harness.state().navigation();
+    assert!(!navigation.is_underground(), "u did nothing");
+    assert!(!navigation.shows_cables(), "m did nothing");
+    assert_eq!(navigation.is_locked(), locked, "z did nothing");
+    assert!(
+        !harness.get_by_role(Role::TextInput).is_focused(),
+        "no letter enters CMD"
+    );
+    assert_eq!(
+        harness.get_by_role(Role::TextInput).value(),
+        Some(String::new()),
+        "no letter reaches the field"
     );
 }
