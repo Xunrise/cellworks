@@ -1312,6 +1312,13 @@ fn project_row(
     if is_selected {
         ui.ctx()
             .accesskit_node_builder(entry.id, |node| node.set_selected(true));
+        // Keep the selection in view as the arrow keys move it: scroll once
+        // each time the selected row changes.
+        let shown = egui::Id::new("launcher-scrolled-to");
+        if ui.data(|data| data.get_temp::<ProjectId>(shown)).as_ref() != Some(&project.id) {
+            ui.data_mut(|data| data.insert_temp(shown, project.id.clone()));
+            entry.scroll_to_me(None);
+        }
         ui.painter().rect_filled(rect, 0.0, YELLOW_SOFT);
         ui.painter().rect_filled(
             egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + 2.0, rect.bottom())),

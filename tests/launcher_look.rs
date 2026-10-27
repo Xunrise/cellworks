@@ -21,7 +21,7 @@ use cellworks_workspace::{HostProbe, RecentStore, Sources, Universe, scan};
 use egui::Key;
 use egui::accesskit::Role;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 
 /// A git listing that answers from the real tree the fixture wrote to disk,
 /// with the branch fixed to "main" for every repository — never real git.
@@ -206,4 +206,46 @@ fn launcher_search() {
 #[ignore = "renders PNGs through wgpu; run on demand"]
 fn launcher_plain() {
     shot(true, "", 1, "launcher_plain");
+}
+
+/// The list scrolls with the selection: after the arrow keys walk past the
+/// bottom of a short window, the selected row is still inside it.
+#[test]
+fn the_list_scrolls_with_the_arrow_keys() {
+    let fixture = Fixture::new();
+    for n in 0..20 {
+        repository(
+            fixture.path(),
+            &format!("Projects/project-{n:02}"),
+            &["a.rs"],
+        );
+    }
+    fixture.settings(true);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1280.0, 500.0))
+        .with_step_dt(1.0 / 60.0)
+        .build_ui_state(
+            |ui, app: &mut CellworksApp| cellworks::draw(ui, app),
+            app(&fixture),
+        );
+    harness.run();
+    for _ in 0..22 {
+        harness.key_press(Key::ArrowDown);
+        harness.run();
+    }
+
+    let root = harness.root();
+    let selected = std::iter::once(root)
+        .chain(root.children_recursive())
+        .find(|node| node.accesskit_node().is_selected() == Some(true))
+        .expect("a row is selected");
+    let bounds = selected
+        .accesskit_node()
+        .bounding_box()
+        .expect("the selected row has bounds");
+    assert!(
+        bounds.y1 <= 500.0,
+        "the selected row ends at {} px, below the 500 px window",
+        bounds.y1
+    );
 }
