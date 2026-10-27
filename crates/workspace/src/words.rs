@@ -60,6 +60,9 @@ pub(crate) struct Words {
     /// The CTA's subtitle, and the open action's label, when it cannot be
     /// opened because the host is not connected.
     pub(crate) connect_first: &'static str,
+    /// Put before the project's name as the enabled CTA's subtitle ("Jack
+    /// into cellworks"); empty in plain words, where the CTA has no subtitle.
+    pub(crate) open_subtitle: &'static str,
     /// The disabled "Sync · coming soon" button's label.
     pub(crate) sync_button: &'static str,
     /// The ICE/offline card's heading, shown when the selected project's host
@@ -204,6 +207,7 @@ pub(crate) const THEMED: Words = Words {
     search_placeholder: "cd fortress, block or host:/path",
     open_action: "OPEN FORTRESS",
     connect_first: "Connect the net first",
+    open_subtitle: "Jack into",
     sync_button: "SYNC · COMING SOON",
     ice_heading: "ICE // NET OFFLINE",
     notice_prefix: "ICE // ",
@@ -237,6 +241,7 @@ pub(crate) const PLAIN: Words = Words {
     search_placeholder: "projects, folders or host:/path, ⌘K",
     open_action: "Open project",
     connect_first: "Connect the host first",
+    open_subtitle: "",
     sync_button: "Sync · coming soon",
     ice_heading: "Host offline",
     notice_prefix: "",

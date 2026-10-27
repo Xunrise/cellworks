@@ -198,16 +198,86 @@ const SCANNING: &str = "Scanning for projects…";
 /// "Scanning" on the screen for ever.
 const FAILED: &str = "Could not finish scanning for projects.";
 
-/// The card's footer hints (STORY-082 requirement 9).
+/// The card's footer hints (STORY-082 requirement 9), as one accessible
+/// string; the footer draws each key in its own key box.
 const HINTS: &str = "↑ ↓ move   Enter open   Tab scope   Esc clear search";
 
-/// The centred card's max width (STORY-082 requirement 1): wide enough for
-/// the mockup's layout, narrow enough to stay one card on a wider window.
+// STORY-083: the launcher's metrics, in points, taken from the approved mock.
+/// The header bar's height.
+const HEADER_HEIGHT: f32 = 48.0;
+/// The header's left and right padding.
+const HEADER_PADDING: f32 = 24.0;
+/// The status bar's height, along the window's bottom edge.
+const STATUS_HEIGHT: f32 = 28.0;
+/// The gap between the header and the card.
+const CARD_TOP_GAP: f32 = 40.0;
+/// The centred card's width (STORY-082 requirement 1): wide enough for the
+/// mockup's layout, narrow enough to stay one card on a wider window.
 const CARD_WIDTH: f32 = 920.0;
-
+/// The gap between the card and each notice below it.
+const NOTICE_GAP: f32 = 12.0;
+/// One notice's height below the card.
+const NOTICE_HEIGHT: f32 = 38.0;
+/// The search well's margin inside the card.
+const SEARCH_MARGIN: f32 = 12.0;
+/// The search well's height.
+const SEARCH_HEIGHT: f32 = 56.0;
+/// The search well's inner left and right padding.
+const SEARCH_PADDING: f32 = 14.0;
+/// The chip row's padding around its chips.
+const CHIP_ROW_PADDING: f32 = 12.0;
+/// One chip's height.
+const CHIP_HEIGHT: f32 = 30.0;
+/// One chip's left and right padding.
+const CHIP_PADDING: f32 = 12.0;
+/// The gap between two chips, and between the parts of one chip.
+const CHIP_GAP: f32 = 8.0;
+/// The body's height: the list beside the preview pane.
+const BODY_HEIGHT: f32 = 446.0;
+/// The smallest body a short window shrinks it to: one row, which the list
+/// scrolls through.
+const BODY_MIN_HEIGHT: f32 = LIST_TOP_PADDING + ROW_HEIGHT;
 /// The preview pane's width, to the right of the list (STORY-082
 /// requirement 7).
 const PREVIEW_WIDTH: f32 = 300.0;
+/// The preview pane's padding.
+const PREVIEW_PADDING: f32 = 20.0;
+/// The vertical gap between the preview pane's blocks.
+const PREVIEW_GAP: f32 = 16.0;
+/// The width of the preview pane's PATH/BRANCH/FILES term column.
+const TERM_COLUMN: f32 = 64.0;
+/// The gap between two PATH/BRANCH/FILES rows.
+const TERM_ROW_GAP: f32 = 10.0;
+/// The list's padding above its first row.
+const LIST_TOP_PADDING: f32 = 8.0;
+/// One project row's height.
+const ROW_HEIGHT: f32 = 34.0;
+/// A row's and a group heading's left and right padding.
+const ROW_PADDING: f32 = 16.0;
+/// The name column's width.
+const NAME_COLUMN: f32 = 190.0;
+/// The branch column's width, right-aligned.
+const BRANCH_COLUMN: f32 = 140.0;
+/// The gap between two columns of a row.
+const COLUMN_GAP: f32 = 12.0;
+/// The space above a group heading's text, and below it.
+const HEADING_SPACE: (f32, f32) = (12.0, 6.0);
+/// The in-card footer's height.
+const FOOT_HEIGHT: f32 = 36.0;
+/// The CTA's height (requirement 4).
+const CTA_HEIGHT: f32 = 72.0;
+/// The sync control's height.
+const SYNC_HEIGHT: f32 = 44.0;
+/// A header control's height ("Add project").
+const CONTROL_HEIGHT: f32 = 32.0;
+/// The card's chamfer.
+const CARD_CUT: f32 = 12.0;
+/// The CTA's and the ICE card's chamfer.
+const CTA_CUT: f32 = 10.0;
+/// A chip's and a control's chamfer.
+const CONTROL_CUT: f32 = 8.0;
+/// A host state glyph's diameter.
+const GLYPH_SIZE: f32 = 8.0;
 
 /// The `egui::Id` the search field is given, so [`search_focused`] can check
 /// the same id `search_row` builds its `TextEdit` with.
@@ -236,19 +306,161 @@ pub enum LauncherAction {
     Opened(Project),
 }
 
-/// Draws the launcher: the header above the card, the centred card (search
-/// row, location chip row and the project list), the preview pane to its
-/// right, the footer and the notices below the card. Mutates `launcher`
+/// `text` in the mock's type: `size` points of `family` in `color`, tracked
+/// by `tracking` em (the mock's `letter-spacing`).
+fn styled(
+    text: &str,
+    size: f32,
+    family: egui::FontFamily,
+    color: egui::Color32,
+    tracking: f32,
+) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        text,
+        0.0,
+        egui::TextFormat {
+            font_id: egui::FontId::new(size, family),
+            color,
+            extra_letter_spacing: size * tracking,
+            ..Default::default()
+        },
+    );
+    job
+}
+
+/// `job`, cut to one row of at most `width` points with an ellipsis.
+fn one_row(mut job: egui::text::LayoutJob, width: f32) -> egui::text::LayoutJob {
+    job.wrap = egui::text::TextWrapping {
+        max_width: width.max(0.0),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    job
+}
+
+/// Lays `job` out.
+fn galley(ui: &egui::Ui, job: egui::text::LayoutJob) -> std::sync::Arc<egui::Galley> {
+    ui.painter().layout_job(job)
+}
+
+/// Gives `response` an accessibility node of `typ` that reads `label`: the
+/// words themselves, while the screen shows them upper-cased and tracked
+/// (requirement 10 matches the words case-insensitively).
+fn labelled(response: &egui::Response, typ: egui::WidgetType, label: &str) {
+    let enabled = response.enabled();
+    response.widget_info(|| egui::WidgetInfo::labeled(typ, enabled, label));
+}
+
+/// Paints `galley` at `pos` as a label that reads `label`, with its own
+/// node under `id`.
+fn text_at(
+    ui: &egui::Ui,
+    id: egui::Id,
+    pos: egui::Pos2,
+    galley: std::sync::Arc<egui::Galley>,
+    label: &str,
+) -> egui::Response {
+    let response = ui.interact(
+        egui::Rect::from_min_size(pos, galley.size()),
+        id,
+        egui::Sense::hover(),
+    );
+    ui.painter().galley(pos, galley, INK);
+    labelled(&response, egui::WidgetType::Label, label);
+    response
+}
+
+/// Allocates `galley` in `ui`'s flow and paints it as a label that reads
+/// `label`.
+fn text_in_flow(
+    ui: &mut egui::Ui,
+    galley: std::sync::Arc<egui::Galley>,
+    label: &str,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
+    ui.painter().galley(rect.min, galley, INK);
+    labelled(&response, egui::WidgetType::Label, label);
+    response
+}
+
+/// `galley` at the left of `rect`, centred vertically.
+fn left_centred(rect: egui::Rect, x: f32, galley: &egui::Galley) -> egui::Pos2 {
+    egui::pos2(x, rect.center().y - galley.size().y / 2.0)
+}
+
+/// A key cap: `galley` in a 1 px box, its left edge at `x` and centred on
+/// `centre_y`. Returns the box.
+fn key_cap(
+    ui: &egui::Ui,
+    x: f32,
+    centre_y: f32,
+    galley: std::sync::Arc<egui::Galley>,
+) -> egui::Rect {
+    let size = galley.size() + egui::vec2(10.0, 4.0);
+    let rect = egui::Rect::from_min_size(egui::pos2(x, centre_y - size.y / 2.0), size);
+    ui.painter().rect_stroke(
+        rect,
+        0.0,
+        egui::Stroke::new(1.0, LINE_BRIGHT),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter()
+        .galley(rect.min + egui::vec2(5.0, 2.0), galley, DIM_INK);
+    rect
+}
+
+/// Paints key caps and their words left to right from `x`, centred on
+/// `centre_y`, `gap` apart; returns where the last one ends.
+fn key_hints(ui: &egui::Ui, mut x: f32, centre_y: f32, hints: &[(&str, &str)], gap: f32) -> f32 {
+    let mono = jetbrains_mono(ui);
+    for (index, (key, word)) in hints.iter().enumerate() {
+        if index > 0 {
+            x += gap;
+        }
+        let cap = key_cap(
+            ui,
+            x,
+            centre_y,
+            galley(ui, styled(key, 11.0, mono.clone(), DIM_INK, 0.0)),
+        );
+        let word = galley(ui, styled(word, 11.0, mono.clone(), DIM_INK, 0.0));
+        let pos = egui::pos2(cap.right() + 6.0, centre_y - word.size().y / 2.0);
+        x = pos.x + word.size().x;
+        ui.painter().galley(pos, word, DIM_INK);
+    }
+    x
+}
+
+/// How wide [`key_hints`] draws `hints`.
+fn key_hints_width(ui: &egui::Ui, hints: &[(&str, &str)], gap: f32) -> f32 {
+    let mono = jetbrains_mono(ui);
+    let mut width = 0.0;
+    for (index, (key, word)) in hints.iter().enumerate() {
+        if index > 0 {
+            width += gap;
+        }
+        let key = galley(ui, styled(key, 11.0, mono.clone(), DIM_INK, 0.0));
+        let word = galley(ui, styled(word, 11.0, mono.clone(), DIM_INK, 0.0));
+        width += key.size().x + 10.0 + 6.0 + word.size().x;
+    }
+    width
+}
+
+/// Draws the launcher: the header bar, the centred card (search row, location
+/// chip row, the project list beside the preview pane, and the key-hint
+/// footer), the notices below the card and the status bar. Mutates `launcher`
 /// directly for anything that stays within it (search, pick, selection by
-/// click or arrow key); returns `Some` only when the engineer asked to open a
-/// project.
+/// click or arrow key); returns `Some` only when the engineer selected or
+/// asked to open a project.
 pub fn launcher(
     ui: &mut egui::Ui,
     universe: &Universe,
     launcher: &mut Launcher,
 ) -> Option<LauncherAction> {
     paint_background(ui);
-    let mut action = None;
+    let full = ui.max_rect();
 
     // Decision 7: the view treats `animation_time == 0.0` as reduced motion
     // rather than threading a flag of its own — `src/app.rs` zeroes it
@@ -260,89 +472,69 @@ pub fn launcher(
     // here rather than separately by each.
     let elapsed = first_shown(ui, egui::Id::new(LAUNCHER_SHOWN_ID), now);
 
-    egui::Panel::top("launcher-header")
-        .frame(
-            egui::Frame::NONE
-                .fill(PANEL)
-                .inner_margin(egui::Margin::symmetric(16, 12)),
-        )
-        .show(ui, |ui| header(ui, launcher));
-    egui::Panel::bottom("launcher-footer")
-        .frame(
-            egui::Frame::NONE
-                .fill(PANEL)
-                .inner_margin(egui::Margin::symmetric(16, 8)),
-        )
-        .show(ui, |ui| footer(ui, launcher));
-    // The preview pane keeps its width while nothing is selected: if it
-    // appeared only on selection, the click that selects a project would
-    // narrow the list, a group heading could wrap, and the row would move
-    // from under the second click of a double-click.
-    let selected = launcher.selected_project().cloned();
-    let opened = egui::Panel::right("launcher-inspector")
-        .exact_size(PREVIEW_WIDTH)
-        .resizable(false)
-        .frame(
-            egui::Frame::NONE
-                .fill(PANEL)
-                .inner_margin(egui::Margin::symmetric(16, 16)),
-        )
-        .show(ui, |ui| {
-            selected.as_ref().and_then(|project| {
-                // The preview pane rises in last, +180 ms (design
-                // requirement 5).
-                let (offset, opacity) = rise(elapsed, 0.18, reduced);
-                ui.with_visual_transform(
-                    egui::emath::TSTransform::from_translation(egui::vec2(0.0, offset)),
-                    |ui| {
-                        ui.multiply_opacity(opacity);
-                        inspector(ui, launcher, project, elapsed, reduced)
-                    },
-                )
-                .inner
-            })
+    let header_rect = egui::Rect::from_min_size(full.min, egui::vec2(full.width(), HEADER_HEIGHT));
+    header(ui, header_rect, launcher);
+
+    let notices = universe.notices();
+    let width = CARD_WIDTH.min(full.width() - 2.0 * SEARCH_MARGIN).max(0.0);
+    let fixed = SEARCH_MARGIN + SEARCH_HEIGHT + chip_row_height() + FOOT_HEIGHT;
+    let room = full.height()
+        - HEADER_HEIGHT
+        - STATUS_HEIGHT
+        - CARD_TOP_GAP
+        - fixed
+        - notices.len() as f32 * (NOTICE_GAP + NOTICE_HEIGHT)
+        - NOTICE_GAP;
+    let body_height = BODY_HEIGHT.min(room).max(BODY_MIN_HEIGHT);
+    let card_rect = egui::Rect::from_min_size(
+        egui::pos2(
+            full.center().x - width / 2.0,
+            header_rect.bottom() + CARD_TOP_GAP,
+        ),
+        egui::vec2(width, fixed + body_height),
+    );
+
+    // The card rises in with no delay of its own (design requirement 5).
+    let (offset, opacity) = rise(elapsed, 0.0, reduced);
+    let action = ui
+        .scope_builder(egui::UiBuilder::new().max_rect(card_rect), |ui| {
+            ui.with_visual_transform(
+                egui::emath::TSTransform::from_translation(egui::vec2(0.0, offset)),
+                |ui| {
+                    ui.multiply_opacity(opacity);
+                    card(
+                        ui,
+                        card_rect,
+                        body_height,
+                        universe,
+                        launcher,
+                        elapsed,
+                        reduced,
+                    )
+                },
+            )
+            .inner
         })
         .inner;
-    if opened.is_some() {
-        action = opened;
+
+    // Below the card, not inside the scrollable list, so a notice is never
+    // scrolled out of sight (requirement 11).
+    let mut top = card_rect.bottom() + NOTICE_GAP;
+    for notice in notices {
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(card_rect.left(), top),
+            egui::vec2(width, NOTICE_HEIGHT),
+        );
+        notice_label(ui, rect, launcher.words(), notice);
+        top += NOTICE_HEIGHT + NOTICE_GAP;
     }
 
-    let central = egui::CentralPanel::default()
-        .frame(egui::Frame::NONE)
-        .show(ui, |ui| {
-            // `vertical_centered` would centre on a negative offset, pushing
-            // the card half off-screen to the left, if the window is
-            // narrower than `CARD_WIDTH` once the preview pane has taken its
-            // share — so the cap is never wider than what is actually here.
-            let width = CARD_WIDTH.min(ui.available_width());
-            let card_action = ui
-                .vertical_centered(|ui| {
-                    ui.set_max_width(width);
-                    // The card rises in with no delay of its own (design
-                    // requirement 5).
-                    let (offset, opacity) = rise(elapsed, 0.0, reduced);
-                    ui.with_visual_transform(
-                        egui::emath::TSTransform::from_translation(egui::vec2(0.0, offset)),
-                        |ui| {
-                            ui.multiply_opacity(opacity);
-                            card(ui, universe, launcher, elapsed, reduced)
-                        },
-                    )
-                    .inner
-                })
-                .inner;
-            // Below the card, not inside the scrollable list, so a notice is
-            // never scrolled out of sight (requirement 11).
-            let words = launcher.words();
-            for notice in universe.notices() {
-                notice_label(ui, words, notice);
-            }
-            card_action
-        })
-        .inner;
-    if action.is_none() {
-        action = central;
-    }
+    let status_rect = egui::Rect::from_min_max(
+        egui::pos2(full.left(), full.bottom() - STATUS_HEIGHT),
+        full.max,
+    );
+    status_bar(ui, status_rect, launcher);
+    ui.advance_cursor_after_rect(full);
 
     // Decision 8: a scheduled repaint, never an immediate one, so a headless
     // harness's single `run()` call settles — and never scheduled at all
@@ -352,8 +544,8 @@ pub fn launcher(
     // breathing, another frame is due in about 1/30 s.
     if !reduced {
         let still_rising = elapsed < 0.18 + RISE_DURATION;
-        let cta_breathing = selected
-            .as_ref()
+        let cta_breathing = launcher
+            .selected_project()
             .is_some_and(|project| launcher.can_open(&project.id));
         if still_rising || cta_breathing {
             ui.ctx().request_repaint_after_secs(1.0 / 30.0);
@@ -363,20 +555,21 @@ pub fn launcher(
     action
 }
 
-/// The background behind the header, the footer, the preview pane and the
-/// floating card: near-black with a faint 100 px grid (design requirement
-/// 1). The rest of the app keeps its current visuals — only this view paints
-/// it.
+/// The background behind the whole view: near-black with a faint 100 px grid
+/// (design requirement 1), painted on the whole window, below everything
+/// this view draws. The rest of the app keeps its current visuals — only this
+/// view paints it.
 fn paint_background(ui: &egui::Ui) {
-    let rect = ui.max_rect();
-    let painter = ui.painter();
+    let rect = ui.ctx().content_rect();
+    let painter = ui.ctx().layer_painter(ui.layer_id());
     painter.rect_filled(rect, 0.0, BG);
     let step = 100.0;
+    let stroke = egui::Stroke::new(1.0, GRID_LINE);
     let mut x = rect.left();
     while x <= rect.right() {
         painter.line_segment(
             [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
-            egui::Stroke::new(1.0, GRID_LINE),
+            stroke,
         );
         x += step;
     }
@@ -384,184 +577,414 @@ fn paint_background(ui: &egui::Ui) {
     while y <= rect.bottom() {
         painter.line_segment(
             [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
-            egui::Stroke::new(1.0, GRID_LINE),
+            stroke,
         );
         y += step;
     }
 }
 
-/// "Cellworks" (Decision 4: one string, in or out of theme words), the
-/// eyebrow line, the project and host counts and the disabled add-project
-/// button (STORY-082 requirement 1, STORY-083 requirements 1, 2 and 7/8).
-fn header(ui: &mut egui::Ui, launcher: &Launcher) {
+/// The 48 px header bar: "CELLWORKS" (Decision 4: one string, in or out of
+/// theme words) and the eyebrow on the left; the project and host counts and
+/// the disabled add-project control on the right (STORY-082 requirement 1,
+/// STORY-083 requirements 1, 2 and 7/8).
+fn header(ui: &mut egui::Ui, rect: egui::Rect, launcher: &Launcher) {
     let words = launcher.words();
-    ui.vertical(|ui| {
-        if !words.header_eyebrow.is_empty() {
-            ui.label(
-                egui::RichText::new(words.header_eyebrow)
-                    .font(egui::FontId::new(11.0, chakra_petch(ui)))
-                    .color(CYAN),
-            );
-        }
-        ui.horizontal(|ui| {
-            ui.label(cellworks_title(ui));
-            let chips = launcher.location_chips();
-            let projects = chips.first().map_or(0, |chip| chip.count);
-            // Every chip but "All" and "This Mac" is a remote host.
-            let hosts = chips.len().saturating_sub(2);
-            ui.label(
-                egui::RichText::new(words.counts(projects, hosts))
-                    .font(egui::FontId::new(13.0, jetbrains_mono(ui)))
-                    .color(DIM_INK),
-            );
-            add_project_button(ui, words.add_project_button);
-        });
-    });
+    ui.painter().rect_filled(rect, 0.0, BG.gamma_multiply(0.85));
+    ui.painter().hline(
+        rect.x_range(),
+        rect.bottom() - 0.5,
+        egui::Stroke::new(1.0, LINE),
+    );
+    let inner = rect.shrink2(egui::vec2(HEADER_PADDING, 0.0));
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(inner)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = 16.0;
+            let title = galley(ui, cellworks_title(ui));
+            text_in_flow(ui, title, "CELLWORKS");
+            if !words.header_eyebrow.is_empty() {
+                let eyebrow = galley(
+                    ui,
+                    styled(words.header_eyebrow, 11.0, chakra_petch(ui), DIM_INK, 0.16),
+                );
+                text_in_flow(ui, eyebrow, words.header_eyebrow);
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 16.0;
+                add_project_button(ui, words.add_project_button);
+                let chips = launcher.location_chips();
+                let projects = chips.first().map_or(0, |chip| chip.count);
+                // Every chip but "All" and "This Mac" is a remote host.
+                let hosts = chips.len().saturating_sub(2);
+                let counts = words.counts(projects, hosts);
+                let counts_galley =
+                    galley(ui, styled(&counts, 12.0, jetbrains_mono(ui), DIM_INK, 0.0));
+                text_in_flow(ui, counts_galley, &counts);
+            });
+        },
+    );
 }
 
 /// "CELLWORKS", with "WORKS" in attention yellow and "CELL" in ink (the
 /// confirmed canvas look) — one string either way theme words turn, so it is
 /// built here rather than read from [`Words`] (Decision 4).
 fn cellworks_title(ui: &egui::Ui) -> egui::text::LayoutJob {
-    let font = egui::FontId::new(20.0, chakra_petch(ui));
-    let mut job = egui::text::LayoutJob::default();
-    job.append(
-        "CELL",
-        0.0,
-        egui::TextFormat {
-            font_id: font.clone(),
-            color: INK,
-            ..Default::default()
-        },
-    );
+    let mut job = styled("CELL", 15.0, chakra_petch(ui), INK, 0.18);
     job.append(
         "WORKS",
         0.0,
         egui::TextFormat {
-            font_id: font,
+            font_id: egui::FontId::new(15.0, chakra_petch(ui)),
             color: YELLOW,
+            extra_letter_spacing: 15.0 * 0.18,
             ..Default::default()
         },
     );
     job
 }
 
-/// The status bar's cyan mode badge — "NAV" and the status text, or "CMD" and
-/// the live query while searching (STORY-083 requirement 4) — followed by
-/// STORY-082's own key hints (Decision 4: `HINTS` is one string).
-fn footer(ui: &mut egui::Ui, launcher: &Launcher) {
+/// The status bar along the window's bottom edge: the cyan mode badge — "NAV"
+/// and the status text, or "CMD" and the live query while searching
+/// (STORY-083 requirement 4) — and the key hints on the right.
+fn status_bar(ui: &egui::Ui, rect: egui::Rect, launcher: &Launcher) {
     let words = launcher.words();
-    ui.horizontal(|ui| {
-        let (mode, text) = if launcher.search_text().is_empty() {
-            ("NAV", words.status_text.to_owned())
-        } else {
-            ("CMD", launcher.search_text().to_owned())
-        };
-        ui.label(
-            egui::RichText::new(mode)
-                .font(egui::FontId::new(11.0, chakra_petch(ui)))
-                .color(CYAN),
-        );
-        ui.label(egui::RichText::new(text).color(DIM_INK));
-        ui.label(
-            egui::RichText::new(HINTS)
-                .font(egui::FontId::new(12.0, jetbrains_mono(ui)))
-                .color(DIM_INK),
-        );
-    });
+    ui.painter().rect_filled(rect, 0.0, PANEL);
+    ui.painter().hline(
+        rect.x_range(),
+        rect.top() + 0.5,
+        egui::Stroke::new(1.0, LINE),
+    );
+    let searching = !launcher.search_text().is_empty();
+    let (mode, text, color) = if searching {
+        ("CMD", format!(":{}", launcher.search_text()), INK)
+    } else {
+        ("NAV", words.status_text.to_owned(), DIM_INK)
+    };
+    let mode_galley = galley(ui, styled(mode, 11.0, chakra_petch(ui), BG, 0.16));
+    let badge = egui::Rect::from_min_size(
+        rect.min,
+        egui::vec2(mode_galley.size().x + 24.0, rect.height()),
+    );
+    ui.painter().rect_filled(badge, 0.0, CYAN);
+    let id = egui::Id::new("cellworks-launcher-status");
+    text_at(
+        ui,
+        id.with("mode"),
+        left_centred(badge, badge.left() + 12.0, &mode_galley),
+        mode_galley,
+        mode,
+    );
+    let text_galley = galley(ui, styled(&text, 11.0, jetbrains_mono(ui), color, 0.0));
+    text_at(
+        ui,
+        id.with("text"),
+        left_centred(rect, badge.right() + 16.0, &text_galley),
+        text_galley,
+        &text,
+    );
+    let hints: &[(&str, &str)] = if searching {
+        &[("⏎", "open"), ("Esc", "clear"), ("?", "keys")]
+    } else {
+        &[(":", "command"), ("⌘K", "search"), ("?", "keys")]
+    };
+    let width = key_hints_width(ui, hints, 16.0);
+    key_hints(
+        ui,
+        rect.right() - 16.0 - width,
+        rect.center().y,
+        hints,
+        16.0,
+    );
 }
 
-/// The card's content: the search row, the location chip row and the
-/// scrollable list (STORY-082 requirements 2 to 6, 10 and 11), behind a
-/// chamfered panel cut top-right and bottom-left (STORY-083 requirement 3).
-/// The list rises in +90 ms after the card itself (design requirement 5);
-/// `elapsed` and `reduced` are [`launcher`]'s own shared clock and
-/// reduced-motion reading, passed down rather than read again here.
+/// The chip row's height: one chip and its padding.
+fn chip_row_height() -> f32 {
+    CHIP_HEIGHT + 2.0 * CHIP_ROW_PADDING
+}
+
+/// The card: the search well, the location chip row, the list beside the
+/// preview pane, and the key-hint footer (STORY-082 requirements 2 to 11),
+/// on a chamfered panel cut top-right and bottom-left (STORY-083 requirement
+/// 3). The list rises in +90 ms after the card itself and the preview pane
+/// +180 ms (design requirement 5); `elapsed` and `reduced` are [`launcher`]'s
+/// own shared clock and reduced-motion reading, passed down rather than read
+/// again here.
 fn card(
     ui: &mut egui::Ui,
+    rect: egui::Rect,
+    body_height: f32,
     universe: &Universe,
     launcher: &mut Launcher,
     elapsed: f32,
     reduced: bool,
 ) -> Option<LauncherAction> {
-    let background = ui.painter().add(egui::Shape::Noop);
-    search_row(ui, launcher);
-    chip_row(ui, launcher);
-    let (offset, opacity) = rise(elapsed, 0.09, reduced);
-    let action = ui
-        .with_visual_transform(
-            egui::emath::TSTransform::from_translation(egui::vec2(0.0, offset)),
-            |ui| {
-                ui.multiply_opacity(opacity);
-                egui::ScrollArea::vertical()
-                    .auto_shrink(false)
-                    .show(ui, |ui| list(ui, universe, launcher))
-                    .inner
-            },
-        )
-        .inner;
-    let points = chamfer(ui.min_rect(), 12.0, Corners::TopRightBottomLeft);
-    ui.painter().set(
-        background,
-        egui::Shape::convex_polygon(points.to_vec(), PANEL, egui::Stroke::new(1.0, LINE)),
+    let points = chamfer(rect, CARD_CUT, Corners::TopRightBottomLeft);
+    for (expand, alpha) in [(6.0, 0.10), (3.0, 0.18)] {
+        ui.painter().add(egui::Shape::convex_polygon(
+            chamfer(
+                rect.expand(expand),
+                CARD_CUT + expand,
+                Corners::TopRightBottomLeft,
+            )
+            .to_vec(),
+            egui::Color32::BLACK.gamma_multiply(alpha),
+            egui::Stroke::NONE,
+        ));
+    }
+    ui.painter().add(egui::Shape::convex_polygon(
+        points.to_vec(),
+        PANEL,
+        egui::Stroke::new(1.0, CYAN.gamma_multiply(0.18)),
+    ));
+
+    let search_rect = egui::Rect::from_min_max(
+        rect.min + egui::vec2(SEARCH_MARGIN, SEARCH_MARGIN),
+        egui::pos2(
+            rect.right() - SEARCH_MARGIN,
+            rect.top() + SEARCH_MARGIN + SEARCH_HEIGHT,
+        ),
     );
+    search_row(ui, search_rect, launcher);
+
+    let chips_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.left(), search_rect.bottom()),
+        egui::vec2(rect.width(), chip_row_height()),
+    );
+    chip_row(ui, chips_rect, launcher);
+    ui.painter().hline(
+        rect.x_range(),
+        chips_rect.bottom() - 0.5,
+        egui::Stroke::new(1.0, LINE),
+    );
+
+    let body = egui::Rect::from_min_size(
+        egui::pos2(rect.left(), chips_rect.bottom()),
+        egui::vec2(rect.width(), body_height),
+    );
+    let preview_width = PREVIEW_WIDTH.min(body.width() / 2.0);
+    let aside = egui::Rect::from_min_max(
+        egui::pos2(body.right() - preview_width, body.top()),
+        body.max,
+    );
+    let list_rect = egui::Rect::from_min_max(body.min, egui::pos2(aside.left(), body.bottom()));
+    let fade = egui::Rect::from_min_max(
+        aside.min,
+        egui::pos2(aside.right(), aside.top() + aside.height() * 0.4),
+    );
+    let mut mesh = egui::Mesh::default();
+    let top = CYAN.gamma_multiply(0.03);
+    mesh.colored_vertex(fade.left_top(), top);
+    mesh.colored_vertex(fade.right_top(), top);
+    mesh.colored_vertex(fade.right_bottom(), egui::Color32::TRANSPARENT);
+    mesh.colored_vertex(fade.left_bottom(), egui::Color32::TRANSPARENT);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    ui.painter().add(mesh);
+    ui.painter().vline(
+        aside.left() + 0.5,
+        aside.y_range(),
+        egui::Stroke::new(1.0, LINE),
+    );
+
+    let mut action = None;
+    // The preview pane is drawn before the list, so the list's row is the
+    // last of a project's name in tree order, as it was when the preview
+    // was a panel of its own. It keeps its width while nothing is selected:
+    // if it appeared only on selection, the click that selects a project
+    // would narrow the list and move the row from under a double-click.
+    if let Some(project) = launcher.selected_project().cloned() {
+        // The preview pane rises in last, +180 ms (design requirement 5).
+        let (offset, opacity) = rise(elapsed, 0.18, reduced);
+        action = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(aside), |ui| {
+                ui.with_visual_transform(
+                    egui::emath::TSTransform::from_translation(egui::vec2(0.0, offset)),
+                    |ui| {
+                        ui.multiply_opacity(opacity);
+                        inspector(ui, aside, launcher, &project, elapsed, reduced)
+                    },
+                )
+                .inner
+            })
+            .inner;
+    }
+
+    let (offset, opacity) = rise(elapsed, 0.09, reduced);
+    let listed = ui
+        .scope_builder(egui::UiBuilder::new().max_rect(list_rect), |ui| {
+            ui.with_visual_transform(
+                egui::emath::TSTransform::from_translation(egui::vec2(0.0, offset)),
+                |ui| {
+                    ui.multiply_opacity(opacity);
+                    egui::ScrollArea::vertical()
+                        .auto_shrink(false)
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            ui.add_space(LIST_TOP_PADDING);
+                            list(ui, universe, launcher)
+                        })
+                        .inner
+                },
+            )
+            .inner
+        })
+        .inner;
+    if listed.is_some() {
+        action = listed;
+    }
+
+    let foot = egui::Rect::from_min_max(egui::pos2(rect.left(), body.bottom()), rect.max);
+    card_footer(ui, foot);
     action
 }
 
-/// The search field, focused on the first frame and again on ⌘K; while
-/// searching, the match count and the "Esc clear" hint (STORY-082
-/// requirement 2). A deep well with a cyan edge when focused, a cyan ":"
-/// prompt before the text, and a yellow caret (STORY-083 requirements 4 and
-/// 5) that blinks or not exactly as egui's native text cursor already does —
+/// The card's own key-hint footer (STORY-082 requirement 9).
+fn card_footer(ui: &egui::Ui, rect: egui::Rect) {
+    ui.painter().hline(
+        rect.x_range(),
+        rect.top() + 0.5,
+        egui::Stroke::new(1.0, LINE),
+    );
+    let response = ui.interact(
+        rect,
+        egui::Id::new("cellworks-launcher-hints"),
+        egui::Sense::hover(),
+    );
+    labelled(&response, egui::WidgetType::Label, HINTS);
+    let centre_y = rect.center().y;
+    key_hints(
+        ui,
+        rect.left() + ROW_PADDING,
+        centre_y,
+        &[("↑↓", "move"), ("⏎", "open"), ("Tab", "scope")],
+        18.0,
+    );
+    let right: &[(&str, &str)] = &[("Esc", "clear search")];
+    let width = key_hints_width(ui, right, 18.0);
+    key_hints(
+        ui,
+        rect.right() - ROW_PADDING - width,
+        centre_y,
+        right,
+        18.0,
+    );
+}
+
+/// The search well, focused on the first frame and again on ⌘K; while
+/// searching, the match count and the "Esc clear" key (STORY-082 requirement
+/// 2). A deep well with a cyan, glowing edge when focused, a cyan ":" prompt
+/// before the text, and a yellow caret (STORY-083 requirements 4 and 5) that
+/// blinks or not exactly as egui's native text cursor already does —
 /// `src/app.rs` makes that reduced-motion-aware globally, so only its colour
 /// is set here, scoped to this field alone.
-fn search_row(ui: &mut egui::Ui, launcher: &mut Launcher) {
+fn search_row(ui: &mut egui::Ui, rect: egui::Rect, launcher: &mut Launcher) {
     let words = launcher.words();
     let search_id = egui::Id::new(SEARCH_ID);
     let focused = search_focused(ui);
-    egui::Frame::NONE
-        .fill(WELL)
-        .stroke(egui::Stroke::new(1.0, if focused { CYAN } else { LINE }))
-        .inner_margin(egui::Margin::symmetric(10, 8))
-        .show(ui, |ui| {
-            ui.visuals_mut().text_cursor.stroke.color = YELLOW;
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(":")
-                        .font(egui::FontId::new(14.0, jetbrains_mono(ui)))
-                        .color(CYAN),
-                );
-                let mut text = launcher.search_text().to_owned();
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut text)
-                        // Tab scopes the list (requirement 4), so the field
-                        // keeps the focus on it: egui decides the focus
-                        // direction from the raw input before the key block
-                        // runs, and `consume_key` there cannot take that
-                        // decision back. `lock_focus` only tells egui's
-                        // focus pass to leave this widget alone — a
-                        // single-line field inserts no tab character, and
-                        // the key block has consumed the key before the
-                        // field reads its events anyway.
-                        .lock_focus(true)
-                        .id(search_id)
-                        .frame(egui::Frame::NONE)
-                        .font(egui::FontId::new(14.0, jetbrains_mono(ui)))
-                        .text_color(INK)
-                        .hint_text(words.search_placeholder),
-                );
-                if response.changed() {
-                    launcher.search(text);
-                }
-                if !launcher.search_text().is_empty() {
-                    ui.label(
-                        egui::RichText::new(format!("{} matches", launcher.match_count()))
-                            .color(CYAN),
-                    );
-                    ui.label(egui::RichText::new("Esc clear").color(DIM_INK));
-                }
-            });
-        });
+    let mono = jetbrains_mono(ui);
+    let painter = ui.painter();
+    if focused {
+        // epaint has no blur: a falloff of 1 px rings stands in for the
+        // mock's 14 px glow.
+        for step in 0..14 {
+            let fade = 1.0 - step as f32 / 14.0;
+            painter.rect_stroke(
+                rect.expand(step as f32 + 0.5),
+                0.0,
+                egui::Stroke::new(1.0, CYAN.gamma_multiply(0.12 * fade * fade)),
+                egui::StrokeKind::Middle,
+            );
+        }
+    }
+    painter.rect_filled(rect, 0.0, WELL);
+    painter.rect_stroke(
+        rect,
+        0.0,
+        egui::Stroke::new(1.0, if focused { CYAN } else { LINE_BRIGHT }),
+        egui::StrokeKind::Inside,
+    );
+
+    let prompt = galley(ui, styled(":", 16.0, mono.clone(), CYAN, 0.0));
+    let prompt_pos = left_centred(rect, rect.left() + SEARCH_PADDING, &prompt);
+    let text_left = prompt_pos.x + prompt.size().x + 12.0;
+    ui.painter().galley(prompt_pos, prompt, CYAN);
+
+    // The right-hand side is laid out first, so the field knows its width;
+    // it is painted after the field, so the field stays first in tree order.
+    let searching = !launcher.search_text().is_empty();
+    let right = rect.right() - SEARCH_PADDING;
+    let (escape, matches) = if searching {
+        let escape = galley(ui, styled("Esc clear", 11.0, mono.clone(), DIM_INK, 0.0));
+        let matches = format!("{} matches", launcher.match_count());
+        let matches_galley = galley(ui, styled(&matches, 12.0, mono.clone(), CYAN, 0.0));
+        (Some(escape), Some((matches, matches_galley)))
+    } else {
+        (None, None)
+    };
+    let shortcut = galley(ui, styled("⌘K", 11.0, mono.clone(), DIM_INK, 0.0));
+    let right_width = match (&escape, &matches) {
+        (Some(escape), Some((_, matches))) => escape.size().x + 10.0 + 12.0 + matches.size().x,
+        _ => shortcut.size().x + 10.0,
+    };
+
+    let font = egui::FontId::new(15.0, mono.clone());
+    let row_height = ui.fonts_mut(|fonts| fonts.row_height(&font));
+    let field = egui::Rect::from_min_max(
+        egui::pos2(text_left, rect.center().y - row_height / 2.0),
+        egui::pos2(
+            right - right_width - 12.0,
+            rect.center().y + row_height / 2.0,
+        ),
+    );
+    let mut text = launcher.search_text().to_owned();
+    ui.visuals_mut().text_cursor.stroke.color = YELLOW;
+    let response = ui.put(
+        field,
+        egui::TextEdit::singleline(&mut text)
+            // Tab scopes the list (requirement 4), so the field keeps the
+            // focus on it: egui decides the focus direction from the raw
+            // input before the key block runs, and `consume_key` there
+            // cannot take that decision back. `lock_focus` only tells egui's
+            // focus pass to leave this widget alone — a single-line field
+            // inserts no tab character, and the key block has consumed the
+            // key before the field reads its events anyway.
+            .lock_focus(true)
+            .id(search_id)
+            .frame(egui::Frame::NONE)
+            .margin(egui::Margin::ZERO)
+            .desired_width(field.width())
+            .font(font)
+            .text_color(INK)
+            .hint_text(
+                egui::RichText::new(words.search_placeholder)
+                    .font(egui::FontId::new(15.0, mono))
+                    .color(DIM_INK),
+            ),
+    );
+    if response.changed() {
+        launcher.search(text);
+    }
+
+    let centre_y = rect.center().y;
+    match (escape, matches) {
+        (Some(escape), Some((matches, matches_galley))) => {
+            let escape_x = right - escape.size().x - 10.0;
+            let cap = key_cap(ui, escape_x, centre_y, escape);
+            let response = ui.interact(cap, search_id.with("escape"), egui::Sense::hover());
+            labelled(&response, egui::WidgetType::Label, "Esc clear");
+            let pos = egui::pos2(
+                escape_x - 12.0 - matches_galley.size().x,
+                centre_y - matches_galley.size().y / 2.0,
+            );
+            text_at(ui, search_id.with("matches"), pos, matches_galley, &matches);
+        }
+        _ => {
+            key_cap(ui, right - shortcut.size().x - 10.0, centre_y, shortcut);
+        }
+    }
+
     if ui.input(|input| input.modifiers.command && input.key_pressed(egui::Key::K)) {
         launcher.request_focus();
     }
@@ -573,79 +996,126 @@ fn search_row(ui: &mut egui::Ui, launcher: &mut Launcher) {
 /// The location chip row: "All", "This Mac", then one chip per remote host
 /// (STORY-082 requirement 3), replacing STORY-078's left locations column.
 /// Clicking a chip picks it; Tab cycles it (`src/app.rs`'s key block, not
-/// here). Chamfered pills (STORY-083 requirement 3); the picked chip gets a
-/// soft-yellow fill with yellow text and edge (requirement 4).
-fn chip_row(ui: &mut egui::Ui, launcher: &mut Launcher) {
+/// here). Chamfered, upper-case and tracked (STORY-083 requirement 3); the
+/// picked chip gets a soft-yellow fill with yellow text and edge
+/// (requirement 4). Each chip's name, state word and count are separate
+/// labels that read the words themselves (ASSUMED (Q-1)).
+fn chip_row(ui: &mut egui::Ui, rect: egui::Rect, launcher: &mut Launcher) {
     let picked = launcher.picked().clone();
     let words = launcher.words();
-    ui.horizontal(|ui| {
-        for chip in launcher.location_chips() {
-            let is_picked = chip.pick == picked;
-            let text_color = if is_picked { YELLOW } else { INK };
-            let dim_color = if is_picked { YELLOW } else { DIM_INK };
-            let background = ui.painter().add(egui::Shape::Noop);
-            let group = ui.horizontal(|ui| {
-                // The state's glyph and word together (requirement 3's "a
-                // glyph paired with a word, never colour alone"): the glyph
-                // is painted, the word is the only text, which is what
-                // ASSUMED (Q-1) requires a label to carry.
-                if let Some(state) = chip.state {
-                    state_glyph(ui, state);
-                }
-                let name = ui
-                    .label(
-                        egui::RichText::new(chip.label.as_str())
-                            .font(egui::FontId::new(13.0, chakra_petch(ui)))
-                            .color(text_color),
-                    )
-                    .interact(egui::Sense::click());
-                if let Some(state) = chip.state {
-                    ui.label(egui::RichText::new(words.host_state_word(state)).color(dim_color));
-                }
-                ui.label(
-                    egui::RichText::new(chip.count.to_string())
-                        .font(egui::FontId::new(13.0, jetbrains_mono(ui)))
-                        .color(dim_color),
-                );
-                name
-            });
-            let rect = group.response.rect.expand(6.0);
-            let points = chamfer(rect, 8.0, Corners::TopLeftBottomRight);
-            let (fill, stroke) = if is_picked {
-                (YELLOW_SOFT, egui::Stroke::new(1.0, YELLOW))
-            } else {
-                (egui::Color32::TRANSPARENT, egui::Stroke::new(1.0, LINE))
-            };
-            ui.painter().set(
-                background,
-                egui::Shape::convex_polygon(points.to_vec(), fill, stroke),
-            );
-            if group.inner.clicked() {
-                launcher.pick(chip.pick.clone());
-            }
-            ui.add_space(4.0);
+    let sans = chakra_petch(ui);
+    let mono = jetbrains_mono(ui);
+    let id = egui::Id::new("cellworks-launcher-chips");
+    let mut x = rect.left() + CHIP_ROW_PADDING;
+    let top = rect.top() + CHIP_ROW_PADDING;
+    let mut clicked = None;
+    for (index, chip) in launcher.location_chips().into_iter().enumerate() {
+        let is_picked = chip.pick == picked;
+        let offline = chip.state == Some(HostState::Offline);
+        let text_color = match (is_picked, offline) {
+            (true, _) => YELLOW,
+            (false, true) => DIM_INK,
+            (false, false) => INK,
+        };
+        let count_color = if is_picked { YELLOW } else { DIM_INK };
+        let name = galley(
+            ui,
+            styled(
+                &chip.label.to_uppercase(),
+                11.0,
+                sans.clone(),
+                text_color,
+                0.12,
+            ),
+        );
+        let state_word = chip.state.map(|state| {
+            let word = words.host_state_word(state);
+            (
+                word,
+                galley(
+                    ui,
+                    styled(&word.to_uppercase(), 11.0, sans.clone(), text_color, 0.12),
+                ),
+            )
+        });
+        let count_text = chip.count.to_string();
+        let count = galley(
+            ui,
+            styled(&count_text, 11.0, mono.clone(), count_color, 0.0),
+        );
+
+        let mut width = 2.0 * CHIP_PADDING + name.size().x + CHIP_GAP + count.size().x;
+        if chip.state.is_some() {
+            width += GLYPH_SIZE + CHIP_GAP;
         }
-    });
+        if let Some((_, state)) = &state_word {
+            width += 4.0 + state.size().x;
+        }
+        let chip_rect =
+            egui::Rect::from_min_size(egui::pos2(x, top), egui::vec2(width, CHIP_HEIGHT));
+        let (fill, stroke) = if is_picked {
+            (YELLOW_SOFT, egui::Stroke::new(1.0, YELLOW))
+        } else {
+            (egui::Color32::TRANSPARENT, egui::Stroke::new(1.0, LINE))
+        };
+        ui.painter().add(egui::Shape::convex_polygon(
+            chamfer(chip_rect, CONTROL_CUT, Corners::TopLeftBottomRight).to_vec(),
+            fill,
+            stroke,
+        ));
+
+        // The whole chip is the click target; its node reads the location's
+        // name, so a test or a screen reader finds the chip by it.
+        let chip_id = id.with(index);
+        let response = ui.interact(chip_rect, chip_id, egui::Sense::click());
+        labelled(&response, egui::WidgetType::Label, &chip.label);
+        if response.clicked() {
+            clicked = Some(chip.pick.clone());
+        }
+
+        let mut cursor = chip_rect.left() + CHIP_PADDING;
+        if let Some(state) = chip.state {
+            state_glyph(
+                ui,
+                egui::pos2(cursor + GLYPH_SIZE / 2.0, chip_rect.center().y),
+                state,
+            );
+            cursor += GLYPH_SIZE + CHIP_GAP;
+        }
+        let name_pos = left_centred(chip_rect, cursor, &name);
+        cursor += name.size().x;
+        ui.painter().galley(name_pos, name, text_color);
+        if let Some((word, state)) = state_word {
+            cursor += 4.0;
+            let pos = left_centred(chip_rect, cursor, &state);
+            cursor += state.size().x;
+            text_at(ui, chip_id.with("state"), pos, state, word);
+        }
+        cursor += CHIP_GAP;
+        let pos = left_centred(chip_rect, cursor, &count);
+        text_at(ui, chip_id.with("count"), pos, count, &count_text);
+        x = chip_rect.right() + CHIP_GAP;
+    }
+    if let Some(pick) = clicked {
+        launcher.pick(pick);
+    }
 }
 
-/// A host chip's state glyph, painted beside the word rather than written
-/// into it (ASSUMED (Q-1)): a filled dot for a connected host, a ring around
-/// a dot for one still being checked, an empty ring for an offline one. The
-/// shape differs as well as the colour, and the word beside it names the
-/// state, so the glyph never carries the meaning alone. Connected is ok
-/// green, checking is cyan, offline is dim ink (STORY-083's confirmed
-/// behaviour).
-fn state_glyph(ui: &mut egui::Ui, state: HostState) {
-    let size = ui.text_style_height(&egui::TextStyle::Body) * 0.5;
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-    let centre = rect.center();
-    let radius = size / 2.0;
+/// A host's state glyph centred on `centre`, painted beside the word rather
+/// than written into it (ASSUMED (Q-1)): a filled dot for a connected host, a
+/// ring around a dot for one still being checked, an empty ring for an
+/// offline one. The shape differs as well as the colour, and the word beside
+/// it names the state, so the glyph never carries the meaning alone.
+/// Connected is ok green, checking is cyan, offline is dim ink (STORY-083's
+/// confirmed behaviour).
+fn state_glyph(ui: &egui::Ui, centre: egui::Pos2, state: HostState) {
+    let radius = GLYPH_SIZE / 2.0;
     let color = match state {
         HostState::Connected => OK_GREEN,
         HostState::Checking => CYAN,
         HostState::Offline => DIM_INK,
     };
-    let stroke = egui::Stroke::new(1.0, color);
+    let stroke = egui::Stroke::new(1.5, color);
     let painter = ui.painter();
     match state {
         HostState::Connected => {
@@ -656,36 +1126,52 @@ fn state_glyph(ui: &mut egui::Ui, state: HostState) {
             painter.circle_filled(centre, radius * 0.4, color);
         }
         HostState::Offline => {
-            painter.circle_stroke(centre, radius, stroke);
+            painter.circle_stroke(centre, radius - 0.5, stroke);
         }
     }
 }
 
-/// The recent row, then the scanning/failed/empty-state/grouped list
+/// The recent rows, then the scanning/failed/empty-state/grouped list
 /// (STORY-078's states, kept per STORY-082 requirement 11).
 fn list(ui: &mut egui::Ui, universe: &Universe, launcher: &mut Launcher) -> Option<LauncherAction> {
     let mut action = None;
     let words = launcher.words();
+    let selected = launcher.selected().cloned();
+    let mut take = |click: Option<RowClick>, project: &Project, launcher: &mut Launcher| match click
+    {
+        Some(RowClick::Selected) => {
+            launcher.select(Some(project.id.clone()));
+            action = Some(LauncherAction::Selected(project.clone()));
+        }
+        Some(RowClick::Opened) => {
+            action = Some(LauncherAction::Opened(project.clone()));
+        }
+        None => {}
+    };
 
     let recent: Vec<Project> = launcher.recent_row().into_iter().cloned().collect();
     if !recent.is_empty() {
-        group_heading_label(ui, words.recent_heading);
-        ui.horizontal(|ui| {
-            for project in &recent {
-                ui.label(format!("recent: {}", project.name));
-            }
-        });
+        group_heading_label(ui, words.recent_heading, None);
+        for project in &recent {
+            // A recent row reads "recent: <name>", so it is told apart from
+            // the same project's row in its group. It looks like a project
+            // row but stays what STORY-078 made it, a line to read: it never
+            // shows the selection and a click on it does nothing, so the
+            // project's row in its group stays the one selected row.
+            let label = format!("recent: {}", project.name);
+            let _ = project_row(ui, launcher, project, None, &label);
+        }
     }
 
     match universe.scan() {
         ScanState::Scanning => {
-            ui.label(SCANNING);
+            list_message(ui, SCANNING);
         }
         ScanState::Failed => {
-            ui.label(FAILED);
+            list_message(ui, FAILED);
         }
         ScanState::Reported(projects) if projects.is_empty() => {
-            ui.label(empty_state(universe.sources()));
+            list_message(ui, &empty_state(universe.sources()));
         }
         ScanState::Reported(_) => {
             let groups: Vec<(String, Vec<Project>)> = launcher
@@ -694,32 +1180,27 @@ fn list(ui: &mut egui::Ui, universe: &Universe, launcher: &mut Launcher) -> Opti
                 .map(|(label, projects)| (label, projects.into_iter().cloned().collect()))
                 .collect();
             if groups.is_empty() && !launcher.search_text().is_empty() {
-                ui.label(format!(
-                    "No project matches \"{}\".",
-                    launcher.search_text()
-                ));
-                add_project_button(ui, words.add_project_button);
+                list_message(
+                    ui,
+                    &format!("No project matches \"{}\".", launcher.search_text()),
+                );
+                ui.horizontal(|ui| {
+                    ui.add_space(ROW_PADDING);
+                    add_project_button(ui, words.add_project_button);
+                });
             } else {
-                let selected = launcher.selected().cloned();
                 for (label, projects) in &groups {
                     // One group per location, named by `Launcher::groups`
                     // (requirement 5): "This Mac" once for every local
                     // project, then a group per host — restated in theme
                     // words through `group_heading`, since `groups()` itself
                     // is unchanged (design Order of work step 2).
-                    group_heading_label(ui, &group_heading(launcher, label));
+                    let state = host_state(launcher, label);
+                    group_heading_label(ui, &group_heading(launcher, label), state);
                     for project in projects {
-                        if let Some(click) = project_row(ui, launcher, project, selected.as_ref()) {
-                            match click {
-                                RowClick::Selected => {
-                                    launcher.select(Some(project.id.clone()));
-                                    action = Some(LauncherAction::Selected(project.clone()));
-                                }
-                                RowClick::Opened => {
-                                    action = Some(LauncherAction::Opened(project.clone()));
-                                }
-                            }
-                        }
+                        let click =
+                            project_row(ui, launcher, project, selected.as_ref(), &project.name);
+                        take(click, project, launcher);
                     }
                 }
             }
@@ -729,15 +1210,61 @@ fn list(ui: &mut egui::Ui, universe: &Universe, launcher: &mut Launcher) -> Opti
     action
 }
 
-/// A group heading, drawn as an eyebrow with a rule under it (STORY-083
-/// requirement 4).
-fn group_heading_label(ui: &mut egui::Ui, text: &str) {
-    ui.label(
-        egui::RichText::new(text)
-            .font(egui::FontId::new(12.0, chakra_petch(ui)))
-            .color(DIM_INK),
+/// A line of text in the list, in place of rows.
+fn list_message(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(HEADING_SPACE.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.add_space(ROW_PADDING);
+        ui.set_max_width(ui.available_width() - ROW_PADDING);
+        ui.label(egui::RichText::new(text).color(DIM_INK));
+    });
+    ui.add_space(HEADING_SPACE.0);
+}
+
+/// A group heading: an eyebrow, upper-case and tracked, with a host's state
+/// glyph before it and a rule running to the right edge after it (STORY-083
+/// requirement 4). Its node reads `text` itself.
+fn group_heading_label(ui: &mut egui::Ui, text: &str, state: Option<HostState>) {
+    let eyebrow = galley(
+        ui,
+        styled(&text.to_uppercase(), 11.0, chakra_petch(ui), DIM_INK, 0.16),
     );
-    ui.separator();
+    let height = HEADING_SPACE.0 + eyebrow.size().y + HEADING_SPACE.1;
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
+    labelled(&response, egui::WidgetType::Label, text);
+    let centre_y = rect.top() + HEADING_SPACE.0 + eyebrow.size().y / 2.0;
+    let mut x = rect.left() + ROW_PADDING;
+    if let Some(state) = state {
+        state_glyph(ui, egui::pos2(x + GLYPH_SIZE / 2.0, centre_y), state);
+        x += GLYPH_SIZE + CHIP_GAP;
+    }
+    let width = eyebrow.size().x;
+    ui.painter().galley(
+        egui::pos2(x, rect.top() + HEADING_SPACE.0),
+        eyebrow,
+        DIM_INK,
+    );
+    let rule_left = x + width + CHIP_GAP;
+    let rule_right = rect.right() - ROW_PADDING;
+    if rule_left < rule_right {
+        ui.painter().hline(
+            rule_left..=rule_right,
+            centre_y.round() + 0.5,
+            egui::Stroke::new(1.0, LINE),
+        );
+    }
+}
+
+/// `label`'s host state, when `label` names a remote host's group.
+fn host_state(launcher: &Launcher, label: &str) -> Option<HostState> {
+    launcher
+        .hosts()
+        .into_iter()
+        .find(|(host, _)| *host == label)
+        .map(|(_, state)| state)
 }
 
 /// `label`, as `Launcher::groups` returns it, restated the way its group
@@ -763,72 +1290,123 @@ enum RowClick {
     Opened,
 }
 
-/// One project's row: its name (underlined in attention yellow where the
-/// search matched it, yellow when selected), its path and its branch label.
-/// Selected: a soft-yellow fill and a 2 px yellow left bar (STORY-083
-/// requirement 4).
+/// One project's 34 px row, in three columns: its name (underlined in
+/// attention yellow where the search matched it, yellow when selected, dim
+/// when its host is offline), its path and its branch label, right-aligned.
+/// Selected: a soft-yellow fill and a 2 px yellow left bar across the full
+/// width (STORY-083 requirement 4). The whole row is the click target; its
+/// node reads `label`, and the path and branch have nodes of their own.
 fn project_row(
     ui: &mut egui::Ui,
     launcher: &Launcher,
     project: &Project,
     selected: Option<&ProjectId>,
+    label: &str,
 ) -> Option<RowClick> {
-    let mut click = None;
     let is_selected = selected == Some(&project.id);
-    let background = ui.painter().add(egui::Shape::Noop);
-    let row = ui.horizontal(|ui| {
-        let name_color = if is_selected { YELLOW } else { INK };
-        let name = name_job(&project.name, launcher.search_text(), name_color);
-        // The sense goes on the response, not the widget, so the entry stays
-        // a label in the accessibility tree.
-        let entry = ui.label(name).interact(egui::Sense::click());
-        if is_selected {
-            ui.ctx()
-                .accesskit_node_builder(entry.id, |node| node.set_selected(true));
-        }
-        // A remote project's name does not open on double-click
-        // (requirement 8); a double-click there still selects it.
-        if entry.double_clicked() && project.id.local_path().is_some() {
-            click = Some(RowClick::Opened);
-        } else if entry.clicked() {
-            click = Some(RowClick::Selected);
-        }
-        ui.label(
-            egui::RichText::new(launcher.path_of(project))
-                .font(egui::FontId::new(13.0, jetbrains_mono(ui)))
-                .color(DIM_INK),
-        );
-        // Only once the branch is known: an unread row says nothing, rather
-        // than calling every repository a folder before it is selected.
-        if let Some(branch) = launcher.branch_label(&project.id) {
-            ui.label(
-                egui::RichText::new(branch)
-                    .font(egui::FontId::new(13.0, jetbrains_mono(ui)))
-                    .color(DIM_INK),
-            );
-        }
-    });
+    let (rect, entry) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), ROW_HEIGHT),
+        egui::Sense::click(),
+    );
+    labelled(&entry, egui::WidgetType::Label, label);
     if is_selected {
-        let rect = row.response.rect.expand(4.0);
-        ui.painter()
-            .set(background, egui::Shape::rect_filled(rect, 0.0, YELLOW_SOFT));
-        let bar = egui::Rect::from_min_max(
-            rect.left_top(),
-            egui::pos2(rect.left() + 2.0, rect.bottom()),
+        ui.ctx()
+            .accesskit_node_builder(entry.id, |node| node.set_selected(true));
+        ui.painter().rect_filled(rect, 0.0, YELLOW_SOFT);
+        ui.painter().rect_filled(
+            egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + 2.0, rect.bottom())),
+            0.0,
+            YELLOW,
         );
-        ui.painter().rect_filled(bar, 0.0, YELLOW);
-    } else {
-        ui.painter().set(background, egui::Shape::Noop);
+    } else if entry.hovered() {
+        ui.painter()
+            .rect_filled(rect, 0.0, YELLOW_SOFT.gamma_multiply(0.35));
     }
-    click
+
+    let offline = project.id.host().is_some_and(|host| {
+        launcher
+            .hosts()
+            .into_iter()
+            .any(|(name, state)| name == host && state == HostState::Offline)
+    });
+    let name_color = match (is_selected, offline) {
+        (true, _) => YELLOW,
+        (false, true) => DIM_INK,
+        (false, false) => INK,
+    };
+    let mono = jetbrains_mono(ui);
+    let left = rect.left() + ROW_PADDING;
+    let right = rect.right() - ROW_PADDING;
+    let name = galley(
+        ui,
+        one_row(
+            name_job(&project.name, launcher.search_text(), name_color, &mono),
+            NAME_COLUMN,
+        ),
+    );
+    ui.painter()
+        .galley(left_centred(rect, left, &name), name, name_color);
+
+    let branch_left = right - BRANCH_COLUMN;
+    let path_left = left + NAME_COLUMN + COLUMN_GAP;
+    let path_text = launcher.path_of(project);
+    let path = galley(
+        ui,
+        one_row(
+            styled(&path_text, 12.0, mono.clone(), DIM_INK, 0.0),
+            branch_left - COLUMN_GAP - path_left,
+        ),
+    );
+    text_at(
+        ui,
+        entry.id.with("path"),
+        left_centred(rect, path_left, &path),
+        path,
+        &path_text,
+    );
+    // Only once the branch is known: an unread row says nothing, rather than
+    // calling every repository a folder before it is selected.
+    if let Some(branch_text) = launcher.branch_label(&project.id) {
+        let branch = galley(
+            ui,
+            one_row(
+                styled(&branch_text, 12.0, mono, DIM_INK, 0.0),
+                BRANCH_COLUMN,
+            ),
+        );
+        let x = right - branch.size().x;
+        text_at(
+            ui,
+            entry.id.with("branch"),
+            left_centred(rect, x, &branch),
+            branch,
+            &branch_text,
+        );
+    }
+
+    // A remote project's row does not open on double-click (requirement 8);
+    // a double-click there still selects it.
+    if entry.double_clicked() && project.id.local_path().is_some() {
+        Some(RowClick::Opened)
+    } else if entry.clicked() {
+        Some(RowClick::Selected)
+    } else {
+        None
+    }
 }
 
-/// `name`, with the byte range `query` matches in it underlined in attention
-/// yellow (STORY-082 requirement 6, STORY-083 requirement 4); plain text in
-/// `color` when there is no match, so a path-only hit never underlines the
+/// `name` in `color`, with the byte range `query` matches in it underlined in
+/// attention yellow (STORY-082 requirement 6, STORY-083 requirement 4); plain
+/// text when there is no match, so a path-only hit never underlines the
 /// wrong fragment.
-fn name_job(name: &str, query: &str, color: egui::Color32) -> egui::text::LayoutJob {
+fn name_job(
+    name: &str,
+    query: &str,
+    color: egui::Color32,
+    family: &egui::FontFamily,
+) -> egui::text::LayoutJob {
     let plain = egui::TextFormat {
+        font_id: egui::FontId::new(13.0, family.clone()),
         color,
         ..Default::default()
     };
@@ -840,9 +1418,8 @@ fn name_job(name: &str, query: &str, color: egui::Color32) -> egui::text::Layout
                 &name[range.clone()],
                 0.0,
                 egui::TextFormat {
-                    color: YELLOW,
-                    underline: egui::Stroke::new(1.0, YELLOW),
-                    ..Default::default()
+                    underline: egui::Stroke::new(2.0, YELLOW),
+                    ..plain.clone()
                 },
             );
             job.append(&name[range.end..], 0.0, plain);
@@ -852,36 +1429,60 @@ fn name_job(name: &str, query: &str, color: egui::Color32) -> egui::text::Layout
     job
 }
 
-/// `project`'s name, kind and location, path, branch, file count (when
-/// known), a CTA and a disabled sync button (STORY-082 requirement 7,
-/// STORY-083 requirement 4): an eyebrow above the name, and an orange
-/// ICE/offline card below the CTA when the project's host is offline.
-/// `elapsed` and `reduced` are [`launcher`]'s own shared clock and
+/// The preview pane inside the card, beside the list (STORY-082 requirement
+/// 7, STORY-083 requirement 4): an eyebrow, the project's name upper-case,
+/// its kind and location, a PATH/BRANCH/FILES list; at the bottom the
+/// orange ICE card when its host is offline, the CTA and the disabled sync
+/// control. `elapsed` and `reduced` are [`launcher`]'s own shared clock and
 /// reduced-motion reading, passed through only so the CTA's glow can breathe
-/// by it (this panel's own rise is applied around the call to this function,
+/// by it (this pane's own rise is applied around the call to this function,
 /// not inside it).
 fn inspector(
     ui: &mut egui::Ui,
+    rect: egui::Rect,
     launcher: &Launcher,
     project: &Project,
     elapsed: f32,
     reduced: bool,
 ) -> Option<LauncherAction> {
-    let mut action = None;
     let words = launcher.words();
+    let inner = rect.shrink(PREVIEW_PADDING);
+    let sans = chakra_petch(ui);
+    let mono = jetbrains_mono(ui);
+    let id = egui::Id::new("cellworks-launcher-preview");
+    let mut y = inner.top();
 
     if !words.preview_eyebrow.is_empty() {
-        ui.label(
-            egui::RichText::new(words.preview_eyebrow)
-                .font(egui::FontId::new(11.0, chakra_petch(ui)))
-                .color(CYAN),
+        let eyebrow = galley(
+            ui,
+            styled(words.preview_eyebrow, 11.0, sans.clone(), DIM_INK, 0.16),
+        );
+        y += eyebrow.size().y + 6.0;
+        text_at(
+            ui,
+            id.with("eyebrow"),
+            egui::pos2(inner.left(), inner.top()),
+            eyebrow,
+            words.preview_eyebrow,
         );
     }
-    ui.label(
-        egui::RichText::new(project.name.as_str())
-            .font(egui::FontId::new(18.0, chakra_petch(ui)))
-            .color(INK),
+    let name = galley(
+        ui,
+        one_row(
+            styled(&project.name.to_uppercase(), 20.0, sans.clone(), INK, 0.06),
+            inner.width(),
+        ),
     );
+    let name_height = name.size().y;
+    text_at(
+        ui,
+        id.with("name"),
+        egui::pos2(inner.left(), y),
+        name,
+        &project.name,
+    );
+    y += name_height + 6.0;
+
     let kind = match launcher.kind(&project.id) {
         ProjectKind::Repository => words.local_repo_kind,
         // "folder"/"block" names both a branch-less project's row and what
@@ -891,37 +1492,131 @@ fn inspector(
     };
     // The location is where the project lives — this Mac or the host's name
     // — not the host's connection state, which its chip carries.
-    ui.label(
-        egui::RichText::new(format!("{kind} · {}", launcher.location_of(&project.id)))
-            .font(egui::FontId::new(13.0, jetbrains_mono(ui)))
-            .color(DIM_INK),
+    let kind_text = format!("{kind} · {}", launcher.location_of(&project.id));
+    let kind_galley = galley(
+        ui,
+        one_row(
+            styled(
+                &kind_text,
+                12.0,
+                egui::FontFamily::Proportional,
+                DIM_INK,
+                0.0,
+            ),
+            inner.width(),
+        ),
     );
-    ui.label(
-        egui::RichText::new(launcher.path_of(project))
-            .font(egui::FontId::new(13.0, jetbrains_mono(ui)))
-            .color(DIM_INK),
+    let kind_height = kind_galley.size().y;
+    text_at(
+        ui,
+        id.with("kind"),
+        egui::pos2(inner.left(), y),
+        kind_galley,
+        &kind_text,
     );
-    if let Some(branch) = launcher.branch_label(&project.id) {
-        ui.label(
-            egui::RichText::new(branch)
-                .font(egui::FontId::new(13.0, jetbrains_mono(ui)))
-                .color(DIM_INK),
+    y += kind_height + PREVIEW_GAP + 4.0;
+
+    let files = launcher
+        .details_of(&project.id)
+        .and_then(|details| details.files)
+        .map(|files| {
+            (
+                format!("{files} file{}", if files == 1 { "" } else { "s" }),
+                thousands(files),
+            )
+        });
+    let path = launcher.path_of(project);
+    let branch = launcher.branch_label(&project.id);
+    let terms: [(&str, Option<(String, String)>); 3] = [
+        ("Path", Some((path.clone(), path))),
+        ("Branch", branch.map(|branch| (branch.clone(), branch))),
+        ("Files", files),
+    ];
+    for (term, value) in terms {
+        let term_galley = galley(
+            ui,
+            styled(&term.to_uppercase(), 10.0, sans.clone(), DIM_INK, 0.14),
         );
+        let (label, shown) = value.unwrap_or_else(|| (String::new(), "—".to_owned()));
+        let value_galley = galley(
+            ui,
+            one_row(
+                styled(&shown, 12.0, mono.clone(), INK, 0.0),
+                inner.width() - TERM_COLUMN - COLUMN_GAP,
+            ),
+        );
+        let row_height = value_galley.size().y.max(term_galley.size().y);
+        let row = egui::Rect::from_min_size(
+            egui::pos2(inner.left(), y),
+            egui::vec2(inner.width(), row_height),
+        );
+        text_at(
+            ui,
+            id.with(term),
+            left_centred(row, inner.left(), &term_galley),
+            term_galley,
+            term,
+        );
+        let value_pos = left_centred(row, inner.left() + TERM_COLUMN + COLUMN_GAP, &value_galley);
+        if label.is_empty() {
+            ui.painter().galley(value_pos, value_galley, INK);
+        } else {
+            text_at(
+                ui,
+                id.with((term, "value")),
+                value_pos,
+                value_galley,
+                &label,
+            );
+        }
+        y += row_height + TERM_ROW_GAP;
     }
-    if let Some(details) = launcher.details_of(&project.id)
-        && let Some(files) = details.files
+
+    // From the bottom up: the sync control, the CTA, then the ICE card.
+    let sync = egui::Rect::from_min_max(
+        egui::pos2(inner.left(), inner.bottom() - SYNC_HEIGHT),
+        inner.max,
+    );
+    let cta = egui::Rect::from_min_size(
+        egui::pos2(inner.left(), sync.top() - PREVIEW_GAP - CTA_HEIGHT),
+        egui::vec2(inner.width(), CTA_HEIGHT),
+    );
+    if let Some(host) = project.id.host()
+        && launcher
+            .hosts()
+            .into_iter()
+            .any(|(name, state)| name == host && state == HostState::Offline)
     {
-        ui.label(
-            egui::RichText::new(format!("{files} file{}", if files == 1 { "" } else { "s" }))
-                .font(egui::FontId::new(13.0, jetbrains_mono(ui)))
-                .color(DIM_INK),
+        ice_card(
+            ui,
+            id.with("ice"),
+            inner.left()..=inner.right(),
+            cta.top() - PREVIEW_GAP,
+            words,
+            host,
         );
     }
 
-    ui.add_space(8.0);
     let can_open = launcher.can_open(&project.id);
     let label = launcher.open_label(&project.id);
-    let open = cta_button(ui, can_open, label, elapsed, reduced);
+    let subtitle = if label == words.connect_first {
+        label.to_owned()
+    } else if words.open_subtitle.is_empty() {
+        String::new()
+    } else {
+        format!("{} {}", words.open_subtitle, project.name)
+    };
+    let open = cta_button(
+        ui,
+        id.with("open"),
+        cta,
+        can_open,
+        words.open_action,
+        &subtitle,
+        label,
+        elapsed,
+        reduced,
+    );
     let open = if can_open {
         open
     } else if project.id.host().is_some() && label == words.open_label(true) {
@@ -933,113 +1628,243 @@ fn inspector(
     } else {
         open
     };
-    if open.clicked() {
-        action = Some(LauncherAction::Opened(project.clone()));
-    }
 
-    ui.add_enabled(false, egui::Button::new(words.sync_button));
+    sync_control(ui, id.with("sync"), sync, words.sync_button);
 
-    if let Some(host) = project.id.host()
-        && launcher
-            .hosts()
-            .into_iter()
-            .any(|(name, state)| name == host && state == HostState::Offline)
-    {
-        ice_card(ui, words, host);
-    }
-
-    action
+    open.clicked()
+        .then(|| LauncherAction::Opened(project.clone()))
 }
 
-/// The 72 px CTA (STORY-083 requirement 4): a filled chamfered yellow block
-/// with a breathing glow (design requirement 5) when the project can be
-/// opened, or an outline block when it cannot. `elapsed` and `reduced` drive
-/// [`breath`], the same way [`rise`] is driven elsewhere in this view.
+/// `n` with a comma between each group of three digits ("2,431").
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// The 72 px CTA (STORY-083 requirement 4): `title` over `subtitle` and a
+/// "⏎" key, on a filled chamfered yellow block with a breathing glow (design
+/// requirement 5) when the project can be opened, or an outline block in dim
+/// ink when it cannot. Its node is a button that reads `label`. `elapsed` and
+/// `reduced` drive [`breath`], the same way [`rise`] is driven elsewhere in
+/// this view.
+#[allow(clippy::too_many_arguments)]
 fn cta_button(
     ui: &mut egui::Ui,
+    id: egui::Id,
+    rect: egui::Rect,
     can_open: bool,
+    title: &str,
+    subtitle: &str,
     label: &str,
     elapsed: f32,
     reduced: bool,
 ) -> egui::Response {
-    let text_color = if can_open { BG } else { INK };
-    let background = ui.painter().add(egui::Shape::Noop);
-    let response = ui.add_enabled(
-        can_open,
-        egui::Button::new(
-            egui::RichText::new(label)
-                .font(egui::FontId::new(16.0, chakra_petch(ui)))
-                .color(text_color),
-        )
-        .fill(egui::Color32::TRANSPARENT)
-        .stroke(egui::Stroke::NONE)
-        .min_size(egui::vec2(ui.available_width(), 72.0)),
-    );
-    let rect = response.rect;
-    let points = chamfer(rect, 10.0, Corners::TopLeftBottomRight);
-    let (fill, stroke) = if can_open {
-        (YELLOW, egui::Stroke::NONE)
-    } else {
-        (
-            egui::Color32::TRANSPARENT,
-            egui::Stroke::new(1.0, LINE_BRIGHT),
-        )
-    };
-    ui.painter().set(
-        background,
-        egui::Shape::convex_polygon(points.to_vec(), fill, stroke),
-    );
+    let response = ui
+        .scope(|ui| {
+            if !can_open {
+                ui.disable();
+            }
+            ui.interact(rect, id, egui::Sense::click())
+        })
+        .inner;
+    labelled(&response, egui::WidgetType::Button, label);
+
+    let points = chamfer(rect, CTA_CUT, Corners::TopLeftBottomRight);
+    let text_color = if can_open { BG } else { DIM_INK };
     if can_open {
-        // The glow: three expanded chamfer outlines of falling alpha
-        // (epaint has no blur), scaled by the breath factor (Decision 6).
+        // The glow: expanded chamfer outlines of falling alpha (epaint has
+        // no blur), scaled by the breath factor (Decision 6).
         let factor = breath(elapsed, reduced);
-        for (expand, alpha) in [(3.0, 90u8), (6.0, 55u8), (9.0, 25u8)] {
-            let glow_points = chamfer(
-                rect.expand(expand),
-                10.0 + expand,
-                Corners::TopLeftBottomRight,
-            );
-            let alpha = (f32::from(alpha) * factor).clamp(0.0, 255.0) as u8;
+        for step in 0..18 {
+            let expand = step as f32 + 0.5;
+            let fade = 1.0 - step as f32 / 18.0;
             ui.painter().add(egui::Shape::closed_line(
-                glow_points.to_vec(),
-                egui::Stroke::new(1.5, YELLOW.gamma_multiply_u8(alpha)),
+                chamfer(
+                    rect.expand(expand),
+                    CTA_CUT + expand,
+                    Corners::TopLeftBottomRight,
+                )
+                .to_vec(),
+                egui::Stroke::new(1.0, YELLOW.gamma_multiply(0.45 * factor * fade * fade)),
             ));
         }
+        ui.painter().add(egui::Shape::convex_polygon(
+            points.to_vec(),
+            YELLOW,
+            egui::Stroke::NONE,
+        ));
+    } else {
+        ui.painter().add(egui::Shape::convex_polygon(
+            points.to_vec(),
+            egui::Color32::TRANSPARENT,
+            egui::Stroke::new(1.0, LINE_BRIGHT),
+        ));
     }
+
+    let title = galley(
+        ui,
+        styled(
+            &title.to_uppercase(),
+            15.0,
+            chakra_petch(ui),
+            text_color,
+            0.14,
+        ),
+    );
+    let subtitle = (!subtitle.is_empty()).then(|| {
+        galley(
+            ui,
+            styled(
+                subtitle,
+                12.0,
+                egui::FontFamily::Proportional,
+                text_color.gamma_multiply(0.8),
+                0.0,
+            ),
+        )
+    });
+    let height = title.size().y + subtitle.as_ref().map_or(0.0, |s| s.size().y + 2.0);
+    let top = rect.center().y - height / 2.0;
+    let left = rect.left() + 20.0;
+    let title_height = title.size().y;
+    ui.painter()
+        .galley(egui::pos2(left, top), title, text_color);
+    if let Some(subtitle) = subtitle {
+        ui.painter().galley(
+            egui::pos2(left, top + title_height + 2.0),
+            subtitle,
+            text_color,
+        );
+    }
+    let key = galley(ui, styled("⏎", 16.0, jetbrains_mono(ui), text_color, 0.0));
+    let pos = egui::pos2(
+        rect.right() - 20.0 - key.size().x,
+        rect.center().y - key.size().y / 2.0,
+    );
+    ui.painter().galley(pos, key, text_color);
     response
 }
 
-/// The orange ICE/offline card (STORY-083 requirement 4), shown under the CTA
-/// when the selected project's host is offline.
-fn ice_card(ui: &mut egui::Ui, words: &Words, host: &str) {
-    ui.add_space(8.0);
-    let background = ui.painter().add(egui::Shape::Noop);
-    let content = ui
-        .vertical(|ui| {
-            ui.label(
-                egui::RichText::new(words.ice_heading)
-                    .font(egui::FontId::new(13.0, chakra_petch(ui)))
-                    .color(WARN_ORANGE),
-            );
-            ui.label(egui::RichText::new(words.offline_body(host)).color(INK));
+/// The disabled 44 px sync control, an outline across the pane's width.
+fn sync_control(ui: &mut egui::Ui, id: egui::Id, rect: egui::Rect, label: &str) {
+    let response = ui
+        .scope(|ui| {
+            ui.disable();
+            ui.interact(rect, id, egui::Sense::click())
         })
-        .response;
-    let rect = content.rect.expand(8.0);
-    let points = chamfer(rect, 10.0, Corners::TopLeftBottomRight);
-    ui.painter().set(
-        background,
-        egui::Shape::convex_polygon(
-            points.to_vec(),
-            WARN_ORANGE.gamma_multiply(0.12),
-            egui::Stroke::new(1.0, WARN_ORANGE),
+        .inner;
+    labelled(&response, egui::WidgetType::Button, label);
+    ui.painter().add(egui::Shape::convex_polygon(
+        chamfer(rect, CONTROL_CUT, Corners::TopLeftBottomRight).to_vec(),
+        egui::Color32::TRANSPARENT,
+        egui::Stroke::new(1.0, LINE),
+    ));
+    let text = galley(
+        ui,
+        styled(&label.to_uppercase(), 11.0, chakra_petch(ui), DIM_INK, 0.12),
+    );
+    let pos = rect.center() - text.size() / 2.0;
+    ui.painter().galley(pos, text, DIM_INK);
+}
+
+/// The orange ICE/offline card (STORY-083 requirement 4), spanning `x` with
+/// its bottom edge at `bottom`, shown above the CTA when the selected
+/// project's host is offline.
+fn ice_card(
+    ui: &egui::Ui,
+    id: egui::Id,
+    x: std::ops::RangeInclusive<f32>,
+    bottom: f32,
+    words: &Words,
+    host: &str,
+) {
+    let (left, right) = (*x.start(), *x.end());
+    let padding = egui::vec2(14.0, 12.0);
+    let heading = galley(
+        ui,
+        styled(words.ice_heading, 11.0, chakra_petch(ui), WARN_ORANGE, 0.16),
+    );
+    let body_text = words.offline_body(host);
+    let mut body_job = styled(&body_text, 12.0, egui::FontFamily::Proportional, INK, 0.0);
+    body_job.wrap.max_width = right - left - 2.0 * padding.x - 3.0;
+    body_job.sections[0].format.line_height = Some(18.0);
+    let body = galley(ui, body_job);
+    let height = 2.0 * padding.y + heading.size().y + 4.0 + body.size().y;
+    let rect =
+        egui::Rect::from_min_max(egui::pos2(left, bottom - height), egui::pos2(right, bottom));
+    ui.painter().add(egui::Shape::convex_polygon(
+        chamfer(rect, CTA_CUT, Corners::TopLeftBottomRight).to_vec(),
+        WARN_ORANGE.gamma_multiply(0.08),
+        egui::Stroke::new(1.0, WARN_ORANGE.gamma_multiply(0.35)),
+    ));
+    ui.painter().rect_filled(
+        egui::Rect::from_min_max(
+            egui::pos2(left, rect.top() + CTA_CUT),
+            egui::pos2(left + 3.0, rect.bottom()),
         ),
+        0.0,
+        WARN_ORANGE,
+    );
+    let heading_height = heading.size().y;
+    let text_left = left + 3.0 + padding.x;
+    text_at(
+        ui,
+        id.with("heading"),
+        egui::pos2(text_left, rect.top() + padding.y),
+        heading,
+        words.ice_heading,
+    );
+    text_at(
+        ui,
+        id.with("body"),
+        egui::pos2(text_left, rect.top() + padding.y + heading_height + 4.0),
+        body,
+        &body_text,
     );
 }
 
-/// The disabled add-project button (requirement 1); ⌘N does nothing yet.
+/// The disabled add-project control (requirement 1); ⌘N does nothing yet.
+/// Drawn upper-case with its shortcut in a key box; its node is a button
+/// that reads `label` itself.
 fn add_project_button(ui: &mut egui::Ui, label: &str) {
-    ui.add_enabled(false, egui::Button::new(label))
-        .on_disabled_hover_text("Coming soon");
+    let (word, key) = label.rsplit_once(' ').unwrap_or((label, ""));
+    let text = galley(
+        ui,
+        styled(&word.to_uppercase(), 11.0, chakra_petch(ui), DIM_INK, 0.1),
+    );
+    let key =
+        (!key.is_empty()).then(|| galley(ui, styled(key, 11.0, jetbrains_mono(ui), DIM_INK, 0.0)));
+    let width =
+        12.0 + text.size().x + key.as_ref().map_or(0.0, |key| 8.0 + key.size().x + 10.0) + 12.0;
+    let rect = ui
+        .add_enabled_ui(false, |ui| {
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(width, CONTROL_HEIGHT), egui::Sense::click());
+            labelled(&response, egui::WidgetType::Button, label);
+            response.on_disabled_hover_text("Coming soon");
+            rect
+        })
+        .inner;
+    // Painted outside the disabled scope: the mock draws the control at full
+    // strength, already dim ink on a strong line, not faded a second time.
+    ui.painter().add(egui::Shape::convex_polygon(
+        chamfer(rect, CONTROL_CUT, Corners::TopLeftBottomRight).to_vec(),
+        egui::Color32::TRANSPARENT,
+        egui::Stroke::new(1.0, LINE_BRIGHT),
+    ));
+    let text_pos = left_centred(rect, rect.left() + 12.0, &text);
+    let text_right = text_pos.x + text.size().x;
+    ui.painter().galley(text_pos, text, DIM_INK);
+    if let Some(key) = key {
+        key_cap(ui, text_right + 8.0, rect.center().y, key);
+    }
 }
 
 /// What an empty launcher tells the engineer.
@@ -1079,9 +1904,37 @@ fn notice_text(words: &Words, notice: &Notice) -> String {
     }
 }
 
-/// A notice below the card, with an orange ▲ (STORY-083 requirement 4).
-fn notice_label(ui: &mut egui::Ui, words: &Words, notice: &Notice) {
-    ui.label(egui::RichText::new(format!("▲ {}", notice_text(words, notice))).color(WARN_ORANGE));
+/// A notice below the card, a full card's width: a panel with an orange
+/// left bar, an orange ▲ and the text in ink (STORY-083 requirement 4). Its
+/// node reads "▲ " and the text.
+fn notice_label(ui: &mut egui::Ui, rect: egui::Rect, words: &Words, notice: &Notice) {
+    let text = notice_text(words, notice);
+    ui.painter().rect_filled(rect, 0.0, PANEL);
+    ui.painter().rect_stroke(
+        rect,
+        0.0,
+        egui::Stroke::new(1.0, LINE),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().rect_filled(
+        egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + 3.0, rect.bottom())),
+        0.0,
+        WARN_ORANGE,
+    );
+    let mut job = styled("▲", 12.0, egui::FontFamily::Proportional, WARN_ORANGE, 0.0);
+    job.append(
+        &text,
+        10.0,
+        egui::TextFormat {
+            font_id: egui::FontId::new(12.0, egui::FontFamily::Proportional),
+            color: INK,
+            ..Default::default()
+        },
+    );
+    let galley = galley(ui, one_row(job, rect.width() - 2.0 * SEARCH_PADDING));
+    let id = egui::Id::new("cellworks-launcher-notice").with(&text);
+    let pos = left_centred(rect, rect.left() + SEARCH_PADDING, &galley);
+    text_at(ui, id, pos, galley, &format!("▲ {text}"));
 }
 
 // STORY-083 below: tests for the Netrunner look's pure geometry and motion
