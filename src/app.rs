@@ -379,25 +379,29 @@ impl CellworksApp {
         self.sessions.pane_text()
     }
 
-    /// Reads the branch and file count of the project selected in the
-    /// launcher, once. Git runs only in a project the engineer selected (or
-    /// opened), never in the rest of those discovered.
+    /// Reads the branch and file count of every local project the launcher
+    /// lists, once each, so each row can show its branch. Git runs only in
+    /// projects listed under the current pick and search.
+    // ponytail: one thread per listed project; read only the rows in view if
+    // a discovery ever lists hundreds of repositories.
     fn request_details(&mut self) {
-        let Some(id) = self.launcher.selected() else {
-            return;
-        };
-        let Some(path) = id.local_path() else {
-            return;
-        };
-        if !self.auto_detail
-            || self.launcher.details_of(id).is_some()
-            || self.project_details.iter().any(|(read, _)| read == path)
-        {
+        if !self.auto_detail {
             return;
         }
-        let path = path.to_path_buf();
-        let receiver = start_details(vec![path.clone()], Arc::clone(&self.git));
-        self.project_details.push((path, receiver));
+        let listed: Vec<std::path::PathBuf> = self
+            .launcher
+            .groups()
+            .into_iter()
+            .flat_map(|(_, projects)| projects)
+            .filter(|project| self.launcher.details_of(&project.id).is_none())
+            .filter_map(|project| project.id.local_path())
+            .filter(|path| !self.project_details.iter().any(|(read, _)| read == path))
+            .map(std::path::Path::to_path_buf)
+            .collect();
+        for path in listed {
+            let receiver = start_details(vec![path.clone()], Arc::clone(&self.git));
+            self.project_details.push((path, receiver));
+        }
     }
 
     /// Takes whatever the scan, the host probes and the project details have
@@ -437,6 +441,9 @@ impl CellworksApp {
                     }
                 }
             }
+        }
+        if self.opened.is_none() {
+            self.request_details();
         }
         let launcher = &mut self.launcher;
         self.project_details.retain(|(_, details)| {

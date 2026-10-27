@@ -227,8 +227,7 @@ impl Launcher {
         self.selected.as_ref().and_then(|id| self.project(id))
     }
 
-    /// Moves the selection `by` rows through the recent row followed by every
-    /// group, wrapping at either end (requirement 11's ↑/↓). Nothing while
+    /// Moves the selection `by` rows through every group, wrapping at either end (requirement 11's ↑/↓). Nothing while
     /// nothing is shown.
     pub fn move_selection(&mut self, by: isize) {
         let order = self.visible_order();
@@ -248,21 +247,13 @@ impl Launcher {
         self.selected = Some(order[next as usize].clone());
     }
 
-    /// Every id shown, the recent row first then every group, in the order
-    /// the view draws them: what `move_selection` steps through. A project
-    /// shown twice (recent and in its group) is listed once, at its first
-    /// place, so each keypress moves to a different row.
+    /// Every selectable id, in the order the view draws the group rows: what
+    /// `move_selection` steps through. The recent row is left out: it never
+    /// shows the selection, so stepping onto it would make the highlight jump.
     fn visible_order(&self) -> Vec<ProjectId> {
-        let mut seen = BTreeSet::new();
-        self.recent_row()
+        self.groups()
             .into_iter()
-            .map(|project| project.id.clone())
-            .chain(
-                self.groups().into_iter().flat_map(|(_, projects)| {
-                    projects.into_iter().map(|project| project.id.clone())
-                }),
-            )
-            .filter(|id| seen.insert(id.clone()))
+            .flat_map(|(_, projects)| projects.into_iter().map(|project| project.id.clone()))
             .collect()
     }
 
@@ -640,28 +631,29 @@ mod tests {
             .collect()
     }
 
-    /// STORY-078, requirement 11: a project in both the recent row and its
-    /// group is stepped through once, so ↓/↑ never spend a keypress on a
-    /// duplicate.
+    /// The arrows walk the group rows as drawn, top to bottom: a project in
+    /// the recent row is stepped onto at its place in its group, never first.
     #[test]
-    fn arrow_order_lists_each_project_once() {
+    fn arrow_order_walks_the_group_rows_as_drawn() {
         let mut launcher = Launcher::new(None);
         let a = Project::at(PathBuf::from("/p/a"));
         let b = Project::at(PathBuf::from("/p/b"));
+        let c = Project::at(PathBuf::from("/p/c"));
         launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![
             a.clone(),
             b.clone(),
+            c.clone(),
         ]));
-        launcher.opened(a.id.clone());
+        launcher.opened(c.id.clone());
 
         let order = launcher.visible_order();
-        assert_eq!(order, vec![a.id.clone(), b.id.clone()]);
+        assert_eq!(order, vec![a.id.clone(), b.id.clone(), c.id.clone()]);
 
-        launcher.select(Some(b.id.clone()));
-        launcher.move_selection(1);
-        assert_eq!(launcher.selected(), Some(&a.id));
+        launcher.select(Some(a.id.clone()));
         launcher.move_selection(1);
         assert_eq!(launcher.selected(), Some(&b.id));
+        launcher.move_selection(1);
+        assert_eq!(launcher.selected(), Some(&c.id));
     }
 
     /// STORY-078, requirement 6: opening a project already in the recent row

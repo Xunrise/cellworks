@@ -95,6 +95,12 @@ and the words of the launcher only.
     "j/k move", ": search", "Enter open" in NAV and "Enter open", "Esc nav" in
     CMD; the card footer reads "↑↓/jk move · ⏎ open · Tab scope · : search" in
     NAV and the same with "Esc nav" in CMD.
+12. The selection steps through the group rows exactly as drawn, top to
+    bottom. The recent row is not stepped through: it never shows the
+    selection, and a recent project is reached at its place in its group.
+13. Every local project listed under the current pick and search shows its
+    branch on its row as soon as it is read; each is read once, in the
+    background, and remote projects are never read.
 
 ## Decisions
 
@@ -140,6 +146,12 @@ and the words of the launcher only.
     so it never rests on the field, a row or a chip. Rejected: the search stays
     focused and Ctrl-j/k move the selection (every plain letter would stay
     reserved for the field, and the badge could not tell a mode from a query).
+12. Git reads every listed local project, not only the selected one, replacing
+    STORY-078's "git runs only in a project the engineer chose": the rows show
+    a branch column, and an empty column until a row is selected read as
+    broken. One background thread per listed project, each once. Rejected:
+    reading only the rows in view (more code for a list that is short in
+    practice; the upgrade path if a discovery lists hundreds of repositories).
 
 ## Order of work
 
