@@ -1,0 +1,20 @@
+{
+  "kind": "Story",
+  "status": "To Do",
+  "category": "new",
+  "priority": "Medium",
+  "assignee": "Martin Galusinski",
+  "reporter": "Dana Weber",
+  "updated": "2026-10-27",
+  "criteria_from": "description",
+  "links": [],
+  "comments": [],
+  "key": "SHOP-43",
+  "summary": "Free shipping banner above 50 EUR",
+  "description": "Free shipping banner above 50 EUR.\n\nSee the acceptance criteria.",
+  "criteria": [
+    "A banner shows how much is missing for free shipping.",
+    "The banner disappears at 50 EUR."
+  ],
+  "url": "https://shopfront.atlassian.net/browse/SHOP-43"
+}

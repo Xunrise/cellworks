@@ -1,0 +1,20 @@
+{
+  "kind": "Story",
+  "status": "To Do",
+  "category": "new",
+  "priority": "Medium",
+  "assignee": "Martin Galusinski",
+  "reporter": "Dana Weber",
+  "updated": "2026-10-27",
+  "criteria_from": "description",
+  "links": [],
+  "comments": [],
+  "key": "SHOP-39",
+  "summary": "Remember the cart after a page reload",
+  "description": "Remember the cart after a page reload.\n\nSee the acceptance criteria.",
+  "criteria": [
+    "Reloading the page keeps the cart.",
+    "Clearing the cart empties the stored copy."
+  ],
+  "url": "https://shopfront.atlassian.net/browse/SHOP-39"
+}

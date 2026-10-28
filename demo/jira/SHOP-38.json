@@ -1,0 +1,20 @@
+{
+  "kind": "Story",
+  "status": "To Do",
+  "category": "new",
+  "priority": "Medium",
+  "assignee": "Martin Galusinski",
+  "reporter": "Dana Weber",
+  "updated": "2026-10-27",
+  "criteria_from": "description",
+  "links": [],
+  "comments": [],
+  "key": "SHOP-38",
+  "summary": "Show stock level on product cards",
+  "description": "Show stock level on product cards.\n\nSee the acceptance criteria.",
+  "criteria": [
+    "The card shows 'Only n left' under 5 in stock.",
+    "Out of stock products disable the add button."
+  ],
+  "url": "https://shopfront.atlassian.net/browse/SHOP-38"
+}

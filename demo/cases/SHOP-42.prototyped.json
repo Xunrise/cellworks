@@ -1,0 +1,105 @@
+{
+  "key": "SHOP-42",
+  "repos": [
+    {
+      "name": "shopfront",
+      "root": "__ROOT__/projects/shopfront",
+      "base_branch": "main",
+      "worktree": "__ROOT__/projects/shopfront-shop-42",
+      "branch": "proto/shop-42-shoppers-cannot-apply-promo"
+    }
+  ],
+  "written": "2026-10-28",
+  "status": "prototyped",
+  "history": [
+    {
+      "status": "ingested",
+      "at": "2026-10-28 09:10"
+    },
+    {
+      "status": "prototyping",
+      "at": "2026-10-28 09:25"
+    },
+    {
+      "status": "prototyped",
+      "at": "2026-10-28 09:50"
+    }
+  ],
+  "problem": {
+    "headline": "Shoppers cannot apply a promo code at checkout.",
+    "plain": "The checkout page has no promo code field. The totals come from computeTotals in cart/totals.ts, which knows only items and shipping, and placeOrder in checkout/order.ts charges exactly that total. A code would have to reach the cart total, the order and the payment.",
+    "problems": [
+      {
+        "id": "P1",
+        "title": "No promo field on the checkout page",
+        "where": "src/ui/checkoutView.ts"
+      },
+      {
+        "id": "P2",
+        "title": "Totals know no discount",
+        "where": "src/cart/totals.ts \u00b7 computeTotals()"
+      },
+      {
+        "id": "P3",
+        "title": "The order charges the undiscounted total",
+        "where": "src/checkout/order.ts \u00b7 placeOrder()"
+      }
+    ],
+    "today_chain": [
+      {
+        "kind": "service",
+        "label": "checkoutView.ts"
+      },
+      {
+        "kind": "service",
+        "label": "computeTotals"
+      },
+      {
+        "kind": "service",
+        "label": "placeOrder",
+        "danger": true
+      },
+      {
+        "kind": "database",
+        "label": "db-orders"
+      }
+    ],
+    "criteria_notes": [
+      "A promo field sits above the total.",
+      "Applied code and discount are visible, old total struck through.",
+      "Unknown code shows an error and nothing changes.",
+      "Order stores code and discount; payment charges the discounted total.",
+      "Cap: 100 EUR off per order."
+    ]
+  },
+  "open_questions": [],
+  "approach": "",
+  "systems": [
+    {
+      "id": "pod",
+      "kind": "workload",
+      "label": "pod-checkout",
+      "group": "cluster"
+    },
+    {
+      "id": "db",
+      "kind": "database",
+      "label": "db-orders",
+      "group": "data"
+    },
+    {
+      "id": "vault",
+      "kind": "vault",
+      "label": "vault-payments",
+      "group": "secrets"
+    },
+    {
+      "id": "pay",
+      "kind": "service",
+      "label": "payments-api",
+      "group": "provider"
+    }
+  ],
+  "steps": [],
+  "lanes": []
+}

@@ -1,0 +1,45 @@
+{
+  "kind": "Story",
+  "status": "To Do",
+  "category": "new",
+  "priority": "High",
+  "assignee": "Martin Galusinski",
+  "reporter": "Dana Weber",
+  "updated": "2026-10-27",
+  "criteria_from": "description",
+  "links": [
+    [
+      "is served by",
+      "pod-checkout",
+      "Checkout pod, namespace shop"
+    ],
+    [
+      "writes to",
+      "db-orders",
+      "Orders database"
+    ],
+    [
+      "reads secret from",
+      "vault-payments",
+      "Payment provider secret in Vault"
+    ]
+  ],
+  "comments": [
+    [
+      "Dana Weber",
+      "2026-10-26",
+      "Marketing sends SAVE10 next week. We need this before then."
+    ]
+  ],
+  "key": "SHOP-42",
+  "summary": "Apply a promo code at checkout",
+  "description": "Shoppers who have a promo code from a newsletter have no place to type it. They pay full price or abandon the cart.\n\nCodes look like SAVE10 and take that percent off the items. Codes below 5 or above 50 percent are not valid, and one code never takes more than 100 EUR off an order.\n\nThe discount must reach the order and the payment, not only the page.",
+  "criteria": [
+    "A shopper can enter a promo code on the checkout page.",
+    "A valid code shows 'Code applied' and a discount on the total, with the old total struck through.",
+    "An unknown code shows 'Invalid promo code' and the total stays.",
+    "The order stores the code and the discount, and the payment charges the discounted total.",
+    "No discount takes more than 100 EUR off."
+  ],
+  "url": "https://shopfront.atlassian.net/browse/SHOP-42"
+}
