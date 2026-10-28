@@ -354,6 +354,23 @@ impl Navigation {
         self.selection = Some(path);
     }
 
+    /// Prototype: frames `path` itself (a folder its own district, a node its
+    /// building, an item the building holding it) and selects it.
+    pub fn frame_on(&mut self, map: &ProjectMap, path: PathBuf) {
+        let Some(found) = map.find(&path) else {
+            return;
+        };
+        self.camera = None;
+        self.inside = None;
+        self.framed = match (found.kind, found.parent) {
+            (Element::Folder, _) => Framed::Folder(path.clone()),
+            (Element::Node, _) => Framed::Node(path.clone()),
+            (Element::Item, Some(node)) => Framed::Node(node.to_path_buf()),
+            (Element::Item, None) => Framed::Project,
+        };
+        self.selection = Some(path);
+    }
+
     /// The camera has turned `turn` of the way from the corner towards a
     /// facade, `visible` at the layout's scale in view. Decides the facade
     /// it pivots on, keeping the one it turned to while it stays turned: the

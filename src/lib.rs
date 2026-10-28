@@ -7,6 +7,7 @@
 pub mod app;
 pub mod cli;
 pub mod demo;
+pub mod explorer;
 pub mod iterate;
 pub mod iterate_view;
 pub mod lens_panel;

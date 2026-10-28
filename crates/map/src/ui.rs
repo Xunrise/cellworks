@@ -22,6 +22,8 @@ pub mod ticket;
 mod why;
 
 pub use buildings::{DrawnBridge, DrawnBuilding, bridge_card};
+/// PROTOTYPE: the shared look, for the crates downstream of the map.
+pub use cellworks_workspace::theme;
 pub use explain::{banner, caption, caption_text, lane_toggles, legend, legend_text, lens_bar};
 pub use lanes::{DrawnLane, colour_of};
 pub use why::{NO_CONTEXT, NO_STORY, why_panel};
@@ -2012,13 +2014,11 @@ pub fn minimap(ui: &mut egui::Ui, map: &ProjectMap, view: &View, panel: Rect) ->
     let to_minimap = |ground: Pos2| (iso(ground, 0.0).to_vec2() * k + offset).to_pos2();
 
     let painter = ui.painter_at(at);
-    painter.rect(
-        at,
-        0.0,
-        PANEL.gamma_multiply(0.92),
-        Stroke::new(1.0, DIM.gamma_multiply(0.5)),
-        StrokeKind::Inside,
-    );
+    painter.add(Shape::convex_polygon(
+        cellworks_workspace::theme::chamfer(at.shrink(0.5), 10.0),
+        PANEL.gamma_multiply(0.94),
+        Stroke::new(1.0, LINE_STRONG),
+    ));
     let mut clicked = None;
     for (index, district) in map.districts.iter().enumerate() {
         let colour = district_colour(index);
@@ -2066,14 +2066,12 @@ pub fn minimap(ui: &mut egui::Ui, map: &ProjectMap, view: &View, panel: Rect) ->
     let frame = Rect::from_points(&corners).intersect(at);
     painter.add(Shape::closed_line(
         corners,
-        Stroke::new(1.0, Color32::WHITE.gamma_multiply(0.8)),
+        Stroke::new(1.0, cellworks_workspace::theme::YELLOW.gamma_multiply(0.8)),
     ));
-    painter.text(
-        at.min + vec2(6.0, 4.0),
-        egui::Align2::LEFT_TOP,
-        "minimap",
-        egui::FontId::monospace(10.0),
-        DIM.gamma_multiply(0.9),
+    painter.galley(
+        at.min + vec2(14.0, 6.0),
+        cellworks_workspace::theme::eyebrow(ui.ctx(), "minimap", DIM),
+        DIM,
     );
     let response = ui.interact(frame, ui.id().with("minimap view"), Sense::hover());
     ui.ctx().accesskit_node_builder(response.id, |node| {
@@ -2265,7 +2263,11 @@ fn district_colour_of(map: &ProjectMap, item: &Item) -> Color32 {
     if let Some(home) = item.standing_file().and_then(|file| map.homes.get(file)) {
         return district_colour(*home);
     }
-    let path = &item.path;
+    district_colour_at(map, &item.path)
+}
+
+/// The colour of the innermost district whose path holds `path`.
+pub fn district_colour_at(map: &ProjectMap, path: &Path) -> Color32 {
     map.districts
         .iter()
         .enumerate()

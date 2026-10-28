@@ -23,6 +23,7 @@ mod settings;
 pub mod ui;
 
 pub use marks::{mark, marked};
+pub mod theme;
 mod universe;
 mod words;
 

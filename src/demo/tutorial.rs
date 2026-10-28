@@ -5,19 +5,14 @@
 
 use std::time::Duration;
 
-use egui::{Align2, Color32, FontFamily, FontId, Pos2, Rect, Stroke, pos2, vec2};
+use egui::{Align2, Color32, Pos2, Rect, Stroke, pos2, vec2};
 
 use super::{CORE, Tour};
 use crate::app::CellworksApp;
 
-// Netrunner tokens, as the launcher and the case screens use them.
-const PANEL: Color32 = Color32::from_rgb(0x0d, 0x11, 0x17);
-const INK: Color32 = Color32::from_rgb(0xd7, 0xe2, 0xea);
-const DIM: Color32 = Color32::from_rgb(0x7d, 0x8f, 0xa0);
-const YELLOW: Color32 = Color32::from_rgb(0xfc, 0xee, 0x0a);
-const CYAN: Color32 = Color32::from_rgb(0x5e, 0xf6, 0xff);
-const LINE: Color32 = Color32::from_rgb(0x34, 0x50, 0x6a);
-const ON_YELLOW: Color32 = Color32::from_rgb(0x07, 0x09, 0x0c);
+use cellworks_workspace::theme::{
+    CYAN, DIM, INK, ON_YELLOW, YELLOW, chamfer, eyebrow, font, panel, tracked,
+};
 
 /// What a step asks the presenter to do.
 #[derive(Clone, Copy)]
@@ -610,43 +605,6 @@ impl State {
     }
 }
 
-fn font(ctx: &egui::Context, size: f32, mono: bool) -> FontId {
-    let name = if mono {
-        "jetbrains-mono"
-    } else {
-        "chakra-petch"
-    };
-    let family = FontFamily::Name(name.into());
-    if ctx.fonts(|f| f.families().contains(&family)) {
-        FontId::new(size, family)
-    } else if mono {
-        FontId::monospace(size)
-    } else {
-        FontId::proportional(size)
-    }
-}
-
-fn tracked(
-    ctx: &egui::Context,
-    text: &str,
-    size: f32,
-    colour: Color32,
-    mono: bool,
-) -> egui::text::LayoutJob {
-    let mut job = egui::text::LayoutJob::default();
-    job.append(
-        text,
-        0.0,
-        egui::TextFormat {
-            font_id: font(ctx, size, mono),
-            color: colour,
-            extra_letter_spacing: size * 0.14,
-            ..Default::default()
-        },
-    );
-    job
-}
-
 fn wrapped(
     ctx: &egui::Context,
     text: &str,
@@ -668,31 +626,6 @@ fn wrapped(
     );
     job.wrap.max_width = width;
     ctx.fonts_mut(|f| f.layout_job(job))
-}
-
-fn eyebrow(ctx: &egui::Context, text: &str, colour: Color32) -> std::sync::Arc<egui::Galley> {
-    let job = tracked(ctx, &text.to_uppercase(), 11.0, colour, false);
-    ctx.fonts_mut(|f| f.layout_job(job))
-}
-
-/// `rect` cut at top-left and bottom-right.
-fn chamfer(rect: Rect, cut: f32) -> Vec<Pos2> {
-    vec![
-        pos2(rect.left(), rect.top() + cut),
-        pos2(rect.left() + cut, rect.top()),
-        rect.right_top(),
-        pos2(rect.right(), rect.bottom() - cut),
-        pos2(rect.right() - cut, rect.bottom()),
-        rect.left_bottom(),
-    ]
-}
-
-fn panel(painter: &egui::Painter, rect: Rect) {
-    painter.add(egui::Shape::convex_polygon(
-        chamfer(rect, 12.0),
-        PANEL,
-        Stroke::new(1.0, LINE),
-    ));
 }
 
 /// The text block of a callout or card: eyebrow, body, hint. Returns its size.

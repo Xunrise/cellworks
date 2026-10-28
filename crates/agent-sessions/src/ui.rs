@@ -511,8 +511,10 @@ impl SessionsView {
         } else {
             if let Some(banner) = pane.banner().map(str::to_owned) {
                 ui.horizontal(|ui| {
-                    ui.label(&banner);
-                    if !pane.is_terminal() && ui.button("Continue in the background").clicked() {
+                    ui.label(egui::RichText::new(&banner).color(cellworks_map::ui::case::INK_DIM));
+                    if !pane.is_terminal()
+                        && nr_ctl(ui, "Continue in the background", Kind::Plain).clicked()
+                    {
                         pane.continue_in_background();
                     }
                 });
@@ -549,13 +551,13 @@ impl SessionsView {
         map: &cellworks_map::ProjectMap,
         common_dir: Option<&std::path::Path>,
     ) -> Option<(String, Option<Pos2>)> {
-        ui.heading("Sessions");
+        use cellworks_map::ui::case::{DANGER_TEXT, INK, INK_DIM, LINE, TERRAIN_INK};
+        ui.add_space(4.0);
+        ui.label(nr_text(ui.ctx(), "SESSIONS", 13.0, "semibold", 0.16, INK));
+        ui.add_space(2.0);
 
         if let Some(message) = &self.error {
-            ui.colored_label(
-                egui::Color32::from_rgb(255, 120, 120),
-                format!("Could not list sessions: {message}"),
-            );
+            ui.colored_label(DANGER_TEXT, format!("Could not list sessions: {message}"));
         } else {
             let running = self.sessions.len();
             let needs_you = self
@@ -568,21 +570,42 @@ impl SessionsView {
                 .filter(|(heading, _)| *heading != "Other projects")
                 .map(|(_, rows)| rows.len())
                 .sum();
-            ui.label(format!(
-                "{running} running · {needs_you} need you · {in_city} in this city"
-            ));
+            ui.label(
+                egui::RichText::new(format!(
+                    "{running} running · {needs_you} need you · {in_city} in this city"
+                ))
+                .monospace()
+                .size(11.0)
+                .color(INK_DIM),
+            );
         }
+        ui.add_space(6.0);
 
         let mut query = self.query.clone();
-        ui.add(
-            egui::TextEdit::singleline(&mut query)
-                .id(egui::Id::new(SEARCH_ID))
-                .hint_text("search name, project, branch")
-                .desired_width(f32::INFINITY),
-        );
+        egui::Frame::new()
+            .fill(cellworks_map::ui::case::BG_DEEP)
+            .stroke(egui::Stroke::new(1.0, LINE))
+            .inner_margin(egui::Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("/").monospace().color(TERRAIN_INK));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut query)
+                            .id(egui::Id::new(SEARCH_ID))
+                            .frame(egui::Frame::NONE)
+                            .font(egui::FontId::monospace(12.0))
+                            .text_color(INK)
+                            .hint_text(
+                                egui::RichText::new("search name, project, branch")
+                                    .color(TERRAIN_INK),
+                            )
+                            .desired_width(f32::INFINITY),
+                    );
+                });
+            });
         self.query = query;
 
-        ui.separator();
+        ui.add_space(8.0);
 
         let now_seconds = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -596,7 +619,16 @@ impl SessionsView {
         let groups = crate::groups(&self.sessions, map, common_dir, &self.query);
         egui::ScrollArea::vertical().show(ui, |ui| {
             for (heading, rows) in groups {
-                ui.label(egui::RichText::new(heading).strong());
+                ui.add_space(6.0);
+                ui.label(nr_text(
+                    ui.ctx(),
+                    &heading.to_uppercase(),
+                    11.0,
+                    "semibold",
+                    0.16,
+                    INK_DIM,
+                ));
+                ui.add_space(2.0);
                 for session in rows {
                     let (row_clicked, row_opened) =
                         session_row(ui, session, self.selected.as_deref(), now_seconds);
@@ -872,67 +904,73 @@ fn session_row(
 ) -> (bool, bool) {
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 60.0), egui::Sense::click());
-    let state = session.session_state();
-    let fill = if Some(session.id.as_str()) == selected {
-        egui::Color32::from_white_alpha(28)
-    } else if response.hovered() {
-        egui::Color32::from_white_alpha(12)
-    } else {
-        egui::Color32::TRANSPARENT
+    use cellworks_map::ui::case::{
+        ATTENTION, ATTENTION_SOFT, INK, INK_DIM, OK, PANEL_RAISED, TERRAIN_INK,
     };
+    let state = session.session_state();
+    let picked = Some(session.id.as_str()) == selected;
     let painter = ui.painter();
-    painter.rect_filled(rect, 4.0, fill);
+    if picked {
+        painter.rect_filled(rect, 0.0, ATTENTION_SOFT);
+        painter.rect_filled(
+            egui::Rect::from_min_size(rect.min, vec2(2.0, rect.height())),
+            0.0,
+            ATTENTION,
+        );
+    } else if response.hovered() {
+        painter.rect_filled(rect, 0.0, PANEL_RAISED);
+    }
 
     let dot_colour = match state {
-        SessionState::Waiting => egui::Color32::YELLOW,
-        SessionState::Working => egui::Color32::from_rgb(80, 200, 100),
-        SessionState::Idle => egui::Color32::GRAY,
+        SessionState::Waiting => ATTENTION,
+        SessionState::Working => OK,
+        SessionState::Idle => INK_DIM,
     };
-    painter.circle_filled(rect.left_top() + vec2(10.0, 12.0), 5.0, dot_colour);
+    painter.rect_filled(
+        egui::Rect::from_center_size(rect.left_top() + vec2(11.0, 11.0), vec2(7.0, 7.0)),
+        0.0,
+        dot_colour,
+    );
 
     painter.text(
-        rect.left_top() + vec2(22.0, 2.0),
+        rect.left_top() + vec2(22.0, 3.0),
         egui::Align2::LEFT_TOP,
         &session.name,
-        egui::FontId::proportional(13.0),
-        egui::Color32::WHITE,
+        cellworks_map::ui::theme::named(ui.ctx(), 13.0, "semibold"),
+        if picked { ATTENTION } else { INK },
     );
     painter.text(
-        rect.left_top() + vec2(22.0, 18.0),
+        rect.left_top() + vec2(22.0, 20.0),
         egui::Align2::LEFT_TOP,
         format!("{} · {}", session.repo, session.branch),
-        egui::FontId::proportional(11.0),
-        egui::Color32::GRAY,
+        egui::FontId::monospace(10.0),
+        TERRAIN_INK,
     );
 
     let snippet: String = session.summary.chars().take(110).collect();
     let mut job = egui::text::LayoutJob::simple(
         snippet,
         egui::FontId::proportional(11.0),
-        egui::Color32::LIGHT_GRAY,
+        INK_DIM,
         (rect.width() - 28.0).max(1.0),
     );
     job.wrap.max_rows = 2;
     let galley = painter.layout_job(job);
-    painter.galley(
-        rect.left_top() + vec2(22.0, 33.0),
-        galley,
-        egui::Color32::WHITE,
-    );
+    painter.galley(rect.left_top() + vec2(22.0, 34.0), galley, INK_DIM);
 
     let state_word = match state {
-        SessionState::Waiting => "needs you",
-        SessionState::Working => "working",
-        SessionState::Idle => "idle",
+        SessionState::Waiting => "NEEDS YOU",
+        SessionState::Working => "WORKING",
+        SessionState::Idle => "IDLE",
     };
     painter.text(
-        rect.right_top() + vec2(-6.0, 2.0),
+        rect.right_top() + vec2(-6.0, 4.0),
         egui::Align2::RIGHT_TOP,
         format!(
             "{state_word} · {}",
             crate::ago(session.last_active, now_seconds)
         ),
-        egui::FontId::proportional(11.0),
+        egui::FontId::monospace(10.0),
         dot_colour,
     );
 
@@ -963,7 +1001,17 @@ fn conversation_body(ui: &mut egui::Ui, entries: &[Entry]) {
                 } else {
                     ""
                 };
-                ui.label(format!("{prefix}{}", entry.text));
+                let colour = if entry.kind == EntryKind::Prompt {
+                    cellworks_map::ui::case::ATTENTION
+                } else {
+                    cellworks_map::ui::case::INK_DIM
+                };
+                ui.label(
+                    egui::RichText::new(format!("{prefix}{}", entry.text))
+                        .monospace()
+                        .size(12.0)
+                        .color(colour),
+                );
             }
         });
 }
@@ -1166,6 +1214,26 @@ fn key_bytes(event: &egui::Event) -> Vec<u8> {
         }
         _ => Vec::new(),
     }
+}
+
+/// Prototype: `text` in the named Netrunner `family`, tracked by `spacing` em.
+fn nr_text(
+    ctx: &egui::Context,
+    text: &str,
+    size: f32,
+    family: &str,
+    spacing: f32,
+    colour: egui::Color32,
+) -> egui::text::LayoutJob {
+    egui::text::LayoutJob::single_section(
+        text.to_owned(),
+        egui::TextFormat {
+            font_id: cellworks_map::ui::theme::named(ctx, size, family),
+            color: colour,
+            extra_letter_spacing: size * spacing,
+            ..Default::default()
+        },
+    )
 }
 
 /// Prototype: the pane's frame in the Netrunner skin.

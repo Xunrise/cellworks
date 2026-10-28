@@ -69,6 +69,14 @@ pub struct CellworksApp {
     show_ignored: bool,
     /// Whether the tree is open beside the map.
     pub(crate) tree_open: bool,
+    /// PROTOTYPE (Explorer, demo only): expanded rows, the filter, the camera
+    /// flight under way, the framing drawn last and the selection the tree
+    /// last revealed.
+    expanded: std::collections::HashSet<std::path::PathBuf>,
+    filter: String,
+    flight: Option<(cellworks_map::Framing, f64)>,
+    last_framing: Option<cellworks_map::Framing>,
+    synced: Option<std::path::PathBuf>,
     /// The towers the last frame drew.
     towers: Vec<DrawnTower>,
     /// The buildings the last frame drew.
@@ -232,6 +240,11 @@ impl CellworksApp {
                 git: Arc::new(GitCli),
                 show_ignored: false,
                 tree_open: false,
+                expanded: Default::default(),
+                filter: String::new(),
+                flight: None,
+                last_framing: None,
+                synced: None,
                 towers: Vec::new(),
                 buildings: Vec::new(),
                 bridges: Vec::new(),
@@ -280,6 +293,11 @@ impl CellworksApp {
                 git: Arc::new(GitCli),
                 show_ignored: false,
                 tree_open: false,
+                expanded: Default::default(),
+                filter: String::new(),
+                flight: None,
+                last_framing: None,
+                synced: None,
                 towers: Vec::new(),
                 buildings: Vec::new(),
                 bridges: Vec::new(),
@@ -330,6 +348,11 @@ impl CellworksApp {
             git: Arc::new(GitCli),
             show_ignored: false,
             tree_open: false,
+            expanded: Default::default(),
+            filter: String::new(),
+            flight: None,
+            last_framing: None,
+            synced: None,
             towers: Vec::new(),
             buildings: Vec::new(),
             bridges: Vec::new(),
@@ -1238,6 +1261,37 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         app.tree_open = !app.tree_open;
     }
     if app.tree_open
+        && crate::demo::is_demo()
+        && !inside
+        && !walking
+        && let Some(map) = mapped(&app.opened)
+    {
+        // PROTOTYPE (Explorer): the cursor is the selection and flies the
+        // camera; the left and right arrows fold.
+        let list = crate::explorer::rows(map, &app.expanded, &app.filter);
+        let at = app
+            .navigation
+            .selection()
+            .and_then(|s| list.iter().position(|row| row.path == s));
+        let step = rows + lines;
+        if step != 0 && !list.is_empty() {
+            let last = list.len() as isize - 1;
+            let next = at.map_or(0, |i| (i as isize + step).clamp(0, last) as usize);
+            app.navigation.frame_on(map, list[next].path.clone());
+            app.flight = app.last_framing.map(|f| (f, now));
+        } else if let Some(i) = at {
+            let row = &list[i];
+            if columns > 0 && row.opens {
+                app.expanded.insert(row.path.clone());
+            } else if columns < 0
+                && !app.expanded.remove(&row.path)
+                && let Some(parent) = list[..i].iter().rev().find(|p| p.depth < row.depth)
+            {
+                app.navigation.frame_on(map, parent.path.clone());
+                app.flight = app.last_framing.map(|f| (f, now));
+            }
+        }
+    } else if app.tree_open
         && !inside
         && !walking
         && rows != 0
@@ -1296,6 +1350,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             let panel = &mut app.lens_panel;
             egui::Panel::right("lenses")
                 .exact_size(360.0)
+                .frame(cellworks_workspace::theme::frame().inner_margin(14))
                 .show(ui, |ui| panel.ui(ui, opened, now));
         }
     }
@@ -1349,18 +1404,29 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 .filter(|lens| opened.offers(*lens))
                 .collect();
             let (switched, picked, toggled) = egui::Panel::top("breadcrumb")
+                .frame(
+                    cellworks_workspace::theme::frame()
+                        .inner_margin(egui::Margin::symmetric(12, 7)),
+                )
                 .show(ui, |ui| {
+                    use cellworks_workspace::theme;
                     ui.horizontal(|ui| {
-                        ui.label(crumbs);
-                        ui.separator();
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        let job = theme::tracked(ui.ctx(), &crumbs, 11.0, theme::INK, false);
+                        ui.label(job);
+                        theme::rule(ui);
                         let picked = cellworks_map::ui::lens_bar(ui, opened.lens(), &offered);
-                        ui.separator();
+                        theme::rule(ui);
                         let toggled = cellworks_map::ui::lane_toggles(ui, opened.lanes());
-                        ui.separator();
-                        let toggle = ui.toggle_value(&mut app.lens_panel.open, "lens panel");
+                        theme::rule(ui);
+                        let toggle = theme::tab(ui, "lens panel", app.lens_panel.open, true);
+                        if toggle.clicked() {
+                            app.lens_panel.open = !app.lens_panel.open;
+                        }
                         crate::demo::mark(ui.ctx(), "lens.toggle", toggle.rect);
-                        ui.separator();
-                        (ui.button(mode).clicked(), picked, toggled)
+                        theme::rule(ui);
+                        let mode = theme::tab(ui, mode, false, false);
+                        (mode.clicked(), picked, toggled)
                     })
                     .inner
                 })
@@ -1370,6 +1436,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             }
             bar = (picked, toggled);
             if app.tree_open
+                && !crate::demo::is_demo()
                 && let Some(map) = app.map()
             {
                 let row = egui::Panel::left("tree")
@@ -1393,6 +1460,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 });
                 egui::Panel::right("why")
                     .exact_size(WHY_WIDTH)
+                    .frame(cellworks_workspace::theme::frame().inner_margin(14))
                     .show(ui, |ui| {
                         egui::ScrollArea::vertical()
                             .show(ui, |ui| cellworks_map::ui::why_panel(ui, why, floor));
@@ -1421,12 +1489,34 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                     && app.iterate.is_some(),
             );
             app.sessions.pane(ui);
+            let explorer = app.tree_open && crate::demo::is_demo() && !casing;
+            let map_rect = ui.available_rect_before_wrap();
+            let framing = mapped(&app.opened).map(|map| {
+                let mut target = app.navigation.framing(map);
+                if explorer {
+                    target = crate::explorer::beside(target, map_rect);
+                }
+                match app.flight {
+                    Some((from, start)) => {
+                        let t = ((now - start) / crate::explorer::FLIGHT).clamp(0.0, 1.0) as f32;
+                        if t >= 1.0 {
+                            app.flight = None;
+                        } else {
+                            ui.ctx().request_repaint();
+                        }
+                        crate::explorer::flown(from, target, t)
+                    }
+                    None => target,
+                }
+            });
+            app.last_framing = framing;
             let sessions_view = &mut app.sessions;
             let (drawn, minimap, floor, (sessions_drawn, session_clicked, pane_opened)) =
                 egui::CentralPanel::default()
                     .frame(egui::Frame::central_panel(ui.style()).inner_margin(0.0))
                     .show(ui, |ui| {
-                        let drawn = project(ui, opened, &app.navigation, app.underground, tint);
+                        let drawn =
+                            project(ui, opened, &app.navigation, framing, app.underground, tint);
                         let (Some(shown), ProjectState::Mapped(map)) = (&drawn, opened.state())
                         else {
                             return (drawn, None, None, (Vec::new(), None, false));
@@ -1440,13 +1530,17 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                             if let Some(hints) = app.navigation.hints(map) {
                                 cellworks_navigation::ui::hints(ui, shown.panel, &hints);
                             }
-                            cellworks_map::ui::caption(ui, shown.panel, opened.lens());
+                            let mut beside = shown.panel;
+                            if explorer {
+                                beside.min.x += crate::explorer::WIDTH + 10.0;
+                            }
+                            cellworks_map::ui::caption(ui, beside, opened.lens());
                             if let Some(age) =
                                 opened.switched_at().map(|at| ui.input(|i| i.time) - at)
                             {
                                 cellworks_map::ui::banner(ui, shown.panel, opened.lens(), age);
                             }
-                            cellworks_map::ui::legend(ui, shown.panel, opened.lanes());
+                            cellworks_map::ui::legend(ui, beside, opened.lanes());
                             minimap
                         };
                         let sessions_result =
@@ -1460,6 +1554,36 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                         (drawn, minimap, floor, sessions_result)
                     })
                     .inner;
+            if explorer && let Some(map) = mapped(&app.opened) {
+                let moved = app.synced.as_deref() != app.navigation.selection();
+                if moved {
+                    if let Some(selected) = app.navigation.selection() {
+                        crate::explorer::reveal(map, &mut app.expanded, selected);
+                    }
+                    app.synced = app.navigation.selection().map(std::path::Path::to_path_buf);
+                }
+                let picked = crate::explorer::draw(
+                    ui.ctx(),
+                    map_rect,
+                    map,
+                    app.navigation.selection(),
+                    &app.expanded,
+                    &mut app.filter,
+                    moved,
+                );
+                if let Some(path) = picked.toggle.clone()
+                    && !app.expanded.remove(&path)
+                {
+                    app.expanded.insert(path);
+                }
+                if let Some(path) = picked.row {
+                    if picked.toggle.is_none() {
+                        app.expanded.insert(path.clone());
+                    }
+                    app.navigation.frame_on(map, path);
+                    app.flight = app.last_framing.map(|f| (f, now));
+                }
+            }
             let Some(drawn) = drawn else {
                 app.towers.clear();
                 app.buildings.clear();
@@ -2105,27 +2229,31 @@ fn iterate_overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
         egui::Area::new(egui::Id::new("iterate-strip"))
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 40.0))
             .show(&ctx, |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                use cellworks_workspace::theme;
+                theme::frame().show(ui, |ui| {
                     ui.set_max_width(360.0);
+                    let mono = |text: String, colour| {
+                        egui::RichText::new(text)
+                            .monospace()
+                            .size(11.0)
+                            .color(colour)
+                    };
                     ui.horizontal(|ui| {
-                        ui.strong(format!("proto/{}", it.slug));
+                        ui.label(mono(format!("proto/{}", it.slug), theme::YELLOW));
                         match (it.status.port, it.status.live) {
                             (Some(port), true) => {
-                                ui.colored_label(
-                                    egui::Color32::LIGHT_GREEN,
-                                    format!("● live :{port}"),
-                                );
-                                if ui.small_button("open").clicked()
+                                ui.label(mono(format!("● live :{port}"), theme::OK));
+                                if theme::tab(ui, "open", false, false).clicked()
                                     && let Some(url) = it.url()
                                 {
                                     let _ = std::process::Command::new("open").arg(url).spawn();
                                 }
                             }
                             (Some(port), false) => {
-                                ui.colored_label(egui::Color32::GRAY, format!("○ down :{port}"));
+                                ui.label(mono(format!("○ down :{port}"), theme::DIM));
                             }
                             (None, _) => {
-                                ui.colored_label(egui::Color32::GRAY, "○ no launch.json");
+                                ui.label(mono("○ no launch.json".into(), theme::DIM));
                             }
                         }
                     });
@@ -2134,13 +2262,13 @@ fn iterate_overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
                             ui.label("starting session…");
                         }
                         Some(Err(e)) => {
-                            ui.colored_label(egui::Color32::LIGHT_RED, e);
-                            if ui.small_button("retry session").clicked() {
+                            ui.colored_label(theme::DANGER, e);
+                            if theme::tab(ui, "retry session", false, false).clicked() {
                                 retry = true;
                             }
                         }
                         Some(Ok(_)) => {
-                            ui.label(format!("session {}", it.session_name));
+                            ui.label(mono(format!("session {}", it.session_name), theme::DIM));
                         }
                     }
                     ui.separator();
@@ -2154,7 +2282,7 @@ fn iterate_overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
                         ),
                     };
                     ui.horizontal(|ui| {
-                        ui.label(shown);
+                        ui.label(egui::RichText::new(shown).color(theme::INK));
                         if let Some(k) = it.viewing
                             && ui
                                 .small_button(format!("undo round {} and later", k + 1))
@@ -2163,7 +2291,10 @@ fn iterate_overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
                             revert = Some(k);
                         }
                     });
-                    ui.label(format!("{} files touched", it.scaffolding().len()));
+                    ui.label(
+                        egui::RichText::new(format!("{} files touched", it.scaffolding().len()))
+                            .color(theme::DIM),
+                    );
                     if !it.status.fires.is_empty() {
                         ui.separator();
                         for (file, line, text) in &it.status.fires {
@@ -2177,9 +2308,12 @@ fn iterate_overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
                         }
                     }
                     for line in it.log.iter().rev().take(2) {
-                        ui.small(line);
+                        ui.label(mono(line.clone(), theme::DIM));
                     }
-                    ui.small("P pin · C capture · R close round · , . step");
+                    ui.label(mono(
+                        "P pin · C capture · R close round · , . step".into(),
+                        theme::TERRAIN_INK,
+                    ));
                 });
             });
     }
@@ -2346,6 +2480,7 @@ fn project(
     ui: &mut egui::Ui,
     opened: &OpenedProject,
     navigation: &Navigation,
+    framing: Option<cellworks_map::Framing>,
     underground: bool,
     tint: Option<&[usize]>,
 ) -> Option<Drawn> {
@@ -2371,7 +2506,7 @@ fn project(
                 .shown(ui.input(|input| input.time))
                 .unwrap_or(std::borrow::Cow::Borrowed(map)),
             cellworks_map::ui::ViewOptions {
-                framing: navigation.framing(map),
+                framing: framing.unwrap_or_else(|| navigation.framing(map)),
                 selected: navigation.selection(),
                 folder_view: navigation.folder_view(map),
                 pivot: navigation.pivot(map),
@@ -2514,6 +2649,7 @@ pub fn run() -> eframe::Result {
             // The city is drawn at night, whatever the system's appearance.
             cc.egui_ctx.set_theme(egui::Theme::Dark);
             cellworks_map::ui::case::install_fonts(&cc.egui_ctx);
+            cellworks_workspace::theme::apply(&cc.egui_ctx);
             if reduced_motion_requested() {
                 cc.egui_ctx.all_styles_mut(|style| {
                     style.animation_time = 0.0;

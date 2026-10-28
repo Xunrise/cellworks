@@ -234,7 +234,10 @@ impl LensPanel {
                 .request_repaint_after(std::time::Duration::from_millis(200));
         }
         crate::demo::mark(ui.ctx(), "lens.panel", ui.max_rect());
-        ui.heading("Project lenses");
+        use cellworks_workspace::theme;
+        ui.add_space(4.0);
+        theme::eyebrow_label(ui, "Project lenses", theme::YELLOW);
+        ui.add_space(4.0);
         let shown = opened.project_lens().map(|(n, l)| (n.clone(), l.clone()));
         for name in self.names.clone() {
             let on = shown.as_ref().is_some_and(|(n, _)| *n == name);
@@ -245,11 +248,11 @@ impl LensPanel {
             }
         }
         if let Some(error) = &self.error {
-            ui.colored_label(egui::Color32::LIGHT_RED, error);
+            ui.colored_label(theme::DANGER, error);
         }
 
         ui.separator();
-        ui.label("New lens: what should the map answer?");
+        theme::eyebrow_label(ui, "New lens: what should the map answer?", theme::DIM);
         let field = ui.add(
             egui::TextEdit::multiline(&mut self.question)
                 .desired_rows(2)
@@ -258,7 +261,8 @@ impl LensPanel {
         crate::demo::mark(ui.ctx(), "lens.question", field.rect);
         let create = ui.add_enabled(
             !running && !self.question.trim().is_empty(),
-            egui::Button::new("Create with Claude"),
+            egui::Button::new(egui::RichText::new("Create with Claude").color(theme::ON_YELLOW))
+                .fill(theme::YELLOW),
         );
         crate::demo::mark(ui.ctx(), "lens.create", create.rect);
         // PROTOTYPE (stakeholder demo): the tour answers with a scripted turn.
@@ -277,11 +281,11 @@ impl LensPanel {
 
         if let Some((name, lens)) = &shown {
             ui.separator();
-            ui.strong(name);
+            theme::eyebrow_label(ui, name, theme::CYAN);
             ui.label(&lens.def.question);
             if lens.stale() {
                 ui.colored_label(
-                    egui::Color32::YELLOW,
+                    theme::WARN,
                     "data is stale: rules changed since the last build",
                 );
             }
@@ -327,12 +331,15 @@ impl LensPanel {
                     Err(e) => self.error = Some(e),
                 }
             }
-            ui.label("Feedback:");
+            theme::eyebrow_label(ui, "Feedback", theme::DIM);
             ui.add(egui::TextEdit::multiline(&mut self.feedback).desired_rows(2));
             if ui
                 .add_enabled(
                     !running && !self.feedback.trim().is_empty(),
-                    egui::Button::new("Send to Claude"),
+                    egui::Button::new(
+                        egui::RichText::new("Send to Claude").color(theme::ON_YELLOW),
+                    )
+                    .fill(theme::YELLOW),
                 )
                 .clicked()
             {
@@ -349,11 +356,15 @@ impl LensPanel {
 
         ui.separator();
         ui.horizontal(|ui| {
-            ui.label(if running {
-                "Claude is working…"
-            } else {
-                "Claude"
-            });
+            theme::eyebrow_label(
+                ui,
+                if running {
+                    "Claude is working…"
+                } else {
+                    "Claude"
+                },
+                theme::DIM,
+            );
             if running {
                 ui.spinner();
             }
@@ -362,7 +373,15 @@ impl LensPanel {
             .stick_to_bottom(true)
             .show(ui, |ui| {
                 for line in &self.log {
-                    ui.add(egui::Label::new(egui::RichText::new(line).small()).wrap());
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(line)
+                                .monospace()
+                                .size(10.5)
+                                .color(theme::DIM),
+                        )
+                        .wrap(),
+                    );
                 }
             });
     }

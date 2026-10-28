@@ -3,9 +3,9 @@
 //! a banner naming it for a moment after a switch, and a legend of the lanes
 //! shown. All of it is labels, so the accessibility tree reads it too.
 
-use egui::{Align, Align2, Color32, Frame, Margin, Rect, RichText, Stroke, vec2};
+use egui::{Align, Align2, Color32, Frame, Margin, Rect, Stroke, vec2};
 
-use super::{DIM, INK, LINE_STRONG, PANEL};
+use super::{DIM, LINE_STRONG, PANEL};
 use crate::{Lanes, Lens};
 
 /// How long the banner stands, and how long it then takes to fade.
@@ -47,27 +47,46 @@ pub fn lane_toggles(ui: &mut egui::Ui, shown: Lanes) -> (bool, bool) {
     (imports, calls)
 }
 
-/// A button marked by its fill and strong text when `on`: a plain button
-/// to the accessibility tree, not a toggle like the rows of the tree.
+/// A chamfered tab, yellow when `on`: a plain button to the accessibility
+/// tree, not a toggle like the rows of the tree.
 fn switch(ui: &mut egui::Ui, text: &str, on: bool) -> egui::Response {
-    let text = if on {
-        RichText::new(text).strong().color(INK)
-    } else {
-        RichText::new(text).color(DIM)
-    };
-    let fill = if on {
-        ui.visuals().selection.bg_fill
-    } else {
-        Color32::TRANSPARENT
-    };
-    ui.add(egui::Button::new(text).fill(fill))
+    cellworks_workspace::theme::tab(ui, text, on, false)
 }
 
 fn card() -> Frame {
     Frame::new()
-        .fill(PANEL.gamma_multiply(0.92))
+        .fill(PANEL.gamma_multiply(0.94))
         .stroke(Stroke::new(1.0, LINE_STRONG))
-        .inner_margin(Margin::symmetric(10, 6))
+        .inner_margin(Margin::symmetric(12, 9))
+}
+
+/// `text` as a card's body: its first line a yellow tracked title, the rest
+/// dim; one label, so the accessibility tree reads `text` whole.
+fn titled(ctx: &egui::Context, text: &str) -> egui::text::LayoutJob {
+    let (head, rest) = text.split_once('\n').unwrap_or((text, ""));
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        &format!("{head}\n"),
+        0.0,
+        egui::TextFormat {
+            font_id: cellworks_workspace::theme::named(ctx, 12.0, "semibold"),
+            color: super::case::ATTENTION,
+            extra_letter_spacing: 1.4,
+            line_height: Some(20.0),
+            ..Default::default()
+        },
+    );
+    job.append(
+        rest,
+        0.0,
+        egui::TextFormat {
+            font_id: egui::FontId::proportional(12.5),
+            color: DIM,
+            line_height: Some(17.0),
+            ..Default::default()
+        },
+    );
+    job
 }
 
 /// The caption's text for `lens`: it starts with "Lens: ".
@@ -88,7 +107,7 @@ pub fn caption(ui: &egui::Ui, panel: Rect, lens: Lens) {
         .interactable(false)
         .show(ui.ctx(), |ui| {
             card().show(ui, |ui| {
-                ui.label(RichText::new(caption_text(lens)).color(DIM));
+                ui.label(titled(ui.ctx(), &caption_text(lens)));
             });
         });
 }
@@ -110,7 +129,12 @@ pub fn banner(ui: &egui::Ui, panel: Rect, lens: Lens, age: f64) {
     text.append(
         &format!("{} LENS\n", lens.name().to_uppercase()),
         0.0,
-        line(34.0, INK),
+        egui::TextFormat {
+            font_id: cellworks_workspace::theme::named(ui.ctx(), 34.0, "bold"),
+            color: super::case::ATTENTION.gamma_multiply(alpha),
+            extra_letter_spacing: 34.0 * 0.14,
+            ..Default::default()
+        },
     );
     text.append(lens.blurb(), 0.0, line(15.0, DIM));
     text.halign = Align::Center;
@@ -157,7 +181,7 @@ pub fn legend(ui: &egui::Ui, panel: Rect, shown: Lanes) {
         .interactable(false)
         .show(ui.ctx(), |ui| {
             card().show(ui, |ui| {
-                ui.label(RichText::new(legend_text(shown)).color(DIM));
+                ui.label(titled(ui.ctx(), &legend_text(shown)));
             });
         });
 }

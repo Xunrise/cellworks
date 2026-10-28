@@ -247,27 +247,32 @@ fn pipeline_strip(ui: &egui::Ui, tour: &Tour) {
     let pulse = ((ctx.input(|i| i.time) * 4.0).sin() * 0.5 + 0.5) as f32;
     let strip = egui::Area::new(egui::Id::new("demo-pipeline"))
         .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_TOP, [0.0, 152.0])
+        .anchor(egui::Align2::CENTER_TOP, [160.0, 186.0])
         .show(ctx, |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
+            use cellworks_workspace::theme;
+            theme::frame().show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.strong("The Factory");
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    theme::eyebrow_label(ui, "The Factory", theme::YELLOW);
+                    theme::rule(ui);
                     for (i, name) in STAGES.iter().enumerate() {
-                        ui.label("·");
-                        let text = if tour.pipeline_done || i < running {
-                            egui::RichText::new(format!("\u{2714} {name}"))
-                                .color(egui::Color32::from_rgb(90, 200, 110))
+                        let (text, colour) = if tour.pipeline_done || i < running {
+                            (format!("\u{2714} {name}"), theme::OK)
                         } else if i == running {
-                            egui::RichText::new(format!("\u{25CF} {name}"))
-                                .strong()
-                                .color(
-                                    egui::Color32::from_rgb(255, 190, 60)
-                                        .gamma_multiply(0.6 + 0.4 * pulse),
-                                )
+                            (
+                                format!("\u{25CF} {name}"),
+                                theme::YELLOW.gamma_multiply(0.6 + 0.4 * pulse),
+                            )
                         } else {
-                            egui::RichText::new(*name).weak()
+                            (format!("\u{25CB} {name}"), theme::TERRAIN_INK)
                         };
-                        ui.label(text);
+                        // Egui's own family: it falls back to the glyphs for the marks.
+                        ui.label(
+                            egui::RichText::new(text)
+                                .size(11.5)
+                                .extra_letter_spacing(1.5)
+                                .color(colour),
+                        );
                     }
                 });
             });
@@ -301,14 +306,24 @@ fn history_bar(ui: &egui::Ui, tour: &mut Tour) -> bool {
         .show(ui.ctx(), |ui| {
             let last = h.commits.len().saturating_sub(1);
             ui.set_width(560.0);
+            use cellworks_workspace::theme;
             ui.horizontal(|ui| {
-                ui.strong("History");
-                ui.weak(format!("{}/{}", h.idx + 1, h.commits.len()));
-                if ui.button("Close").clicked() {
-                    close = true;
-                }
+                theme::eyebrow_label(ui, "History", theme::YELLOW);
+                ui.label(
+                    egui::RichText::new(format!("{}/{}", h.idx + 1, h.commits.len()))
+                        .monospace()
+                        .size(11.0)
+                        .color(theme::DIM),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if theme::tab(ui, "Close", false, false).clicked() {
+                        close = true;
+                    }
+                });
             });
             ui.spacing_mut().slider_width = 540.0;
+            ui.visuals_mut().widgets.inactive.bg_fill = theme::LINE_BRIGHT;
+            ui.visuals_mut().widgets.inactive.fg_stroke.color = theme::YELLOW;
             let slider = ui.add(egui::Slider::new(&mut h.idx, 0..=last).show_value(false));
             mark(ui.ctx(), "history.slider", slider.rect);
             if last > 0 {
@@ -317,9 +332,9 @@ fn history_bar(ui: &egui::Ui, tour: &mut Tour) -> bool {
                 for i in 0..=last {
                     let x = r.left() + 8.0 + (r.width() - 16.0) * i as f32 / last as f32;
                     let colour = if i == h.idx {
-                        egui::Color32::WHITE
+                        theme::YELLOW
                     } else {
-                        egui::Color32::GRAY
+                        theme::LINE_BRIGHT
                     };
                     ui.painter().line_segment(
                         [egui::pos2(x, y), egui::pos2(x, y + 5.0)],
@@ -329,11 +344,16 @@ fn history_bar(ui: &egui::Ui, tour: &mut Tour) -> bool {
                 ui.add_space(6.0);
             }
             if let Some((sha, subject)) = h.commits.get(h.idx) {
-                ui.label(format!(
-                    "{}  {}",
-                    &sha[..sha.len().min(7)],
-                    subject.lines().next().unwrap_or("")
-                ));
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(&sha[..sha.len().min(7)])
+                            .monospace()
+                            .color(theme::CYAN),
+                    );
+                    ui.label(
+                        egui::RichText::new(subject.lines().next().unwrap_or("")).color(theme::INK),
+                    );
+                });
             }
         });
     close
@@ -609,9 +629,7 @@ pub fn command(ui: &mut egui::Ui, app: &mut CellworksApp, line: &str) -> bool {
             agent(name, file);
         }
         "write" => {
-            let payload = assets()
-                .join("agent")
-                .join(arg);
+            let payload = assets().join("agent").join(arg);
             run(Command::new("cp")
                 .arg("-R")
                 .arg(format!("{}/.", payload.display()))
@@ -753,9 +771,7 @@ fn lens_ask(ui: &egui::Ui, app: &mut CellworksApp, question: Option<&str>, name:
     let Some(repo) = opened.root().map(Path::to_path_buf) else {
         return;
     };
-    let source = assets()
-        .join("lenses")
-        .join(format!("{name}.lens.json"));
+    let source = assets().join("lenses").join(format!("{name}.lens.json"));
     let dir = repo.join(".cellworks/lenses");
     let copied = std::fs::create_dir_all(&dir)
         .and_then(|()| std::fs::copy(&source, dir.join(format!("{name}.lens.json"))));

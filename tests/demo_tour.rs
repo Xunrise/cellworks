@@ -126,6 +126,7 @@ fn demo_tour() {
         );
     h.ctx.set_theme(egui::Theme::Dark);
     cellworks_map::ui::case::install_fonts(&h.ctx);
+    cellworks_workspace::theme::apply(&h.ctx);
     println!("scanning");
     frames(&mut h, 3000); // the scan
     println!("scanned");
