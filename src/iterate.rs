@@ -371,7 +371,8 @@ impl Iterate {
 
     /// Region capture over any window, via macOS `screencapture -i`.
     pub fn capture(&mut self) {
-        if self.capture.is_some() {
+        // PROTOTYPE: the headless tour attaches its own image.
+        if self.capture.is_some() || std::env::var_os("CELLWORKS_DRY_LAUNCH").is_some() {
             return;
         }
         let n = self.rounds.len();

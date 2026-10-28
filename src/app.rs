@@ -62,13 +62,13 @@ pub struct CellworksApp {
     universe: Universe,
     events: Option<Receiver<WorkspaceEvent>>,
     pub(crate) opened: Option<OpenedProject>,
-    navigation: Navigation,
+    pub(crate) navigation: Navigation,
     git: Arc<dyn GitListing + Send + Sync>,
     /// Whether git-ignored files and hidden folders are on the map. Off at
     /// every start, kept for every project opened in this session.
     show_ignored: bool,
     /// Whether the tree is open beside the map.
-    tree_open: bool,
+    pub(crate) tree_open: bool,
     /// The towers the last frame drew.
     towers: Vec<DrawnTower>,
     /// The buildings the last frame drew.
@@ -83,7 +83,7 @@ pub struct CellworksApp {
     bridge_hovered: Option<cellworks_map::Bridge>,
     /// Where the last frame saw the map from, and the space it drew it in;
     /// the why panel takes its own column out of the window (STORY-019).
-    view: Option<View>,
+    pub(crate) view: Option<View>,
     panel: Option<egui::Rect>,
     /// Whether this frame's view is underground: turned so, or Shift held.
     underground: bool,
@@ -147,7 +147,7 @@ pub struct CellworksApp {
     /// PROTOTYPE: the open case, which takes over the window.
     pub(crate) case: Option<cellworks_map::ui::case::Case>,
     /// PROTOTYPE: the ticket menu (T), from which a case opens.
-    tickets_open: bool,
+    pub(crate) tickets_open: bool,
     /// PROTOTYPE: Jira, read-only, with the issues fetched this session.
     jira: cellworks_map::ui::jira::Jira,
     /// PROTOTYPE: the key typed into the ticket picker.
@@ -700,7 +700,7 @@ impl CellworksApp {
     }
 
     /// The opened project's map, once it has arrived.
-    fn map(&self) -> Option<&ProjectMap> {
+    pub(crate) fn map(&self) -> Option<&ProjectMap> {
         mapped(&self.opened)
     }
 
@@ -993,9 +993,8 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     let sessions_search = app.sessions.search_focused(ui);
     let in_field = launcher_shown && cellworks_workspace::ui::search_focused(ui);
     let was_in_field = launcher_shown && cellworks_workspace::ui::search_was_focused(ui);
-    let typing = sessions_search
-        || ui.ctx().egui_wants_keyboard_input()
-        || launcher_shown || terminal;
+    let typing =
+        sessions_search || ui.ctx().egui_wants_keyboard_input() || launcher_shown || terminal;
     let Keys {
         enter,
         esc,
@@ -1358,7 +1357,8 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                         ui.separator();
                         let toggled = cellworks_map::ui::lane_toggles(ui, opened.lanes());
                         ui.separator();
-                        ui.toggle_value(&mut app.lens_panel.open, "lens panel");
+                        let toggle = ui.toggle_value(&mut app.lens_panel.open, "lens panel");
+                        crate::demo::mark(ui.ctx(), "lens.toggle", toggle.rect);
                         ui.separator();
                         (ui.button(mode).clicked(), picked, toggled)
                     })
@@ -2513,7 +2513,6 @@ pub fn run() -> eframe::Result {
         Box::new(|cc| {
             // The city is drawn at night, whatever the system's appearance.
             cc.egui_ctx.set_theme(egui::Theme::Dark);
-            cellworks_workspace::ui::install_fonts(&cc.egui_ctx);
             cellworks_map::ui::case::install_fonts(&cc.egui_ctx);
             if reduced_motion_requested() {
                 cc.egui_ctx.all_styles_mut(|style| {

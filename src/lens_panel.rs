@@ -19,7 +19,7 @@ const SKILL: &str = include_str!("../.claude/skills/cellworks-lens/SKILL.md");
 pub struct LensPanel {
     pub open: bool,
     pub autostarted: bool,
-    question: String,
+    pub question: String,
     feedback: String,
     log: Vec<String>,
     /// Lines of Claude's stream, while it runs.
@@ -233,6 +233,7 @@ impl LensPanel {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(200));
         }
+        crate::demo::mark(ui.ctx(), "lens.panel", ui.max_rect());
         ui.heading("Project lenses");
         let shown = opened.project_lens().map(|(n, l)| (n.clone(), l.clone()));
         for name in self.names.clone() {
@@ -249,18 +250,21 @@ impl LensPanel {
 
         ui.separator();
         ui.label("New lens: what should the map answer?");
-        ui.add(
+        let field = ui.add(
             egui::TextEdit::multiline(&mut self.question)
                 .desired_rows(2)
                 .hint_text("Which tests cover which class?"),
         );
-        if ui
-            .add_enabled(
-                !running && !self.question.trim().is_empty(),
-                egui::Button::new("Create with Claude"),
-            )
-            .clicked()
-        {
+        crate::demo::mark(ui.ctx(), "lens.question", field.rect);
+        let create = ui.add_enabled(
+            !running && !self.question.trim().is_empty(),
+            egui::Button::new("Create with Claude"),
+        );
+        crate::demo::mark(ui.ctx(), "lens.create", create.rect);
+        // PROTOTYPE (stakeholder demo): the tour answers with a scripted turn.
+        if create.clicked() && crate::demo::is_demo() {
+            self.question.clear();
+        } else if create.clicked() {
             let name = slug(&self.question);
             self.target = Some(name.clone());
             self.session = None;

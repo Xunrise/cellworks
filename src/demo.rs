@@ -20,6 +20,11 @@ use serde_json::{Value, json};
 
 use crate::app::CellworksApp;
 
+/// A widget reports its place, by id, for the tutorial's highlight.
+pub fn mark(ctx: &egui::Context, id: &str, rect: egui::Rect) {
+    cellworks_workspace::mark(ctx, id, rect);
+}
+
 pub fn is_demo() -> bool {
     std::env::var_os("CELLWORKS_DEMO").is_some()
 }
@@ -97,12 +102,9 @@ impl AgentList for DemoAgents {
 
 // ---------------------------------------------------------------- the tour
 
-struct Step {
-    title: &'static str,
-    body: &'static str,
-    /// Drive lines; a `--` line splits them into beats, one per press.
-    lines: &'static [&'static str],
-}
+mod tutorial;
+
+pub use tutorial::{Info as TutorialInfo, Phase as TutorialPhase};
 
 const CORE: [(&str, &str); 2] = [
     (
@@ -115,152 +117,9 @@ const CORE: [(&str, &str); 2] = [
     ),
 ];
 
-const STEPS: [Step; 12] = [
-    Step {
-        title: "What Cellworks is and where it is going",
-        body: "One map for your projects, code, tickets, agents and servers.",
-        lines: &[],
-    },
-    Step {
-        title: "Pick a project",
-        body: "The launcher lists every project on this machine and the hosts you connected. Shopfront is a small web shop: its preview shows the code, the docs, the open tickets and the outside systems it touches. The two others are here to show the list is real. Select shopfront and press Enter.",
-        lines: &["select {ROOT}/projects/shopfront"],
-    },
-    Step {
-        title: "Read the city",
-        body: "Each folder of code is a district. Every file is a tower and every function a floor stack; floors are lines, and the cellar holds the tests. Lines on the ground are import lanes, arcs in the air are calls. Documents stand as Libraries, Terraform as Plants, YAML as Switchboards and the Dockerfile as a Depot. Press E for the tree and L to switch the lens. The small figure walking between towers is an agent reading the code.",
-        lines: &[
-            "open {ROOT}/projects/shopfront",
-            "wait 2500",
-            "agent explorer src/catalog/search.ts",
-            "wait 3500",
-            "agent explorer src/cart/totals.ts",
-        ],
-    },
-    Step {
-        title: "Reshape the city for your question",
-        body: "The city above answers a general question. A lens answers yours. Lenses belong to one project and one person: you ask in the lens panel, Claude reads the project's facts and writes a small definition file through the cellworks-lens skill, and the map redraws. The same definition can also reshape how the project is read in the first place. Ask whether the backend is hexagonal, see how the frontend talks to the backend, tell Claude what to hide, then look at the project from a ticket's perspective.",
-        lines: &[
-            "lens-ask \"Is the backend hexagonal?\" hexagonal",
-            "--",
-            "lens-ask \"Show me how the frontend talks to the backend\" front-back",
-            "--",
-            "lens-ask \"Hide the tests and group the adapters by the system they talk to\" hexagonal-v2",
-            "--",
-            "lens-ask \"Look at this project from SHOP-42's perspective\" shop-42",
-        ],
-    },
-    Step {
-        title: "A ticket arrives",
-        body: "Open the tickets and pick SHOP-42, Apply a promo code at checkout. The case shows the problem in plain words, and a schematic of the code and the outside systems it touches: the checkout pod, the orders database and the payment secret. Press INGEST to let the case be written. The map takes on the ticket's perspective: only what SHOP-42 touches stays lit.",
-        lines: &[
-            "lens-show shop-42",
-            "case-open SHOP-42",
-            "--",
-            "case-file ingested",
-        ],
-    },
-    Step {
-        title: "Iterate with the app running",
-        body: "PROTOTYPE makes a worktree and a branch for the ticket. The shop starts in its own window and the agent builds the promo code while you watch the towers rise. The round 1 note is pinned on the checkout view and typed for you: press C and click the shop window to attach a screenshot, then continue to send it. The agent answers with round 2 and the shop reloads with the discount on the total.",
-        lines: &[
-            "lens-reset",
-            "wait 1500",
-            "case-prototype",
-            "wait 1500",
-            "devserver",
-            "wait 4000",
-            "app-window",
-            "wait 1500",
-            "write round-1",
-            "agent shop-42 src/cart/promo.ts",
-            "wait 2500",
-            "agent shop-42 src/ui/checkoutView.ts",
-            "--",
-            "pin src/ui/checkoutView.ts",
-            "type Show the discount on the total, with the old total struck through",
-            "--",
-            "send",
-            "wait 1500",
-            "write round-2",
-            "agent shop-42 src/cart/totals.ts",
-            "wait 2500",
-            "agent shop-42 src/ui/checkoutView.ts",
-        ],
-    },
-    Step {
-        title: "Freeze the prototype",
-        body: "When the behaviour is right, freeze it. The session is distilled into a prototype note and the work is handed to the pipeline. Nothing is built here from now on.",
-        lines: &["round-close", "case-go 5", "--", "case-file prototyped"],
-    },
-    Step {
-        title: "Plan",
-        body: "The plan comes back as steps, each with the files it touches, the evidence and the risks. Read the risks, then approve.",
-        lines: &["case-file planned", "wait 1500", "case-go 3"],
-    },
-    Step {
-        title: "The Factory builds",
-        body: "The pipeline builds, checks, delivers and reviews. Three agents commit in turn and the buildings rise: the promo rules, then the order, then the docs.",
-        lines: &[
-            "case-close",
-            "open {ROOT}/projects/shopfront-shop-42",
-            "wait 2000",
-            "pipeline build",
-            "write factory/step-1",
-            "agent factory-1 src/cart/promo.ts",
-            "wait 2000",
-            "commit feat(cart): apply promo codes\\n\\nRefs: STORY-042",
-            "--",
-            "pipeline checks",
-            "write factory/step-2",
-            "agent factory-2 src/checkout/order.ts",
-            "wait 2000",
-            "commit feat(checkout): charge the discounted total\\n\\nRefs: STORY-042",
-            "--",
-            "pipeline deliver",
-            "write factory/step-3",
-            "agent factory-3 docs/domain/contexts/Cart/glossary.md",
-            "wait 2000",
-            "commit docs(cart): promo code in the glossary and story\\n\\nRefs: STORY-042",
-            "pipeline review",
-            "case-file fixed",
-        ],
-    },
-    Step {
-        title: "Review",
-        body: "The commits column lists what the agents did. Open each file to see its diff against main, then mark the case reviewed.",
-        lines: &["case-open SHOP-42", "wait 1500", "case-go 6"],
-    },
-    Step {
-        title: "Deploy",
-        body: "The reviewed change is merged and goes to the staging server; its version moves on. The app window reloads from staging.",
-        lines: &[
-            "case-close",
-            "merge-case",
-            "open {ROOT}/projects/shopfront",
-            "wait 2000",
-            "deploy",
-        ],
-    },
-    Step {
-        title: "History",
-        body: "Scrub through the commits and watch the city grow. Per-line history says why a line exists, and it leads back to SHOP-42.",
-        lines: &[
-            "history 0",
-            "wait 2500",
-            "history 3",
-            "wait 2500",
-            "history 6",
-            "wait 2500",
-            "history last",
-        ],
-    },
-];
-
 #[derive(Default)]
 pub struct Tour {
-    step: usize,
-    beat: usize,
+    tut: tutorial::State,
     queue: VecDeque<String>,
     resume: Option<Instant>,
     servers: Vec<Child>,
@@ -295,15 +154,18 @@ impl Drop for Tour {
     }
 }
 
-/// Test driver: (chapter, beats done in it, beats in it, chapter title).
-pub fn position(app: &CellworksApp) -> Option<(usize, usize, usize, &'static str)> {
-    let tour = app.demo.as_ref()?;
-    Some((
-        tour.step,
-        tour.beat,
-        tour.beats().len(),
-        STEPS[tour.step].title,
-    ))
+/// Test driver: what the tutorial shows now.
+pub fn tutorial_info(app: &CellworksApp) -> Option<tutorial::Info> {
+    app.demo.as_ref()?.tut.info.clone()
+}
+
+/// Test driver: the chapter's title.
+pub fn chapter_title(chapter: usize) -> &'static str {
+    tutorial::CHAPTERS[chapter].title
+}
+
+pub fn chapter_count() -> usize {
+    tutorial::CHAPTERS.len()
 }
 
 /// Test driver: case stage, open project and lens, as one line.
@@ -327,37 +189,8 @@ pub fn idle(app: &CellworksApp) -> bool {
         .is_none_or(|t| t.queue.is_empty() && t.resume.is_none())
 }
 
-impl Tour {
-    fn beats(&self) -> Vec<&'static [&'static str]> {
-        STEPS[self.step]
-            .lines
-            .split(|line| *line == "--")
-            .filter(|beat| !beat.is_empty())
-            .collect()
-    }
-
-    /// Runs the next beat of this chapter, or moves to the next chapter.
-    fn advance(&mut self) {
-        let beats = self.beats();
-        if let Some(beat) = beats.get(self.beat) {
-            self.queue.extend(beat.iter().map(|l| (*l).to_owned()));
-            self.beat += 1;
-        } else if self.step + 1 < STEPS.len() {
-            self.step += 1;
-            self.beat = 0;
-        }
-    }
-
-    fn back(&mut self) {
-        self.step = self.step.saturating_sub(1);
-        self.beat = 0;
-        self.queue.clear();
-        self.resume = None;
-    }
-}
-
-/// Runs what the tour has queued, and draws its card: chapter, title, body,
-/// Back and Next (keys B and N).
+/// Runs what the tour has queued, and draws the tutorial: N does the
+/// current step, B goes back a chapter, Esc hides or restores the overlay.
 pub fn overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
     let Some(tour) = app.demo.as_mut() else {
         return;
@@ -377,51 +210,20 @@ pub fn overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
 
     let ctx = ui.ctx().clone();
     let typing = ctx.egui_wants_keyboard_input();
-    let mut next = !typing && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::N));
-    let mut back = !typing && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::B));
-    let step = &STEPS[tour.step];
-    let beats = tour.beats().len();
-    egui::Window::new("Cellworks tour")
-        .title_bar(false)
-        .order(egui::Order::Foreground)
-        .anchor(egui::Align2::RIGHT_BOTTOM, [-16.0, -16.0])
-        .resizable(false)
-        .collapsible(false)
-        .show(&ctx, |ui| {
-            ui.set_max_width(400.0);
-            ui.weak(format!("Chapter {}/{}", tour.step, STEPS.len() - 1));
-            ui.heading(step.title);
-            ui.label(step.body);
-            if tour.step == 0 {
-                for (head, text) in CORE {
-                    ui.add_space(4.0);
-                    ui.strong(head);
-                    ui.label(text);
-                }
-            }
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                back |= ui
-                    .add_enabled(tour.step > 0, egui::Button::new("Back (B)"))
-                    .clicked();
-                let label = if tour.beat < beats {
-                    format!("Do it {}/{} (N)", tour.beat + 1, beats)
-                } else {
-                    "Next (N)".to_owned()
-                };
-                next |= ui.button(label).clicked();
-            });
-        });
-    pipeline_strip(ui, tour);
-    let close = history_bar(ui, tour);
-    if back {
-        tour.back();
-    } else if next {
-        tour.advance();
-    }
+    let key = |k| !typing && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, k));
+    let next = key(egui::Key::N);
+    let back = key(egui::Key::B);
+    let esc = !typing && ui.input(|i| i.key_pressed(egui::Key::Escape));
+    // Run the lines first: a step that was just prepared sees their effect.
     for line in due {
         crate::app::drive_line(ui, app, &line);
     }
+    tutorial::run(&ctx, app, next, back, esc);
+    let Some(tour) = app.demo.as_mut() else {
+        return;
+    };
+    pipeline_strip(ui, tour);
+    let close = history_bar(ui, tour);
     if close {
         history_close(app);
     }
@@ -435,9 +237,9 @@ fn pipeline_strip(ui: &egui::Ui, tour: &Tour) {
     };
     let ctx = ui.ctx();
     let pulse = ((ctx.input(|i| i.time) * 4.0).sin() * 0.5 + 0.5) as f32;
-    egui::Area::new(egui::Id::new("demo-pipeline"))
+    let strip = egui::Area::new(egui::Id::new("demo-pipeline"))
         .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_TOP, [0.0, 96.0])
+        .anchor(egui::Align2::CENTER_TOP, [0.0, 152.0])
         .show(ctx, |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -462,6 +264,7 @@ fn pipeline_strip(ui: &egui::Ui, tour: &Tour) {
                 });
             });
         });
+    mark(ctx, "pipeline", strip.response.rect);
     if !tour.pipeline_done {
         ctx.request_repaint_after(Duration::from_millis(60));
     }
@@ -499,6 +302,7 @@ fn history_bar(ui: &egui::Ui, tour: &mut Tour) -> bool {
             });
             ui.spacing_mut().slider_width = 540.0;
             let slider = ui.add(egui::Slider::new(&mut h.idx, 0..=last).show_value(false));
+            mark(ui.ctx(), "history.slider", slider.rect);
             if last > 0 {
                 let r = slider.rect;
                 let y = r.bottom() + 1.0;
@@ -668,6 +472,7 @@ pub fn paint_world(
         .max(10.0);
     let h = (base - view.to_screen(ground, 28.0)).length().max(26.0);
     let body = egui::Rect::from_min_max(base + vec2(-w, -h), base + vec2(w, 0.0));
+    mark(ui.ctx(), "server", body.expand(6.0));
     painter.rect_filled(
         body.translate(vec2(5.0, 3.0)),
         2.0,
@@ -750,18 +555,44 @@ pub fn command(ui: &mut egui::Ui, app: &mut CellworksApp, line: &str) -> bool {
     match cmd {
         "tour-next" => {
             if let Some(tour) = &mut app.demo {
-                tour.advance();
+                tour.tut.press_n = true;
             }
         }
         "tour-go" => {
-            if let (Some(tour), Ok(step)) = (&mut app.demo, arg.trim().parse::<usize>()) {
-                tour.step = step.min(STEPS.len() - 1);
-                tour.beat = 0;
+            if let (Some(tour), Ok(chapter)) = (&mut app.demo, arg.trim().parse::<usize>()) {
+                tour.tut.go_chapter(chapter);
             }
         }
-        "tour-back" => {
-            if let Some(tour) = &mut app.demo {
-                tour.back();
+        "fit" => app.navigation.fit(),
+        "tree" => app.tree_open = !app.tree_open,
+        "lens-next" => {
+            let now = ui.input(|i| i.time);
+            if let Some(opened) = &mut app.opened {
+                let next = opened.next_lens();
+                opened.set_lens(next, now);
+            }
+        }
+        "lanes" => {
+            if let Some(opened) = &mut app.opened {
+                if arg.trim() == "imports" {
+                    opened.toggle_import_lanes();
+                } else {
+                    opened.toggle_call_lanes();
+                }
+            }
+        }
+        "tickets" => app.tickets_open = !app.tickets_open,
+        "lens-panel" => app.lens_panel.open = arg.trim() == "on",
+        "lens-question" => app.lens_panel.question = arg.to_owned(),
+        "case-freeze" | "case-approve" | "case-review" | "case-ingest" => {
+            let now = ui.input(|i| i.time);
+            if let Some(case) = &mut app.case {
+                match cmd {
+                    "case-freeze" => case.freeze(now),
+                    "case-approve" => case.approve_act(now),
+                    "case-ingest" => case.ingest_act(now),
+                    _ => case.review_act(now),
+                }
             }
         }
         "rescan" => app.rescan(),
@@ -1131,17 +962,16 @@ mod tests {
     }
 
     #[test]
-    fn next_runs_the_beats_then_moves_on() {
-        let mut tour = Tour::default();
-        tour.advance();
-        assert_eq!(tour.step, 1);
-        tour.step = 5;
-        tour.advance();
-        assert_eq!(tour.beat, 1);
-        assert!(!tour.queue.is_empty());
-        for _ in 0..tour.beats().len() {
-            tour.advance();
+    fn callouts_are_short_and_steps_have_an_explanation() {
+        for chapter in &tutorial::CHAPTERS {
+            for step in chapter.steps {
+                assert!(
+                    step.callout.split_whitespace().count() <= 12,
+                    "{}",
+                    step.callout
+                );
+                assert!(!step.explain.is_empty(), "{}", step.callout);
+            }
         }
-        assert_eq!((tour.step, tour.beat), (6, 0));
     }
 }
