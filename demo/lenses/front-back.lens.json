@@ -1,0 +1,20 @@
+{
+  "name": "front-back",
+  "question": "How does the frontend talk to the backend?",
+  "cut": { "split_files": false },
+  "hide": [ "^(docs|infra|sdlc|\\.github|\\.claude)/", "^[^/]+$", "\\.test\\.ts$" ],
+  "districts": [
+    { "match": "^src/", "as": "frontend" },
+    { "match": "^server/", "as": "backend" }
+  ],
+  "blocks": [
+    { "match": "^src/([^/]+)/", "as": "$1" },
+    { "match": "^server/([^/]+)/", "as": "$1" }
+  ],
+  "relations": [
+    { "kind": "http", "viz": "lanes", "pairs": [
+      { "from": "^src/core/http\\.ts$", "to": "server/adapters/http/routes.ts" }
+    ] },
+    { "kind": "imports", "viz": "none", "source": "imports" }
+  ]
+}

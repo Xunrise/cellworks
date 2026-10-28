@@ -471,7 +471,11 @@ pub fn build(folders: &ProjectMap, def: &LensDef) -> LensData {
                 {
                     continue;
                 }
-                if weight >= relation.min_weight && from != to {
+                if weight >= relation.min_weight
+                    && from != to
+                    && known.contains(from.as_str())
+                    && known.contains(to.as_str())
+                {
                     relations.push(Link {
                         kind: relation.kind.clone(),
                         from,

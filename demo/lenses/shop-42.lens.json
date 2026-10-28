@@ -1,0 +1,24 @@
+{
+  "name": "shop-42",
+  "question": "Look at this project from SHOP-42's perspective: apply a promo code at checkout.",
+  "cut": { "split_files": true },
+  "hide": [ "^(docs|infra|sdlc|\\.github|\\.claude)/", "^[^/]+$" ],
+  "districts": [
+    { "match": "^src/cart/(promo|totals)\\.ts$", "as": "cart" },
+    { "match": "^src/checkout/", "as": "checkout" },
+    { "match": "^src/ui/checkoutView\\.ts$", "as": "checkout view" },
+    { "match": "^server/domain/(promo|order)\\.ts$", "as": "server promo rules" },
+    { "match": "^(src|server)/", "as": "everything else" }
+  ],
+  "underground": [
+    "^src/(catalog|core)/",
+    "^src/cart/cart",
+    "^src/ui/(cartView|catalogView|main)",
+    "^src/checkout/(shipping|payment)",
+    "^server/(adapters|ports|api)/",
+    "\\.test\\.ts$"
+  ],
+  "relations": [
+    { "kind": "imports", "viz": "lanes", "source": "imports" }
+  ]
+}
