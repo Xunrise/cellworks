@@ -36,6 +36,7 @@ commit $'feat(core): money, ids, events and http helpers\n\nRefs: STORY-002' src
 commit $'feat(catalog): product search\n\nRefs: STORY-012' src/catalog/product.ts src/catalog/price.ts src/catalog/search.ts src/catalog/search.test.ts
 commit $'feat(cart): cart and totals\n\nRefs: STORY-017' src/cart
 commit $'feat(checkout): place an order and pay\n\nRefs: STORY-020' src/checkout
+commit $'feat(server): hexagonal orders backend\n\nRefs: STORY-022' server
 commit $'feat(ui): catalog, cart and checkout views\n\nRefs: STORY-024' src/ui
 commit $'docs(domain): bounded contexts and context map\n\nRefs: STORY-025' docs/domain
 commit $'docs(adr): architecture decisions\n\nRefs: STORY-025' docs/arc42 docs/adr sdlc

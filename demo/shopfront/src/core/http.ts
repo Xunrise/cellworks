@@ -26,3 +26,16 @@ export async function postJson<T>(url: string, body: unknown): Promise<T> {
   });
   return parse<T>(response);
 }
+
+/** The orders routes of the backend (server/adapters/http/routes.ts). */
+export const ORDERS_URL = '/api/orders';
+
+export interface OrderSummary {
+  id: string;
+  totalCents: number;
+}
+
+export const listOrders = () => getJson<OrderSummary[]>(ORDERS_URL);
+export const getOrder = (id: string) => getJson<OrderSummary>(`${ORDERS_URL}/${id}`);
+export const createOrder = (lines: { productId: string; unitCents: number; quantity: number }[], promo?: string) =>
+  postJson<OrderSummary>(ORDERS_URL, { lines, promo });
