@@ -96,13 +96,19 @@ fn snapshot(worktree: &Path, message: &str) -> Result<String, String> {
     git_env(worktree, &["read-tree", "HEAD"], Some(&index))?;
     git_env(worktree, &["add", "-A", "."], Some(&index))?;
     let tree = git_env(worktree, &["write-tree"], Some(&index))?;
-    git(worktree, &["commit-tree", &tree, "-p", "HEAD", "-m", message])
+    git(
+        worktree,
+        &["commit-tree", &tree, "-p", "HEAD", "-m", message],
+    )
 }
 
 /// The ref round `n` of the loop in `worktree` is kept under. Worktrees of
 /// one repository share their refs, so each loop has its own folder.
 fn round_ref(worktree: &Path, n: usize) -> String {
-    let name = worktree.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = worktree
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     format!("refs/cellworks/{name}/rounds/{n}")
 }
 
@@ -139,7 +145,12 @@ impl Iterate {
                 &format!("proto/{slug}"),
             ],
         )?;
-        Iterate::begin(&worktree, slug.clone(), format!("{repo}-{slug}"), BRIEF.to_owned())
+        Iterate::begin(
+            &worktree,
+            slug.clone(),
+            format!("{repo}-{slug}"),
+            BRIEF.to_owned(),
+        )
     }
 
     /// The iterate loop for a ticket case's fix: its worktree (made here
@@ -156,19 +167,38 @@ impl Iterate {
         if !worktree.is_dir() {
             git(
                 root,
-                &["worktree", "add", &worktree.to_string_lossy(), "-b", branch, base],
+                &[
+                    "worktree",
+                    "add",
+                    &worktree.to_string_lossy(),
+                    "-b",
+                    branch,
+                    base,
+                ],
             )
-            .or_else(|_| git(root, &["worktree", "add", &worktree.to_string_lossy(), branch]))?;
+            .or_else(|_| {
+                git(
+                    root,
+                    &["worktree", "add", &worktree.to_string_lossy(), branch],
+                )
+            })?;
         }
         Iterate::begin(
             worktree,
             branch.rsplit('/').next().unwrap_or(branch).to_owned(),
             name.to_owned(),
-            format!("{prompt}\n\nWork in rounds with the engineer, who watches from Cellworks. {BRIEF}"),
+            format!(
+                "{prompt}\n\nWork in rounds with the engineer, who watches from Cellworks. {BRIEF}"
+            ),
         )
     }
 
-    fn begin(worktree: &Path, slug: String, session_name: String, brief: String) -> Result<Iterate, String> {
+    fn begin(
+        worktree: &Path,
+        slug: String,
+        session_name: String,
+        brief: String,
+    ) -> Result<Iterate, String> {
         let worktree = worktree.canonicalize().map_err(|e| e.to_string())?;
         std::fs::create_dir_all(worktree.join(".cellworks/shots")).map_err(|e| e.to_string())?;
         // Keep our own files out of the round snapshots.
@@ -219,7 +249,15 @@ impl Iterate {
         let notes: Vec<String> = std::fs::read_to_string(worktree.join(".cellworks/feedback.log"))
             .unwrap_or_default()
             .lines()
-            .map(|l| l.split(" | ").next().unwrap_or(l).splitn(2, "] ").nth(1).unwrap_or(l).to_owned())
+            .map(|l| {
+                l.split(" | ")
+                    .next()
+                    .unwrap_or(l)
+                    .splitn(2, "] ")
+                    .nth(1)
+                    .unwrap_or(l)
+                    .to_owned()
+            })
             .collect();
         let mut rounds = Vec::new();
         while let Ok(commit) = git(
@@ -230,7 +268,11 @@ impl Iterate {
             rounds.push(Round {
                 commit,
                 files: Vec::new(),
-                note: if k == 0 { "base".into() } else { notes.get(k - 1).cloned().unwrap_or_default() },
+                note: if k == 0 {
+                    "base".into()
+                } else {
+                    notes.get(k - 1).cloned().unwrap_or_default()
+                },
             });
         }
         for k in 0..rounds.len().saturating_sub(1) {
@@ -239,7 +281,13 @@ impl Iterate {
         let base = rounds.last().ok_or("no rounds")?.commit.clone();
         let slug = worktree
             .file_name()
-            .map(|n| n.to_string_lossy().rsplit("-proto-").next().unwrap_or("").to_owned())
+            .map(|n| {
+                n.to_string_lossy()
+                    .rsplit("-proto-")
+                    .next()
+                    .unwrap_or("")
+                    .to_owned()
+            })
             .unwrap_or_default();
         let (tx, rx) = channel();
         let (base_tx, base_rx) = channel();
@@ -307,7 +355,9 @@ impl Iterate {
     }
 
     pub fn url(&self) -> Option<String> {
-        self.status.port.map(|port| format!("http://localhost:{port}"))
+        self.status
+            .port
+            .map(|port| format!("http://localhost:{port}"))
     }
 
     pub fn pin(&mut self, anchor: String) {
@@ -363,7 +413,10 @@ impl Iterate {
             let _ = writeln!(f, "{message}");
         }
         let at = Instant::now() + delay;
-        self.toast = Some((format!("Sent to {}: {message}", self.session_name), Instant::now()));
+        self.toast = Some((
+            format!("Sent to {}: {message}", self.session_name),
+            Instant::now(),
+        ));
         self.queue.push((at, message.into_bytes()));
         // Enter on its own, so a paste-detecting TUI submits it.
         self.queue
@@ -397,7 +450,11 @@ impl Iterate {
                 self.rounds[n - 1].files = files;
                 self.log.push(format!("round {n} closed"));
                 self.toast = Some((
-                    format!("Round {n} closed. Snapshot {}; round {} is open.", round_ref(&self.worktree, n), n + 1),
+                    format!(
+                        "Round {n} closed. Snapshot {}; round {} is open.",
+                        round_ref(&self.worktree, n),
+                        n + 1
+                    ),
                     Instant::now(),
                 ));
                 self.rounds.push(Round {
@@ -434,7 +491,10 @@ impl Iterate {
                 format!("ROUND {}", k + 1),
             ),
             _ => (
-                self.rounds.last().map(|r| r.commit.clone()).unwrap_or_default(),
+                self.rounds
+                    .last()
+                    .map(|r| r.commit.clone())
+                    .unwrap_or_default(),
                 snapshot(&self.worktree, "view").ok(),
                 format!("ROUND {} · LIVE", self.rounds.len()),
             ),
@@ -448,19 +508,24 @@ impl Iterate {
     /// What changed since `base` (committed and not): the files and the
     /// commits.
     pub fn since(&self, base: &str) -> (Vec<String>, Vec<String>) {
-        let from = git(&self.worktree, &["merge-base", base, "HEAD"]).unwrap_or_else(|_| base.to_owned());
+        let from =
+            git(&self.worktree, &["merge-base", base, "HEAD"]).unwrap_or_else(|_| base.to_owned());
         let files = snapshot(&self.worktree, "review")
             .map(|now| changed(&self.worktree, &from, &now))
             .unwrap_or_default();
-        let commits = git(&self.worktree, &["log", "--oneline", &format!("{from}..HEAD")])
-            .map(|t| t.lines().map(str::to_owned).collect())
-            .unwrap_or_default();
+        let commits = git(
+            &self.worktree,
+            &["log", "--oneline", &format!("{from}..HEAD")],
+        )
+        .map(|t| t.lines().map(str::to_owned).collect())
+        .unwrap_or_default();
         (files, commits)
     }
 
     /// `rel` against `base`, for the review.
     pub fn file_view_since(&self, base: &str, rel: &str) -> (String, Vec<CodeLine>) {
-        let from = git(&self.worktree, &["merge-base", base, "HEAD"]).unwrap_or_else(|_| base.to_owned());
+        let from =
+            git(&self.worktree, &["merge-base", base, "HEAD"]).unwrap_or_else(|_| base.to_owned());
         match snapshot(&self.worktree, "review") {
             Ok(to) => self.file_diff(&from, &to, format!("SINCE {}", base.to_uppercase()), rel),
             Err(_) => (String::new(), Vec::new()),
@@ -475,7 +540,11 @@ impl Iterate {
                 .lines()
                 .take(600)
                 .enumerate()
-                .map(|(i, l)| CodeLine { no: Some(i + 1), mark: ' ', text: l.to_owned() })
+                .map(|(i, l)| CodeLine {
+                    no: Some(i + 1),
+                    mark: ' ',
+                    text: l.to_owned(),
+                })
                 .collect();
             return (format!("{label} · UNCHANGED"), lines);
         }
@@ -485,18 +554,44 @@ impl Iterate {
             if let Some(rest) = line.strip_prefix("@@") {
                 // @@ -a,b +c,d @@
                 let new = rest.split('+').nth(1).unwrap_or("1");
-                no = new.split([',', ' ']).next().and_then(|n| n.parse().ok()).unwrap_or(1);
+                no = new
+                    .split([',', ' '])
+                    .next()
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or(1);
                 if !lines.is_empty() {
-                    lines.push(CodeLine { no: None, mark: '…', text: "...".into() });
+                    lines.push(CodeLine {
+                        no: None,
+                        mark: '…',
+                        text: "...".into(),
+                    });
                 }
-            } else if line.starts_with("+++") || line.starts_with("---") || line.starts_with("diff ") || line.starts_with("index ") || line.starts_with("new file") || line.starts_with("\\") {
+            } else if line.starts_with("+++")
+                || line.starts_with("---")
+                || line.starts_with("diff ")
+                || line.starts_with("index ")
+                || line.starts_with("new file")
+                || line.starts_with("\\")
+            {
             } else if let Some(t) = line.strip_prefix('+') {
-                lines.push(CodeLine { no: Some(no), mark: '+', text: t.to_owned() });
+                lines.push(CodeLine {
+                    no: Some(no),
+                    mark: '+',
+                    text: t.to_owned(),
+                });
                 no += 1;
             } else if let Some(t) = line.strip_prefix('-') {
-                lines.push(CodeLine { no: None, mark: '-', text: t.to_owned() });
+                lines.push(CodeLine {
+                    no: None,
+                    mark: '-',
+                    text: t.to_owned(),
+                });
             } else if !lines.is_empty() || no > 0 {
-                lines.push(CodeLine { no: Some(no), mark: ' ', text: line.strip_prefix(' ').unwrap_or(line).to_owned() });
+                lines.push(CodeLine {
+                    no: Some(no),
+                    mark: ' ',
+                    text: line.strip_prefix(' ').unwrap_or(line).to_owned(),
+                });
                 no += 1;
             }
         }
@@ -508,7 +603,8 @@ impl Iterate {
         let at = Instant::now();
         self.toast = Some((format!("Sent to {}: {line}", self.session_name), at));
         self.queue.push((at, line.into_bytes()));
-        self.queue.push((at + Duration::from_millis(400), b"\r".to_vec()));
+        self.queue
+            .push((at + Duration::from_millis(400), b"\r".to_vec()));
     }
 
     /// Puts the worktree back to round `k`'s snapshot.
@@ -531,7 +627,10 @@ impl Iterate {
         for file in added.lines() {
             let _ = std::fs::remove_file(self.worktree.join(file));
         }
-        match git(&self.worktree, &["restore", "--source", &target, "--worktree", "--", ":/"]) {
+        match git(
+            &self.worktree,
+            &["restore", "--source", &target, "--worktree", "--", ":/"],
+        ) {
             Ok(_) => {
                 self.log.push(format!("undid round {} and later", k + 1));
                 self.toast = Some((
@@ -546,7 +645,8 @@ impl Iterate {
                 );
                 let at = Instant::now();
                 self.queue.push((at, notice.into_bytes()));
-                self.queue.push((at + Duration::from_millis(400), b"\r".to_vec()));
+                self.queue
+                    .push((at + Duration::from_millis(400), b"\r".to_vec()));
             }
             Err(e) => self.log.push(format!("revert failed: {e}")),
         }
@@ -647,11 +747,9 @@ fn launch_port(worktree: &Path) -> Option<u16> {
 
 fn probe(port: u16) -> bool {
     ["127.0.0.1", "[::1]"].iter().any(|host| {
-        format!("{host}:{port}")
-            .parse()
-            .is_ok_and(|addr| {
-                std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(150)).is_ok()
-            })
+        format!("{host}:{port}").parse().is_ok_and(|addr| {
+            std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(150)).is_ok()
+        })
     })
 }
 
@@ -688,9 +786,15 @@ fn fires(worktree: &Path, log: &str) -> Vec<(String, u32, String)> {
                 .unwrap_or_else(|_| PathBuf::from(file));
             if rel.is_relative()
                 && worktree.join(&rel).is_file()
-                && !out.iter().any(|(f, l, _)| *f == rel.to_string_lossy() && *l == n)
+                && !out
+                    .iter()
+                    .any(|(f, l, _)| *f == rel.to_string_lossy() && *l == n)
             {
-                out.push((rel.to_string_lossy().into_owned(), n, line.trim().to_owned()));
+                out.push((
+                    rel.to_string_lossy().into_owned(),
+                    n,
+                    line.trim().to_owned(),
+                ));
             }
         }
     }

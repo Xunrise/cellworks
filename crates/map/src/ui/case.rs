@@ -1157,7 +1157,16 @@ fn top_bar(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, live: bool) -> 
             (
                 Color32::TRANSPARENT,
                 LINE,
-                if *n < RAIL.iter().find(|r| r.3.contains(&case.stage)).map_or(1, |r| r.0) { INK } else { INK_DIM },
+                if *n
+                    < RAIL
+                        .iter()
+                        .find(|r| r.3.contains(&case.stage))
+                        .map_or(1, |r| r.0)
+                {
+                    INK
+                } else {
+                    INK_DIM
+                },
             )
         };
         s.plate(rect, fill, edge, 8.0);
@@ -1426,7 +1435,13 @@ impl Case {
     pub fn back(&self) -> u8 {
         match self.stage {
             3 => 2,
-            2 => if self.iterating { 5 } else { 1 },
+            2 => {
+                if self.iterating {
+                    5
+                } else {
+                    1
+                }
+            }
             6 => 2,
             5 => 4,
             _ => 1,
@@ -1469,12 +1484,19 @@ impl Case {
     pub fn steps(&self) -> Vec<(String, String)> {
         self.loaded
             .as_ref()
-            .map(|l| l.case.steps.iter().map(|s| (s.id.clone(), s.title.clone())).collect())
+            .map(|l| {
+                l.case
+                    .steps
+                    .iter()
+                    .map(|s| (s.id.clone(), s.title.clone()))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
     pub fn wants(&self) -> Option<PathBuf> {
-        if self.stage < 2 || self.loaded.is_none() || (matches!(self.stage, 2 | 3) && !self.ready()) {
+        if self.stage < 2 || self.loaded.is_none() || (matches!(self.stage, 2 | 3) && !self.ready())
+        {
             return None;
         }
         let loaded = self.loaded.as_ref()?;
@@ -2722,9 +2744,15 @@ fn problem(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, now: f64) -> f3
         return bottom;
     }
     let (cta_title, cta_sub) = if case.iterating {
-        ("BACK TO THE PROTOTYPE", "its rounds, its plan and the session".to_owned())
+        (
+            "BACK TO THE PROTOTYPE",
+            "its rounds, its plan and the session".to_owned(),
+        )
     } else {
-        ("PROTOTYPE IT", "a worktree and a session; you iterate on it in rounds".to_owned())
+        (
+            "PROTOTYPE IT",
+            "a worktree and a session; you iterate on it in rounds".to_owned(),
+        )
     };
     let response = button(ui, cta, cta_title);
     let glow = if response.hovered() { 150 } else { 115 };
@@ -2751,7 +2779,10 @@ fn problem(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, now: f64) -> f3
         rx + 28.0,
         cy + 1.0,
         Align2::LEFT_TOP,
-        &{ let _ = steps; cta_sub },
+        &{
+            let _ = steps;
+            cta_sub
+        },
         font(13.0, "sans", 0.0, 1.25),
         ON_ATTENTION,
     );
@@ -2825,7 +2856,9 @@ fn claude_fix(
         )),
         (None, Some(Status::Prototyping)) => Some((
             "Prototyping".to_owned(),
-            format!("The session works in {worktree} on branch {branch}. Iterate on it in rounds on stage 2, then freeze it on stage 3; the plan is written from it."),
+            format!(
+                "The session works in {worktree} on branch {branch}. Iterate on it in rounds on stage 2, then freeze it on stage 3; the plan is written from it."
+            ),
             Some((Act::Prototype, "")),
         )),
         (None, Some(Status::Ingested)) => Some((
@@ -3493,7 +3526,13 @@ enum Act {
 }
 
 impl Act {
-    const ALL: [Act; 5] = [Act::Ingest, Act::Prototype, Act::Plan, Act::Approve, Act::Review];
+    const ALL: [Act; 5] = [
+        Act::Ingest,
+        Act::Prototype,
+        Act::Plan,
+        Act::Approve,
+        Act::Review,
+    ];
 
     fn name(self) -> &'static str {
         match self {
@@ -3637,7 +3676,10 @@ impl Case {
         let (Some(repo), Some((_, branch))) = (self.main_repo(), self.worktree()) else {
             return "no repository in the case file to plan in".to_owned();
         };
-        let base = repo.base_branch.clone().unwrap_or_else(|| "main".to_owned());
+        let base = repo
+            .base_branch
+            .clone()
+            .unwrap_or_else(|| "main".to_owned());
         let key = self.key.clone();
         let file = casefile::path(&key).display().to_string();
         let case_doc = skill("ticket-case");
@@ -3681,7 +3723,12 @@ impl Case {
     /// PROTOTYPE: the engineer froze the prototype; planning starts.
     pub fn freeze(&mut self, now: f64) {
         if self.status() == Some(Status::Prototyping) {
-            let _ = casefile::advance(&self.key, Status::Prototyped, "frozen from Cellworks", |_| {});
+            let _ = casefile::advance(
+                &self.key,
+                Status::Prototyped,
+                "frozen from Cellworks",
+                |_| {},
+            );
             self.checked = now - 2.0;
             self.refresh(now);
         }

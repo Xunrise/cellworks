@@ -391,10 +391,13 @@ impl SessionsView {
             cellworks_map::ui::case::LINE,
             10.0,
         );
-        ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink2(egui::vec2(12.0, 10.0))), |ui| {
-            ui.set_clip_rect(rect);
-            self.pane_body(ui, &mut close);
-        });
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(rect.shrink2(egui::vec2(12.0, 10.0))),
+            |ui| {
+                ui.set_clip_rect(rect);
+                self.pane_body(ui, &mut close);
+            },
+        );
         if close {
             self.pane = None;
         }
@@ -438,13 +441,19 @@ impl SessionsView {
             ui.add_space(4.0);
             ui.label(
                 egui::RichText::new("SESSION")
-                    .font(egui::FontId::new(11.0, egui::FontFamily::Name("semibold".into())))
+                    .font(egui::FontId::new(
+                        11.0,
+                        egui::FontFamily::Name("semibold".into()),
+                    ))
                     .extra_letter_spacing(1.6)
                     .color(INK_DIM),
             );
             ui.label(
                 egui::RichText::new(pane.name())
-                    .font(egui::FontId::new(13.0, egui::FontFamily::Name("mono-bold".into())))
+                    .font(egui::FontId::new(
+                        13.0,
+                        egui::FontFamily::Name("mono-bold".into()),
+                    ))
                     .color(INK),
             );
             let (state, colour) = if ended {
@@ -454,7 +463,12 @@ impl SessionsView {
             } else {
                 ("TRANSCRIPT", FLOW)
             };
-            ui.label(egui::RichText::new(format!("● {state}")).monospace().size(11.0).color(colour));
+            ui.label(
+                egui::RichText::new(format!("● {state}"))
+                    .monospace()
+                    .size(11.0)
+                    .color(colour),
+            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if pane.is_terminal() && nr_ctl(ui, "STOP", Kind::Danger).clicked() {
                     pane.stop();
@@ -463,7 +477,11 @@ impl SessionsView {
                 if nr_ctl(ui, "DETACH", Kind::Plain).clicked() {
                     *close = true;
                 }
-                let dock = if self.dock_right { "DOCK BOTTOM" } else { "DOCK RIGHT" };
+                let dock = if self.dock_right {
+                    "DOCK BOTTOM"
+                } else {
+                    "DOCK RIGHT"
+                };
                 if nr_ctl(ui, dock, Kind::Plain).clicked() {
                     self.dock_right = !self.dock_right;
                 }
@@ -480,7 +498,12 @@ impl SessionsView {
                     text.lines()
                         .rev()
                         .map(str::trim)
-                        .find(|line| !line.is_empty() && !line.starts_with('─') && !line.starts_with('>') && !line.starts_with('❯'))
+                        .find(|line| {
+                            !line.is_empty()
+                                && !line.starts_with('─')
+                                && !line.starts_with('>')
+                                && !line.starts_with('❯')
+                        })
                         .map(str::to_owned)
                 })
                 .unwrap_or_default();
@@ -503,7 +526,11 @@ impl SessionsView {
         }
 
         ui.ctx()
-            .request_repaint_after(Duration::from_millis(if pane.is_terminal() { 33 } else { 500 }));
+            .request_repaint_after(Duration::from_millis(if pane.is_terminal() {
+                33
+            } else {
+                500
+            }));
 
         self.pane_ended = ended;
     }
@@ -1168,7 +1195,11 @@ fn nr_ctl(ui: &mut egui::Ui, label: &str, kind: Kind) -> egui::Response {
         (Kind::Plain, true) => (FLOW, INK),
         (Kind::Plain, false) => (LINE_STRONG, INK),
     };
-    let fill = if response.hovered() { PANEL_RAISED } else { egui::Color32::TRANSPARENT };
+    let fill = if response.hovered() {
+        PANEL_RAISED
+    } else {
+        egui::Color32::TRANSPARENT
+    };
     chamfer(ui.painter(), rect, fill, edge, 6.0);
     let mut job = egui::text::LayoutJob::single_section(
         label.to_owned(),
@@ -1181,12 +1212,19 @@ fn nr_ctl(ui: &mut egui::Ui, label: &str, kind: Kind) -> egui::Response {
     );
     job.wrap.max_width = f32::INFINITY;
     let galley = ui.painter().layout_job(job);
-    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, ink);
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, ink);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     response
 }
 
-fn chamfer(painter: &egui::Painter, rect: egui::Rect, fill: egui::Color32, edge: egui::Color32, cut: f32) {
+fn chamfer(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    fill: egui::Color32,
+    edge: egui::Color32,
+    cut: f32,
+) {
     let r = rect.shrink(0.5);
     let points = vec![
         egui::pos2(r.min.x + cut, r.min.y),
@@ -1196,7 +1234,11 @@ fn chamfer(painter: &egui::Painter, rect: egui::Rect, fill: egui::Color32, edge:
         egui::pos2(r.min.x, r.max.y),
         egui::pos2(r.min.x, r.min.y + cut),
     ];
-    painter.add(egui::Shape::convex_polygon(points, fill, egui::Stroke::new(1.0, edge)));
+    painter.add(egui::Shape::convex_polygon(
+        points,
+        fill,
+        egui::Stroke::new(1.0, edge),
+    ));
 }
 
 #[cfg(test)]
