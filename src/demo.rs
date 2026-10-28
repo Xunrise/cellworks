@@ -4,7 +4,7 @@
 //! The demo runs on a throwaway world under `${TMPDIR}cellworks-demo`, built
 //! by `demo/setup.sh`: the sample project, two decoys, Jira seeds, case
 //! snapshots and a transcripts folder the scripted agents write into. A guided
-//! tour (chapters 0 to 10) lies over the app; its Next button runs the
+//! tour (chapters 0 to 11) lies over the app; its Next button runs the
 //! chapter's drive lines, one beat at a time. The same commands work from a
 //! `CELLWORKS_DRIVE` file.
 
@@ -104,31 +104,18 @@ struct Step {
     lines: &'static [&'static str],
 }
 
-const AVAILABLE: [&str; 8] = [
-    "Projects in one place",
-    "See a codebase as a city",
-    "Move without getting lost",
-    "Understand how code connects (lenses, lanes)",
-    "Know why code exists",
-    "Review a PR in the city",
-    "Watch and steer AI agents",
-    "TypeScript towers",
-];
-const IN_DEVELOPMENT: [&str; 5] = [
-    "Ticket to reviewed change in one place",
-    "Finish a review with confidence",
-    "Code health at a glance",
-    "Replay history",
-    "Remote projects over SSH",
-];
-const PLANNED: [&str; 4] = [
-    "Command agents from the map",
-    "An overseer you can talk to",
-    "Every language",
-    "Jira straight into a case",
+const CORE: [(&str, &str); 2] = [
+    (
+        "The Prototype Driven Development loop",
+        "A ticket becomes a running prototype you steer, then a frozen plan the pipeline builds, with every step visible on the map.",
+    ),
+    (
+        "Perspective lenses",
+        "Ask Claude a question about a project and the map reshapes itself to answer it: per project, per person.",
+    ),
 ];
 
-const STEPS: [Step; 11] = [
+const STEPS: [Step; 12] = [
     Step {
         title: "What Cellworks is and where it is going",
         body: "One map for your projects, code, tickets, agents and servers.",
@@ -151,14 +138,28 @@ const STEPS: [Step; 11] = [
         ],
     },
     Step {
+        title: "Reshape the city for your question",
+        body: "The city above answers a general question. A lens answers yours. Lenses belong to one project and one person: you ask in the lens panel, Claude reads the project's facts and writes a small definition file through the cellworks-lens skill, and the map redraws. The same definition can also reshape how the project is read in the first place. Ask whether the backend is hexagonal, see how the frontend talks to the backend, tell Claude what to hide, then look at the project from a ticket's perspective.",
+        lines: &[
+            "lens-ask \"Is the backend hexagonal?\" hexagonal",
+            "--",
+            "lens-ask \"Show me how the frontend talks to the backend\" front-back",
+            "--",
+            "lens-ask \"Hide the tests and group the adapters by the system they talk to\" hexagonal-v2",
+            "--",
+            "lens-ask \"Look at this project from SHOP-42's perspective\" shop-42",
+        ],
+    },
+    Step {
         title: "A ticket arrives",
-        body: "Open the tickets and pick SHOP-42, Apply a promo code at checkout. The case shows the problem in plain words, and a schematic of the code and the outside systems it touches: the checkout pod, the orders database and the payment secret. Press INGEST to let the case be written.",
-        lines: &[],
+        body: "Open the tickets and pick SHOP-42, Apply a promo code at checkout. The case shows the problem in plain words, and a schematic of the code and the outside systems it touches: the checkout pod, the orders database and the payment secret. Press INGEST to let the case be written. The map takes on the ticket's perspective: only what SHOP-42 touches stays lit.",
+        lines: &["lens-show shop-42"],
     },
     Step {
         title: "Iterate with the app running",
         body: "PROTOTYPE makes a worktree and a branch for the ticket. The shop starts in its own window and the agent builds the promo code while you watch the towers rise. Pin the checkout view, capture the app window and send round 1: show the discount on the total.",
         lines: &[
+            "lens-reset",
             "devserver",
             "wait 4000",
             "app-window",
@@ -335,19 +336,11 @@ pub fn overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
             ui.heading(step.title);
             ui.label(step.body);
             if tour.step == 0 {
-                for (head, items) in [
-                    ("Available now", &AVAILABLE[..]),
-                    ("In development", &IN_DEVELOPMENT[..]),
-                    ("Planned outcomes", &PLANNED[..]),
-                ] {
+                for (head, text) in CORE {
                     ui.add_space(4.0);
                     ui.strong(head);
-                    for item in items {
-                        ui.label(format!("  {item}"));
-                    }
+                    ui.label(text);
                 }
-                ui.add_space(4.0);
-                ui.label("Skins come later.");
             }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -775,9 +768,97 @@ pub fn command(ui: &mut egui::Ui, app: &mut CellworksApp, line: &str) -> bool {
             }
         }
         "history" => history(app, arg),
+        "lens-ask" => {
+            // lens-ask "<question>" <name>
+            let (question, name) = match arg.strip_prefix('"').and_then(|a| a.rsplit_once('"')) {
+                Some((q, n)) => (Some(q), n.trim()),
+                None => (None, arg.trim()),
+            };
+            lens_ask(ui, app, question, name);
+        }
+        "lens-show" => lens_ask(ui, app, None, arg.trim()),
+        "lens-reset" => {
+            let now = ui.input(|i| i.time);
+            if let Some(opened) = &mut app.opened {
+                opened.set_lens(cellworks_map::Lens::Folders, now);
+            }
+        }
         _ => return false,
     }
     true
+}
+
+/// What Claude says once a lens is built, by lens name. `{files}` and
+/// `{districts}` come from the real build report.
+fn lens_reply(name: &str) -> &'static [&'static str] {
+    match name {
+        "hexagonal" => &[
+            "Reading facts... {files} files, {districts} districts.",
+            "Imports run adapters -> ports -> domain, except one.",
+            "Writing hexagonal.lens.json",
+            "Built. One violation is flagged: server/domain/order.ts imports adapters/payments/stripeGateway.ts for the fee rate. The domain must not know the payment provider; put the rate behind the PaymentGateway port.",
+        ],
+        "front-back" => &[
+            "Reading facts... {files} files, {districts} districts.",
+            "src/core/http.ts calls /api/orders; server/adapters/http/routes.ts serves it. Pairing them by path.",
+            "Writing front-back.lens.json",
+            "Built. Frontend on one side, backend on the other, one lane between them: the orders API.",
+        ],
+        "hexagonal-v2" => &[
+            "Updating hexagonal.lens.json: tests out, adapters split by external system.",
+            "Writing hexagonal-v2.lens.json",
+            "Built. {files} files, {districts} districts: postgres, payments, http, plus domain, ports and api. The violation is still flagged.",
+        ],
+        _ => &[
+            "Reading facts... {files} files, {districts} districts.",
+            "Lighting what SHOP-42 touches: cart totals, checkout, the checkout view and the server promo rules. Everything else lies underground.",
+            "Writing shop-42.lens.json",
+            "Built. The ticket's footprint is the lit part; the rest is context.",
+        ],
+    }
+}
+
+/// `lens-ask`: a scripted Claude turn in the lens panel. The definition is
+/// pre-written in `demo/lenses`; the build and the redraw are real.
+fn lens_ask(ui: &egui::Ui, app: &mut CellworksApp, question: Option<&str>, name: &str) {
+    let now = ui.input(|i| i.time);
+    let Some(opened) = &mut app.opened else {
+        return;
+    };
+    let Some(repo) = opened.root().map(Path::to_path_buf) else {
+        return;
+    };
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("demo/lenses")
+        .join(format!("{name}.lens.json"));
+    let dir = repo.join(".cellworks/lenses");
+    let copied = std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::copy(&source, dir.join(format!("{name}.lens.json"))));
+    let panel = &mut app.lens_panel;
+    panel.open = true;
+    if let Some(question) = question {
+        panel.say(format!("» {question}"));
+    }
+    if let Err(error) = copied {
+        panel.say(format!("demo: {name}: {error}"));
+        return;
+    }
+    let report = crate::tools::lens_build(&repo.display().to_string(), name)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .unwrap_or_default();
+    let files = report["files"].as_u64().unwrap_or(0).to_string();
+    let districts = report["districts"]
+        .as_array()
+        .map_or(0, Vec::len)
+        .to_string();
+    for line in lens_reply(name) {
+        panel.say(
+            line.replace("{files}", &files)
+                .replace("{districts}", &districts),
+        );
+    }
+    panel.show_now(opened, name, now);
 }
 
 /// The case's worktree once PROTOTYPE made it, else the shop's main checkout.
@@ -937,6 +1018,18 @@ mod tests {
     }
 
     #[test]
+    fn every_demo_lens_parses_and_has_a_reply() {
+        for name in ["shop-42", "front-back", "hexagonal", "hexagonal-v2"] {
+            let text =
+                std::fs::read_to_string(demo_dir("lenses").join(format!("{name}.lens.json")))
+                    .unwrap();
+            serde_json::from_str::<cellworks_map::project::LensDef>(&text)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert!(lens_reply(name).len() >= 3);
+        }
+    }
+
+    #[test]
     fn every_jira_seed_parses_as_an_issue() {
         for entry in std::fs::read_dir(demo_dir("jira")).unwrap().flatten() {
             let text = std::fs::read_to_string(entry.path()).unwrap();
@@ -953,12 +1046,12 @@ mod tests {
         let mut tour = Tour::default();
         tour.advance();
         assert_eq!(tour.step, 1);
-        tour.step = 4;
+        tour.step = 5;
         tour.advance();
         assert_eq!(tour.beat, 1);
         assert!(!tour.queue.is_empty());
         tour.advance();
         tour.advance();
-        assert_eq!((tour.step, tour.beat), (5, 0));
+        assert_eq!((tour.step, tour.beat), (6, 0));
     }
 }

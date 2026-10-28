@@ -96,21 +96,33 @@ impl LensPanel {
         }
     }
 
-    /// Drains Claude's stream into the log.
-    pub fn drain(&mut self) {
-        let Some(run) = self.run.take() else {
+    /// Demo: adds a line to the conversation.
+    pub fn say(&mut self, line: String) {
+        self.log.push(line);
+    }
+
+    /// Demo: shows lens `name` straight away, as if Claude had just built it.
+    pub fn show_now(&mut self, opened: &mut OpenedProject, name: &str, now: f64) {
+        let Some(root) = opened.root().map(Path::to_path_buf) else {
             return;
         };
-        self.run = Some(run);
-        loop {
-            let Some(run) = &self.run else { break };
+        self.open = true;
+        self.target = Some(name.to_owned());
+        self.names = project::list(&root);
+        self.seen = Some((
+            modified(&project::def_path(&root, name)),
+            modified(&project::data_path(&root, name)),
+        ));
+        self.show(opened, &root, name, now);
+    }
+
+    /// Drains Claude's stream into the log.
+    pub fn drain(&mut self) {
+        while let Some(run) = &self.run {
             match run.try_recv() {
                 Ok(line) => self.read(&line),
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.run = None;
-                    break;
-                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.run = None,
             }
         }
     }

@@ -59,7 +59,7 @@ const WHY_WIDTH: f32 = 420.0;
 pub struct CellworksApp {
     universe: Universe,
     events: Option<Receiver<WorkspaceEvent>>,
-    opened: Option<OpenedProject>,
+    pub(crate) opened: Option<OpenedProject>,
     navigation: Navigation,
     git: Arc<dyn GitListing + Send + Sync>,
     /// Whether git-ignored files and hidden folders are on the map. Off at
@@ -74,7 +74,7 @@ pub struct CellworksApp {
     /// The skybridges the last frame drew.
     bridges: Vec<DrawnBridge>,
     /// The project lenses and the Claude session that shapes them.
-    lens_panel: crate::lens_panel::LensPanel,
+    pub(crate) lens_panel: crate::lens_panel::LensPanel,
     /// The cables the last frame drew, from base to base.
     cables: Vec<(std::path::PathBuf, std::path::PathBuf)>,
     /// The skybridge the pointer was over in the last frame.
