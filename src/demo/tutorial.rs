@@ -45,6 +45,10 @@ pub struct Guided {
     pub emulate: &'static [&'static str],
     /// Drive lines run after the action (Watch: the beats themselves).
     pub then: &'static [&'static str],
+    /// Ends the step when the presenter got there another way (a key, a double click).
+    pub done_if: Option<fn(&CellworksApp) -> bool>,
+    /// The target button's own shortcut, which also ends the step.
+    pub hotkey: Option<egui::Key>,
 }
 
 pub struct Chapter {
@@ -62,6 +66,8 @@ const fn click(target: &'static str, callout: &'static str, explain: &'static st
         prep: &[],
         emulate: &[],
         then: &[],
+        done_if: None,
+        hotkey: None,
     }
 }
 
@@ -102,6 +108,7 @@ pub const CHAPTERS: [Chapter; 12] = [
         steps: &[
             Guided {
                 emulate: &["select {ROOT}/projects/shopfront"],
+                done_if: Some(project_open),
                 ..click(
                     "launcher.row.shopfront",
                     "Select shopfront (j/k moves, / searches)",
@@ -110,6 +117,7 @@ pub const CHAPTERS: [Chapter; 12] = [
             },
             Guided {
                 emulate: &["open {ROOT}/projects/shopfront"],
+                done_if: Some(project_open),
                 ..click(
                     "launcher.open",
                     "Open shopfront as a city",
@@ -320,6 +328,7 @@ pub const CHAPTERS: [Chapter; 12] = [
                     "pin src/ui/checkoutView.ts",
                     "type Show the discount on the total, with the old total struck through",
                 ],
+                hotkey: Some(egui::Key::C),
                 ..click(
                     "btn.CAPTURE",
                     "Click CAPTURE, then drag over the shop window",
@@ -328,6 +337,7 @@ pub const CHAPTERS: [Chapter; 12] = [
             },
             Guided {
                 emulate: &["send"],
+                hotkey: Some(egui::Key::Enter),
                 ..click(
                     "btn.SEND",
                     "Send round 1 to the agent",
@@ -349,6 +359,7 @@ pub const CHAPTERS: [Chapter; 12] = [
             ),
             Guided {
                 emulate: &["round-close"],
+                hotkey: Some(egui::Key::R),
                 ..click(
                     "btn.CLOSE ROUND*",
                     "Close the round",
@@ -1011,6 +1022,10 @@ fn resolve(app: &CellworksApp, ctx: &egui::Context, target: &str) -> Option<Rect
     found.filter(|r| r.intersects(screen) && r.width() > 2.0 && r.height() > 2.0)
 }
 
+fn project_open(app: &CellworksApp) -> bool {
+    app.opened().is_some()
+}
+
 fn released_in(ctx: &egui::Context, rect: Rect) -> bool {
     ctx.input(|i| {
         i.pointer.primary_released()
@@ -1169,15 +1184,19 @@ pub fn run(ctx: &egui::Context, app: &mut CellworksApp, mut n: bool, back: bool,
                                 }
                                 _ => "click · or N to do it for me".to_owned(),
                             };
-                            if rect.is_some() || step.target.is_empty() {
-                                callout(ctx, rect, &eye, YELLOW, step.callout, &hint);
-                            }
+                            // Without its target the callout still shows, so N is never hidden.
+                            callout(ctx, rect, &eye, YELLOW, step.callout, &hint);
                         }
                         let typing = ctx.egui_wants_keyboard_input();
                         done = match step.action {
                             Action::Key(k, _) => !typing && ctx.input(|i| i.key_pressed(k)),
                             _ => rect.is_some_and(|r| released_in(ctx, r)),
                         };
+                        done |= step.done_if.is_some_and(|f| f(app));
+                        // Enter sends from inside the note field; the letter keys only work outside it.
+                        done |= step.hotkey.is_some_and(|k| {
+                            (k == egui::Key::Enter || !typing) && ctx.input(|i| i.key_pressed(k))
+                        });
                         if n && !done {
                             out.queue(step.emulate);
                             done = true;
