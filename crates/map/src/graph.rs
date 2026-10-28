@@ -56,6 +56,8 @@ pub struct ProjectMap {
     /// The cells lens's roads between districts: upstream, downstream, and
     /// the relationship's type.
     pub roads: Vec<(usize, usize, String)>,
+    /// A project lens's lanes between files: from, to, and the kind.
+    pub links: Vec<(PathBuf, PathBuf, String)>,
     /// Where the engineer moved districts and blocks in the custom lens.
     pub arrangement: cellworks_workspace::Arrangement,
 }

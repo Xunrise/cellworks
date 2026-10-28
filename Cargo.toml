@@ -15,6 +15,7 @@ resolver = "3"
 [workspace.dependencies]
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "wayland", "x11"] }
 egui = "0.36"
+regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 egui_kittest = { version = "0.36", default-features = false }

@@ -9,7 +9,9 @@ pub mod cli;
 pub mod demo;
 pub mod iterate;
 pub mod iterate_view;
+pub mod lens_panel;
 pub mod opened;
 pub mod review;
+pub mod tools;
 
 pub use app::draw;

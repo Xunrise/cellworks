@@ -328,7 +328,7 @@ pub(crate) fn links(
                 }
             }
         }
-        Lens::Folders | Lens::Cells | Lens::Custom => {}
+        Lens::Folders | Lens::Cells | Lens::Custom | Lens::Project => {}
     }
     (weights, score)
 }

@@ -73,6 +73,8 @@ pub struct CellworksApp {
     buildings: Vec<DrawnBuilding>,
     /// The skybridges the last frame drew.
     bridges: Vec<DrawnBridge>,
+    /// The project lenses and the Claude session that shapes them.
+    lens_panel: crate::lens_panel::LensPanel,
     /// The cables the last frame drew, from base to base.
     cables: Vec<(std::path::PathBuf, std::path::PathBuf)>,
     /// The skybridge the pointer was over in the last frame.
@@ -231,6 +233,7 @@ impl CellworksApp {
                 towers: Vec::new(),
                 buildings: Vec::new(),
                 bridges: Vec::new(),
+                lens_panel: Default::default(),
                 cables: Vec::new(),
                 bridge_hovered: None,
                 view: None,
@@ -278,6 +281,7 @@ impl CellworksApp {
                 towers: Vec::new(),
                 buildings: Vec::new(),
                 bridges: Vec::new(),
+                lens_panel: Default::default(),
                 cables: Vec::new(),
                 bridge_hovered: None,
                 view: None,
@@ -297,6 +301,7 @@ impl CellworksApp {
     /// loop without a scan thread.
     pub fn over(universe: Universe, events: Receiver<WorkspaceEvent>) -> CellworksApp {
         CellworksApp {
+            lens_panel: Default::default(),
             arrangements: None,
             launcher: Launcher::new(None),
             demo: None,
@@ -736,6 +741,11 @@ impl CellworksApp {
     }
 
     /// Opens `project` and starts reading it.
+    /// Prototype: the lens panel, for a headless render.
+    pub fn lens_panel_mut(&mut self) -> &mut crate::lens_panel::LensPanel {
+        &mut self.lens_panel
+    }
+
     pub fn open(&mut self, project: Project) {
         let path = project
             .id
@@ -824,6 +834,26 @@ impl CellworksApp {
 impl eframe::App for CellworksApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.apply_pending();
+        // Prototype: open a project and a lens straight away.
+        if self.opened.is_none()
+            && !self.lens_panel.autostarted
+            && let Ok(path) = std::env::var("CELLWORKS_OPEN")
+            && let Ok(path) = std::path::Path::new(&path).canonicalize()
+        {
+            self.lens_panel.autostarted = true;
+            self.lens_panel.open = true;
+            self.lens_panel.preset(std::env::var("CELLWORKS_LENS").ok());
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            self.open(Project {
+                id: cellworks_workspace::ProjectId::Local(path),
+                name,
+                district_prefix: None,
+                contexts: Default::default(),
+            });
+        }
         draw(ui, self);
 
         // egui draws on demand, and a scan or read finishing is not an input
@@ -1173,6 +1203,16 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
 
     // What the lens bar and the lane toggles asked for: applied once the
     // frame no longer borrows the opened project.
+    if let Some(opened) = &mut app.opened {
+        app.lens_panel.drain();
+        app.lens_panel.watch(opened, now);
+        if app.lens_panel.open {
+            let panel = &mut app.lens_panel;
+            egui::Panel::right("lenses")
+                .exact_size(360.0)
+                .show(ui, |ui| panel.ui(ui, opened, now));
+        }
+    }
     let mut bar: (Option<Lens>, (bool, bool)) = (None, (false, false));
     match &app.opened {
         None if app.tickets_open => {
@@ -1224,6 +1264,8 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                         let picked = cellworks_map::ui::lens_bar(ui, opened.lens(), &offered);
                         ui.separator();
                         let toggled = cellworks_map::ui::lane_toggles(ui, opened.lanes());
+                        ui.separator();
+                        ui.toggle_value(&mut app.lens_panel.open, "lens panel");
                         ui.separator();
                         (ui.button(mode).clicked(), picked, toggled)
                     })

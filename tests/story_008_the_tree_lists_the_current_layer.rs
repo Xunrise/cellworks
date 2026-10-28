@@ -180,6 +180,7 @@ fn an_empty_layer_shows_an_empty_tree_not_the_previous_one() {
         cycles: Default::default(),
         contexts: None,
         roads: Vec::new(),
+        links: Vec::new(),
         arrangement: Default::default(),
     };
     let mut navigation = Navigation::default();

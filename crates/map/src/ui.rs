@@ -113,7 +113,7 @@ impl Outline {
             (Lens::Imports, _) => Outline::Step,
             (Lens::Calls, _) => Outline::Hexagon,
             (Lens::CoChange, _) => Outline::Orbit,
-            (Lens::Folders | Lens::Cells, _) => Outline::Plaza,
+            (Lens::Folders | Lens::Cells | Lens::Project, _) => Outline::Plaza,
         }
     }
 }
@@ -624,6 +624,7 @@ pub fn project(ui: &mut egui::Ui, map: &ProjectMap, options: ViewOptions<'_>) ->
         painter.nodes(ui, &district.nodes, shown);
     }
     roads(ui, map, &view);
+    links(ui, map, &view);
     // The quiet names of folders and blocks lie under the ground's sense, so
     // a click on a tower standing over a name reaches the tower; the names of
     // districts, and of folder outlines written on them, lie over it.
@@ -862,6 +863,56 @@ fn roads(ui: &egui::Ui, map: &ProjectMap, view: &View) {
         ui.painter().rect_filled(label, 3.0, PANEL);
         ui.painter().galley(label.min + vec2(5.0, 2.0), galley, INK);
     }
+}
+
+/// A project lens's lanes between files: a thin line from block to block,
+/// an arrow at the end.
+fn links(ui: &egui::Ui, map: &ProjectMap, view: &View) {
+    let mut centre = std::collections::HashMap::new();
+    for district in &map.districts {
+        for node in graph_nodes(district) {
+            centre.insert(
+                node.path.as_path(),
+                (node.area.center(), district.elevation),
+            );
+        }
+    }
+    for (from, to, _) in &map.links {
+        let (Some((a, za)), Some((b, zb))) = (centre.get(from.as_path()), centre.get(to.as_path()))
+        else {
+            continue;
+        };
+        let line = [view.to_screen(*a, *za), view.to_screen(*b, *zb)];
+        ui.painter().line_segment(
+            line,
+            Stroke::new(
+                1.5,
+                egui::Color32::from_rgba_unmultiplied(120, 220, 255, 140),
+            ),
+        );
+        let back = (line[0] - line[1]).normalized() * 8.0;
+        let side = vec2(-back.y, back.x) * 0.5;
+        let tip = line[1];
+        ui.painter().add(Shape::convex_polygon(
+            vec![tip, tip + back + side, tip + back - side],
+            egui::Color32::from_rgb(120, 220, 255),
+            Stroke::NONE,
+        ));
+    }
+}
+
+/// Every node of `district`, however deep.
+fn graph_nodes(district: &crate::District) -> Vec<&crate::Node> {
+    let mut out: Vec<&crate::Node> = district.nodes.iter().collect();
+    for sub in &district.sub_districts {
+        out.extend(&sub.nodes);
+        let mut pending: Vec<&crate::Group> = sub.groups.iter().collect();
+        while let Some(g) = pending.pop() {
+            out.extend(&g.nodes);
+            pending.extend(&g.groups);
+        }
+    }
+    out
 }
 
 /// The co-change lens's orbits: a faint dashed circle round its hub through

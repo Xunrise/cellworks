@@ -8,6 +8,10 @@ pub enum Command {
     Run,
     /// Report the version this binary was built as.
     Version,
+    /// Print what Cellworks knows about a project, as JSON.
+    Facts { repo: String, kind: String },
+    /// Build a project lens's data from its definition.
+    LensBuild { repo: String, name: String },
 }
 
 /// Why the arguments could not be read.
@@ -28,6 +32,18 @@ pub fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, CliErro
     match args.as_slice() {
         [] => Ok(Command::Run),
         [only] if only == "--version" => Ok(Command::Version),
+        [facts, repo] if facts == "facts" => Ok(Command::Facts {
+            repo: repo.clone(),
+            kind: "files".to_owned(),
+        }),
+        [facts, repo, kind] if facts == "facts" => Ok(Command::Facts {
+            repo: repo.clone(),
+            kind: kind.clone(),
+        }),
+        [lens, build, repo, name] if lens == "lens" && build == "build" => Ok(Command::LensBuild {
+            repo: repo.clone(),
+            name: name.clone(),
+        }),
         [first, ..] => Err(CliError::Unknown(first.clone())),
     }
 }
