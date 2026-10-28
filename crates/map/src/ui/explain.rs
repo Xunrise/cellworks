@@ -23,10 +23,9 @@ pub fn lens_bar(ui: &mut egui::Ui, current: Lens, offered: &[Lens]) -> Option<Le
             lens.block(),
             lens.district()
         );
-        if switch(ui, lens.name(), *lens == current)
-            .on_hover_text(help)
-            .clicked()
-        {
+        let response = switch(ui, lens.name(), *lens == current);
+        cellworks_workspace::mark(ui.ctx(), &format!("lens.{}", lens.name()), response.rect);
+        if response.on_hover_text(help).clicked() {
             picked = Some(*lens);
         }
     }
@@ -35,10 +34,14 @@ pub fn lens_bar(ui: &mut egui::Ui, current: Lens, offered: &[Lens]) -> Option<Le
 
 /// The lane toggles beside the lens bar. Returns which was switched.
 pub fn lane_toggles(ui: &mut egui::Ui, shown: Lanes) -> (bool, bool) {
-    let imports = switch(ui, "import lanes (G)", shown.imports)
+    let imports = switch(ui, "import lanes (G)", shown.imports);
+    cellworks_workspace::mark(ui.ctx(), "lanes.imports", imports.rect);
+    let imports = imports
         .on_hover_text("Imports between files, along the ground.")
         .clicked();
-    let calls = switch(ui, "call lanes (A)", shown.calls)
+    let calls = switch(ui, "call lanes (A)", shown.calls);
+    cellworks_workspace::mark(ui.ctx(), "lanes.calls", calls.rect);
+    let calls = calls
         .on_hover_text("Calls from a line to the function it calls, through the air.")
         .clicked();
     (imports, calls)

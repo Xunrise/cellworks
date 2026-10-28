@@ -61,6 +61,7 @@ pub const ZONE_FOREIGN: Color32 = Color32::from_rgb(0x2c, 0x3b, 0x4a);
 /// the heavier weights.
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
+    cellworks_workspace::ui::add_fonts(&mut fonts);
     let faces: [(&str, &'static [u8]); 5] = [
         (
             "ChakraPetch-Regular",
@@ -809,6 +810,7 @@ fn selecting(style: &mut egui::Style) {
 pub fn button(ui: &Ui, rect: Rect, label: &str) -> Response {
     let response = ui.interact(rect, Id::new(("case", label)), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, label));
+    cellworks_workspace::mark(ui.ctx(), &format!("btn.{label}"), rect);
     response
 }
 
@@ -877,8 +879,9 @@ pub fn picker(ui: &mut Ui, jira: &mut Jira, typed: &mut String) -> Option<String
                         "not ingested yet"
                     });
                     let label = format!("{}  {}", row.key, row.summary);
-                    if ui
-                        .add(egui::Button::selectable(false, label).wrap())
+                    let entry = ui.add(egui::Button::selectable(false, label).wrap());
+                    cellworks_workspace::mark(ui.ctx(), &format!("ticket.{}", row.key), entry.rect);
+                    if entry
                         .on_hover_text(format!("{} · updated {}", row.status, row.updated))
                         .clicked()
                     {
@@ -1460,6 +1463,16 @@ impl Case {
     /// PROTOTYPE: runs the PROTOTYPE act, as its button does.
     pub fn prototype_act(&mut self, now: f64) {
         self.act(Act::Prototype, now);
+    }
+
+    /// PROTOTYPE: runs the APPROVE act.
+    pub fn approve_act(&mut self, now: f64) {
+        self.act(Act::Approve, now);
+    }
+
+    /// PROTOTYPE: runs the INGEST act.
+    pub fn ingest_act(&mut self, now: f64) {
+        self.act(Act::Ingest, now);
     }
 
     /// PROTOTYPE: runs the REVIEW act.
