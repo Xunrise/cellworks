@@ -113,7 +113,7 @@ T
 
 # ---- dependencies, cached
 cd "$SHOP"
-export npm_config_cache="$HERE/.cache/npm"
+export npm_config_cache="${CELLWORKS_NPM_CACHE:-$HERE/.cache/npm}"
 if ! npm install --prefer-offline --no-audit --no-fund --no-package-lock >"$ROOT/npm-install.log" 2>&1; then
   echo "setup: WARNING npm install failed (offline and not cached?). The dev server will not start. See $ROOT/npm-install.log" >&2
 fi

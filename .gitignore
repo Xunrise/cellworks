@@ -22,3 +22,4 @@ demo/.cache
 
 # Launcher render snapshots (tests/launcher_look.rs), never committed
 tests/snapshots/
+/dist

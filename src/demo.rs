@@ -36,6 +36,14 @@ pub fn root() -> PathBuf {
     dir.canonicalize().unwrap_or(dir)
 }
 
+/// The demo's bundled files: `CELLWORKS_DEMO_ASSETS` (set by the packaged app),
+/// else `demo/` in this source tree.
+fn assets() -> PathBuf {
+    std::env::var_os("CELLWORKS_DEMO_ASSETS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("demo"))
+}
+
 /// Builds the world when it is missing, and points the Jira and case readers
 /// at it. Called once, before any window or thread exists.
 pub fn init() {
@@ -43,7 +51,7 @@ pub fn init() {
         return;
     }
     if !root().join("projects").is_dir() {
-        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("demo/setup.sh");
+        let script = assets().join("setup.sh");
         match Command::new("bash").arg(&script).status() {
             Ok(status) if status.success() => {}
             other => eprintln!("demo: setup.sh failed: {other:?}"),
@@ -601,8 +609,8 @@ pub fn command(ui: &mut egui::Ui, app: &mut CellworksApp, line: &str) -> bool {
             agent(name, file);
         }
         "write" => {
-            let payload = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("demo/agent")
+            let payload = assets()
+                .join("agent")
                 .join(arg);
             run(Command::new("cp")
                 .arg("-R")
@@ -745,8 +753,8 @@ fn lens_ask(ui: &egui::Ui, app: &mut CellworksApp, question: Option<&str>, name:
     let Some(repo) = opened.root().map(Path::to_path_buf) else {
         return;
     };
-    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("demo/lenses")
+    let source = assets()
+        .join("lenses")
         .join(format!("{name}.lens.json"));
     let dir = repo.join(".cellworks/lenses");
     let copied = std::fs::create_dir_all(&dir)
