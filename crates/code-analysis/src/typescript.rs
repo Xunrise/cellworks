@@ -20,7 +20,8 @@ const LARGEST: u64 = 2 * 1024 * 1024;
 /// wrong extension, too large, or one whose syntax does not parse — has no
 /// entry, left to the plain-text fallback.
 pub(crate) fn read(root: &Path, files: &[PathBuf]) -> BTreeMap<PathBuf, Vec<Item>> {
-    files
+    let mut imports: BTreeMap<PathBuf, Vec<Import>> = BTreeMap::new();
+    let mut read: BTreeMap<PathBuf, Vec<Item>> = files
         .iter()
         .filter_map(|file| {
             let language = grammar_of(file)?;
@@ -33,9 +34,139 @@ pub(crate) fn read(root: &Path, files: &[PathBuf]) -> BTreeMap<PathBuf, Vec<Item
                 .file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.contains(".test.") || name.contains(".spec."));
-            Some((file.clone(), items(&full, &source, language, tests_file)?))
+            let (found, imported) = items(&full, &source, language, tests_file)?;
+            imports.insert(file.clone(), imported);
+            Some((file.clone(), found))
         })
-        .collect()
+        .collect();
+    link(&imports, &mut read);
+    read
+}
+
+/// One `import` statement: its first row, specifier and the
+/// `(exported, local)` names it binds.
+struct Import {
+    row: usize,
+    spec: String,
+    names: Vec<(String, String)>,
+}
+
+fn imports_of(root: Node<'_>, source: &str) -> Vec<Import> {
+    let mut cursor = root.walk();
+    let mut found = Vec::new();
+    for node in root.named_children(&mut cursor) {
+        let Some(spec) = node
+            .child_by_field_name("source")
+            .map(|s| label_text(s, source))
+        else {
+            continue;
+        };
+        let mut names = Vec::new();
+        let mut walk = node.walk();
+        for clause in node
+            .named_children(&mut walk)
+            .filter(|c| c.kind() == "import_clause")
+        {
+            let mut inner = clause.walk();
+            for part in clause.named_children(&mut inner) {
+                if part.kind() == "identifier" {
+                    let local = text(part, source).to_owned();
+                    names.push((local.clone(), local));
+                } else if part.kind() == "named_imports" {
+                    let mut specs = part.walk();
+                    for s in part.named_children(&mut specs) {
+                        if let Some(name) = name_of(s, source) {
+                            let local = s
+                                .child_by_field_name("alias")
+                                .map_or_else(|| name.clone(), |a| text(a, source).to_owned());
+                            names.push((name, local));
+                        }
+                    }
+                }
+            }
+        }
+        if node.kind() == "import_statement" {
+            found.push(Import {
+                row: node.start_position().row,
+                spec,
+                names,
+            });
+        }
+    }
+    found
+}
+
+/// The file a relative `spec` written in `from` names, among `known`.
+fn resolve<'k>(
+    from: &Path,
+    spec: &str,
+    known: &'k BTreeMap<PathBuf, Vec<Item>>,
+) -> Option<&'k PathBuf> {
+    if !spec.starts_with('.') {
+        return None;
+    }
+    let mut base = from.parent()?.to_path_buf();
+    for part in spec.split('/') {
+        match part {
+            "." | "" => {}
+            ".." => {
+                base.pop();
+            }
+            _ => base.push(part),
+        }
+    }
+    ["ts", "tsx", "js"]
+        .iter()
+        .map(|ext| PathBuf::from(format!("{}.{ext}", base.display())))
+        .chain(std::iter::once(base.join("index.ts")))
+        .find_map(|candidate| known.get_key_value(&candidate).map(|(key, _)| key))
+}
+
+/// Fills the import blocks' `imports` with the item each imported name stands
+/// for, and the floors' `calls` with the calls to those names.
+// ponytail: text heuristic for calls, replaced by real resolution in STORY-059/060
+fn link(imports: &BTreeMap<PathBuf, Vec<Import>>, read: &mut BTreeMap<PathBuf, Vec<Item>>) {
+    let mut bound: Vec<(PathBuf, usize, String, PathBuf)> = Vec::new();
+    for (file, list) in imports {
+        for import in list {
+            let Some(target) = resolve(file, &import.spec, read) else {
+                continue;
+            };
+            for (name, local) in &import.names {
+                if let Some(item) = read[target].iter().find(|i| i.name == *name) {
+                    bound.push((file.clone(), import.row, local.clone(), item.path.clone()));
+                }
+            }
+        }
+    }
+    for (file, row, local, target) in bound {
+        let Some(items) = read.get_mut(&file) else {
+            continue;
+        };
+        let call = format!("{local}(");
+        for item in items.iter_mut() {
+            for floor in &mut item.floors {
+                let hit = if item.kind == ItemKind::Uses {
+                    floor.number == row + 1
+                } else {
+                    !item.tests
+                        && floor.text.match_indices(&call).any(|(at, _)| {
+                            !floor.text[..at].chars().next_back().is_some_and(|c| {
+                                c.is_alphanumeric() || c == '_' || c == '$' || c == '.'
+                            })
+                        })
+                };
+                let list = if item.kind == ItemKind::Uses {
+                    &mut floor.imports
+                } else {
+                    &mut floor.calls
+                };
+                if hit && !list.contains(&target) {
+                    list.push(target.clone());
+                }
+            }
+        }
+    }
 }
 
 /// The grammar `file`'s extension reads with: the TypeScript grammar for
@@ -103,7 +234,12 @@ enum Framework {
 /// The pure per-file reader: parses `source` with `language`, bails out on a
 /// syntax error, and walks its top-level statements into items with their
 /// floors and a final, unique path each.
-fn items(full: &Path, source: &str, language: Language, tests_file: bool) -> Option<Vec<Item>> {
+fn items(
+    full: &Path,
+    source: &str,
+    language: Language,
+    tests_file: bool,
+) -> Option<(Vec<Item>, Vec<Import>)> {
     let mut parser = Parser::new();
     parser.set_language(&language).ok()?;
     let tree = parser.parse(source, None)?;
@@ -118,7 +254,8 @@ fn items(full: &Path, source: &str, language: Language, tests_file: bool) -> Opt
 
     let paths = items::unique_paths(full, found.iter().map(|f| (f.path_name.clone(), f.start)));
 
-    Some(
+    let imports = imports_of(tree.root_node(), source);
+    Some((
         found
             .into_iter()
             .enumerate()
@@ -144,7 +281,8 @@ fn items(full: &Path, source: &str, language: Language, tests_file: bool) -> Opt
                 }
             })
             .collect(),
-    )
+        imports,
+    ))
 }
 
 fn text<'s>(node: Node<'_>, source: &'s str) -> &'s str {
@@ -701,5 +839,29 @@ mod tests {
         assert!(!line.tokens.is_empty());
         assert!(line.calls.is_empty());
         assert!(line.imports.is_empty());
+    }
+
+    #[test]
+    fn relative_imports_and_calls_of_imported_names_link_to_the_target_item() {
+        let tree = project(&[
+            (
+                "src/a.ts",
+                "import { f } from './b';\nimport x from 'pkg';\n\nfunction g() {\n  return f();\n}\n",
+            ),
+            ("src/b.ts", "export function f() {}\n"),
+        ]);
+        let files = vec![PathBuf::from("src/a.ts"), PathBuf::from("src/b.ts")];
+
+        let items = read(tree.path(), &files);
+
+        let target = tree.path().join("src/b.ts/f");
+        let a = &items[Path::new("src/a.ts")];
+        assert_eq!(
+            find(a, "imports").floors[0].imports,
+            std::slice::from_ref(&target)
+        );
+        assert!(find(a, "imports").floors[1].imports.is_empty());
+        assert_eq!(find(a, "g").floors[1].calls, std::slice::from_ref(&target));
+        assert!(find(a, "g").floors[0].calls.is_empty());
     }
 }
