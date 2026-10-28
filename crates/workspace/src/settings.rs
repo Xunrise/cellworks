@@ -36,6 +36,13 @@ const DISTRICT_PREFIX: &str = "district_prefix";
 /// table: `contexts.Pricing = ["crates/catalog"]`.
 const CONTEXTS: &str = "contexts";
 
+/// The `[launcher]` table.
+const LAUNCHER: &str = "launcher";
+
+/// Inside `[launcher]`, whether the launcher's theme words are shown
+/// (STORY-083). Only the literal boolean `false` switches them off.
+const THEME_WORDS: &str = "theme_words";
+
 /// Which convention names the settings file's directory.
 ///
 /// This is the one place a platform difference is encoded, and it encodes
@@ -88,6 +95,13 @@ pub(crate) struct AddedFolders {
     /// resolved, never canonicalized (requirement 3: a remote project is never
     /// read as a local folder).
     pub(crate) remote: Vec<(String, Vec<PathBuf>)>,
+    /// Whether `[launcher] theme_words = false` switched the launcher's theme
+    /// words off (STORY-083, requirement 6): true only when the literal
+    /// boolean `false` sits there. A missing `[launcher]` table, a missing
+    /// key, the literal `true`, or a value of another type all leave this
+    /// `false` — theme words stay on. `Default`'s `false` already matches
+    /// this for an absent or unreadable settings file.
+    pub(crate) theme_words_off: bool,
 }
 
 /// Reads the folders `settings_file` adds.
@@ -114,6 +128,15 @@ pub(crate) fn read(settings_file: &Path) -> AddedFolders {
             return added;
         }
     };
+
+    // STORY-083 requirement 6: only the literal boolean `false` under
+    // `[launcher] theme_words` turns theme words off — a missing table, a
+    // missing key, `true` and a value of another type all leave them on.
+    added.theme_words_off = table
+        .get(LAUNCHER)
+        .and_then(toml::Value::as_table)
+        .and_then(|launcher| launcher.get(THEME_WORDS))
+        .is_some_and(|value| matches!(value, toml::Value::Boolean(false)));
 
     // Tolerant: a missing key, a key of the wrong shape, and every key this
     // story does not know are all simply "no added folders from here".
@@ -475,6 +498,45 @@ mod tests {
             ),
             "expected one HostSkipped naming the host, got {:?}",
             added.events
+        );
+    }
+
+    /// STORY-083, requirement 6: only the literal boolean `false` under
+    /// `[launcher] theme_words` switches theme words off. Another type, the
+    /// literal `true`, a missing `[launcher]` table and a missing settings
+    /// file all leave them on.
+    #[test]
+    fn only_the_literal_false_under_launcher_theme_words_turns_them_off() {
+        let tree = TestTree::new();
+
+        let off = tree.file("off/settings.toml", "[launcher]\ntheme_words = false\n");
+        assert!(read(&off).theme_words_off, "the literal false turns it off");
+
+        let on_true = tree.file("on-true/settings.toml", "[launcher]\ntheme_words = true\n");
+        assert!(
+            !read(&on_true).theme_words_off,
+            "true leaves theme words on"
+        );
+
+        let on_string = tree.file(
+            "on-string/settings.toml",
+            "[launcher]\ntheme_words = \"nope\"\n",
+        );
+        assert!(
+            !read(&on_string).theme_words_off,
+            "a value of the wrong type leaves theme words on"
+        );
+
+        let no_table = tree.file("no-table/settings.toml", "added_folders = []\n");
+        assert!(
+            !read(&no_table).theme_words_off,
+            "no [launcher] table at all leaves theme words on"
+        );
+
+        let absent = tree.path().join("absent/settings.toml");
+        assert!(
+            !read(&absent).theme_words_off,
+            "no settings file at all leaves theme words on"
         );
     }
 }

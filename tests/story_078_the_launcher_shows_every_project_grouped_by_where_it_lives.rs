@@ -143,9 +143,23 @@ impl Fixture {
     /// Writes the settings file: the added folder `scratch/tool`, and one
     /// `[hosts."<name>"]` table per host, naming the remote projects on it as
     /// the engineer would write them, unresolved.
+    ///
+    /// STORY-083 Decision 10: this suite's own assertions are plain-words
+    /// text, so every fixture here switches theme words off — otherwise the
+    /// new themed defaults (e.g. "Open fortress" instead of "Open · Enter")
+    /// would break them.
     fn settings(&self, hosts: &[(&str, &[&str])]) {
         let scratch = self.home.join("scratch/tool");
-        let mut text = format!("added_folders = [\"{}\"]\n", scratch.display());
+        // `added_folders` must come before the `[launcher]` table: TOML reads
+        // every key after a `[table]` header as belonging to it until the
+        // next header, so writing `[launcher]` first would silently fold
+        // `added_folders` into `[launcher]` instead of leaving it top-level —
+        // which is exactly why `scratch/tool` stopped being discovered when
+        // this line was first added.
+        let mut text = format!(
+            "added_folders = [\"{}\"]\n\n[launcher]\ntheme_words = false\n",
+            scratch.display()
+        );
         for (host, projects) in hosts {
             let list: Vec<String> = projects.iter().map(|path| format!("\"{path}\"")).collect();
             text.push_str(&format!(
@@ -433,47 +447,41 @@ fn the_selected_project_shows_its_details_and_opens_on_enter() {
     );
 }
 
-/// Git runs only in the project the engineer selects, and once
+/// Git reads each listed local project once, so every row can show its
+/// branch, and never runs for a remote project
 #[test]
-fn git_reads_only_the_selected_project_and_only_once() {
+fn git_reads_each_listed_local_project_once() {
     let fixture = Fixture::new();
     fixture.settings(&[("az.wsl", &["~/work/api"])]);
     let git = Arc::new(CountingGit(std::sync::Mutex::new(Vec::new())));
     let mut harness = harness_over(app_using(&fixture, &[], git.clone()));
-    settle(harness.state_mut());
-    harness.run();
-    assert!(
-        git.0.lock().unwrap().is_empty(),
-        "no git call of any kind at launch: {:?}",
-        git.0.lock().unwrap()
-    );
-
-    for _ in 0..2 {
-        // Once "cellworks" is selected, the preview pane also carries its
-        // name as a heading, and the right panel it lives in is drawn before
-        // the central panel's list — so the list row (the one actually
-        // clickable) is the *last* "cellworks" in tree order, not the first.
-        harness
-            .get_all_by_label("cellworks")
-            .last()
-            .expect("cellworks is shown at least once")
-            .click_accesskit();
-        harness.run();
+    for _ in 0..3 {
         settle(harness.state_mut());
         harness.run();
     }
 
-    let selected = fixture.path().join("Projects/cellworks");
     let calls = git.0.lock().unwrap();
-    assert!(!calls.is_empty(), "the selected project is read");
+    let cellworks = fixture.path().join("Projects/cellworks");
     assert!(
-        calls.iter().all(|(_, repository)| *repository == selected),
-        "only the selected project is read: {calls:?}"
+        calls
+            .iter()
+            .any(|(name, repository)| *name == "branch" && *repository == cellworks),
+        "a listed local project's branch is read: {calls:?}"
     );
-    for call in ["visible_files", "history", "branch"] {
-        assert!(
-            calls.iter().filter(|(name, _)| *name == call).count() <= 1,
-            "{call} is asked at most once: {calls:?}"
+    assert!(
+        calls
+            .iter()
+            .all(|(_, repository)| repository.starts_with(fixture.path())),
+        "only local projects are read: {calls:?}"
+    );
+    for (call, repository) in calls.iter() {
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|other| other.0 == *call && other.1 == *repository)
+                .count(),
+            1,
+            "{call} is asked once for {repository:?}: {calls:?}"
         );
     }
 }
@@ -490,7 +498,7 @@ fn enter_on_a_remote_project_opens_nothing() {
 
     assert!(
         harness
-            .get_by_label("Open · Enter")
+            .get_by_label("Open project")
             .accesskit_node()
             .is_disabled(),
         "Open is disabled for a remote project on a connected host, with a \

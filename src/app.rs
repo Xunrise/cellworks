@@ -13,6 +13,7 @@
 //! never waits. A project opened from the universe is read the same way, with
 //! `CodeAnalysisEvent` values.
 
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
@@ -25,8 +26,9 @@ use cellworks_map::{Lens, ProjectMap, Why, default_prefix_rule, prefix_rule};
 use cellworks_navigation::{Moved, Navigation};
 use cellworks_workspace::ui::LauncherAction;
 use cellworks_workspace::{
-    ArrangementKeeper, ArrangementStore, HostProbe, Launcher, Project, ProjectId, RecentKeeper,
-    RecentStore, ScanState, Sources, SshProbe, Universe, WorkspaceEvent, start_probes, start_scan,
+    ArrangementKeeper, ArrangementStore, HostProbe, Launcher, Project, ProjectDetails, ProjectId,
+    RecentKeeper, RecentStore, ScanState, Sources, SshProbe, Universe, WorkspaceEvent,
+    start_probes, start_scan,
 };
 
 use crate::opened::{OpenedNotice, OpenedProject, ProjectState};
@@ -427,25 +429,29 @@ impl CellworksApp {
         self.sessions.pane_text()
     }
 
-    /// Reads the branch and file count of the project selected in the
-    /// launcher, once. Git runs only in a project the engineer selected (or
-    /// opened), never in the rest of those discovered.
+    /// Reads the branch and file count of every local project the launcher
+    /// lists, once each, so each row can show its branch. Git runs only in
+    /// projects listed under the current pick and search.
+    // ponytail: one thread per listed project; read only the rows in view if
+    // a discovery ever lists hundreds of repositories.
     fn request_details(&mut self) {
-        let Some(id) = self.launcher.selected() else {
-            return;
-        };
-        let Some(path) = id.local_path() else {
-            return;
-        };
-        if !self.auto_detail
-            || self.launcher.details_of(id).is_some()
-            || self.project_details.iter().any(|(read, _)| read == path)
-        {
+        if !self.auto_detail {
             return;
         }
-        let path = path.to_path_buf();
-        let receiver = start_details(vec![path.clone()], Arc::clone(&self.git));
-        self.project_details.push((path, receiver));
+        let listed: Vec<std::path::PathBuf> = self
+            .launcher
+            .groups()
+            .into_iter()
+            .flat_map(|(_, projects)| projects)
+            .filter(|project| self.launcher.details_of(&project.id).is_none())
+            .filter_map(|project| project.id.local_path())
+            .filter(|path| !self.project_details.iter().any(|(read, _)| read == path))
+            .map(std::path::Path::to_path_buf)
+            .collect();
+        for path in listed {
+            let receiver = start_details(vec![path.clone()], Arc::clone(&self.git));
+            self.project_details.push((path, receiver));
+        }
     }
 
     /// Takes whatever the scan, the host probes and the project details have
@@ -507,6 +513,9 @@ impl CellworksApp {
                 }
             }
         }
+        if self.opened.is_none() {
+            self.request_details();
+        }
         let launcher = &mut self.launcher;
         self.project_details.retain(|(_, details)| {
             loop {
@@ -515,7 +524,17 @@ impl CellworksApp {
                         project,
                         branch,
                         files,
-                    }) => launcher.detailed(project, branch, files),
+                        committed,
+                        changed,
+                    }) => launcher.detailed(
+                        project,
+                        ProjectDetails {
+                            branch,
+                            files,
+                            committed,
+                            changed,
+                        },
+                    ),
                     Ok(_) => {}
                     Err(std::sync::mpsc::TryRecvError::Empty) => return true,
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => return false,
@@ -964,16 +983,19 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     let terminal = app.sessions.has_keyboard(ui)
         || ui.memory(|m| m.has_focus(egui::Id::new("iterate-note")))
         || (app.case.is_none() && app.iterate.as_ref().is_some_and(|it| it.draft.is_some()));
-    // So does the launcher's search field, which is focused from the first
-    // frame (STORY-082 requirement 2): without this, every "u", "m" and "z"
-    // of a typed project name would also toggle underground, the cables and
-    // the navigation lock, since those three act whether a project is open or
-    // not. The keys are read here, before `ui::launcher` draws the field, so
-    // the field never gets to swallow them itself.
-    let typing = app.sessions.search_focused(ui)
+    // So does the launcher, whole: in CMD the search field takes the letters,
+    // and in NAV the launcher reads them itself (j, k, g, G, ":", "/"), so
+    // none of them may also toggle underground, the cables or the navigation
+    // lock, which act whether a project is open or not (STORY-083
+    // requirement 8). The keys are read here, before `ui::launcher` draws the
+    // field, so the field never gets to swallow them itself.
+    let launcher_shown = app.opened.is_none();
+    let sessions_search = app.sessions.search_focused(ui);
+    let in_field = launcher_shown && cellworks_workspace::ui::search_focused(ui);
+    let was_in_field = launcher_shown && cellworks_workspace::ui::search_was_focused(ui);
+    let typing = sessions_search
         || ui.ctx().egui_wants_keyboard_input()
-        || (app.opened.is_none() && cellworks_workspace::ui::search_focused(ui))
-        || terminal;
+        || launcher_shown || terminal;
     let Keys {
         enter,
         esc,
@@ -1072,15 +1094,80 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     {
         app.navigation.turned(centre, turn);
     }
-    if app.opened.is_none() && rows != 0 {
-        app.launcher.move_selection(rows);
+    let mut launcher_rows = if launcher_shown { rows } else { 0 };
+    let mut jumped = false;
+    let mut page = 0;
+    // A NAV frame: egui's own focus moves (Tab, the arrows) must not leave
+    // the focus on the field or a row once the frame is drawn.
+    let mut nav_frame = false;
+    if launcher_shown && !terminal && !sessions_search {
+        // ⌘K flips between the modes; in NAV ":" and "/" enter CMD and are
+        // taken off the frame's events, so the field never types them.
+        let cmd_k = ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::K));
+        // Ctrl+D / Ctrl+U: a page down / up, in NAV and CMD alike (STORY-083
+        // requirement 14), taken off the frame so the field never types them.
+        let (page_down, page_up) = ui.input_mut(|input| {
+            (
+                input.consume_key(egui::Modifiers::CTRL, egui::Key::D),
+                input.consume_key(egui::Modifiers::CTRL, egui::Key::U),
+            )
+        });
+        page = isize::from(page_down) - isize::from(page_up);
+        if in_field {
+            if cmd_k {
+                app.launcher.request_unfocus();
+            }
+        } else {
+            let (enter_cmd, down, up, first, last) = ui.input_mut(|input| {
+                let is_cmd_text =
+                    |event: &egui::Event| matches!(event, egui::Event::Text(t) if t == ":" || t == "/");
+                let mut enter_cmd = input.events.iter().any(is_cmd_text);
+                input.events.retain(|event| !is_cmd_text(event));
+                let slash = input.modifiers.is_none() && input.key_pressed(egui::Key::Slash);
+                let colon = input.key_pressed(egui::Key::Colon)
+                    || (input.modifiers.shift_only() && input.key_pressed(egui::Key::Semicolon));
+                enter_cmd |= slash || colon;
+                let plain = input.modifiers.is_none();
+                (
+                    cmd_k || enter_cmd,
+                    plain && input.key_pressed(egui::Key::J),
+                    plain && input.key_pressed(egui::Key::K),
+                    plain && input.key_pressed(egui::Key::G),
+                    input.modifiers.shift_only() && input.key_pressed(egui::Key::G),
+                )
+            });
+            if enter_cmd {
+                app.launcher.request_focus();
+            } else {
+                nav_frame = true;
+            }
+            launcher_rows += isize::from(down) - isize::from(up);
+            if first || last {
+                app.launcher.select_end(last);
+                jumped = true;
+            }
+        }
+    }
+    if page != 0 {
+        let rows = cellworks_workspace::ui::list_page_rows(ui) as isize;
+        app.launcher.move_selection_clamped(page * rows);
+    }
+    if launcher_rows != 0 || jumped || page != 0 {
+        app.launcher.move_selection(launcher_rows);
         app.request_details();
         match app.launcher.selected().and_then(ProjectId::local_path) {
             Some(path) => app.navigation.select(path.to_owned()),
             None => app.navigation.deselect(),
         }
     }
-    let launcher_tab = app.opened.is_none()
+    // Shift+Tab cycles the sort (STORY-083 requirement 15); it is taken
+    // first so the plain Tab below never sees it.
+    let launcher_sort = launcher_shown
+        && ui.input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab));
+    if launcher_sort {
+        app.launcher.cycle_sort();
+    }
+    let launcher_tab = launcher_shown
         && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
     if launcher_tab {
         app.launcher.cycle_pick();
@@ -1113,7 +1200,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     if cables {
         app.navigation.toggle_cables();
     }
-    app.underground = app.navigation.is_underground() || held_underground;
+    app.underground = app.navigation.is_underground() || (held_underground && !launcher_shown);
     if cycle && let Some(map) = mapped(&app.opened) {
         app.navigation.next_in_block(map);
     }
@@ -1163,17 +1250,17 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         app.navigation.toggle_lock();
     }
     if esc && app.opened.is_none() {
-        app.launcher.clear_search();
-        // Requirement 10: Esc clears the text "and nothing else". egui drops
-        // the focus of whatever widget holds it on an unmodified Escape, so
-        // the launcher asks for it straight back — otherwise the next letter
-        // typed would miss the field and reach the map's shortcuts.
-        app.launcher.request_focus();
+        // egui drops the field's focus on an unmodified Escape itself, which
+        // is the whole of leaving CMD: the text stays. Only an Esc pressed in
+        // NAV clears it.
+        if !was_in_field {
+            app.launcher.clear_search();
+        }
     } else if esc && app.sessions.deselect() {
         // handled: a session selection is cleared before anything else.
     } else if esc && app.navigation.esc(mapped(&app.opened)) == Some(Moved::Closed) {
         app.opened = None;
-        app.launcher.request_focus();
+        app.launcher.request_unfocus();
     }
     if enter
         && (app.opened.is_some()
@@ -1188,10 +1275,10 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     }
     // A single-line `TextEdit` ends its input by surrendering the focus on
     // Enter, including on the frames where the launcher opens nothing — a
-    // remote project (requirement 8), or no selection at all. The field is
-    // drawn after this block, so asking now puts the focus back the same
-    // frame.
-    if enter && app.opened.is_none() {
+    // remote project (requirement 8), or no selection at all. CMD stays CMD:
+    // the field is drawn after this block, so asking now puts the focus back
+    // the same frame.
+    if enter && in_field && app.opened.is_none() {
         app.launcher.request_focus();
     }
 
@@ -1229,22 +1316,28 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 .inner;
             case_key = picked.map(|key| (key, ui.input(|input| input.time)));
         }
-        None => match cellworks_workspace::ui::launcher(ui, &app.universe, &mut app.launcher) {
-            Some(LauncherAction::Selected(project)) => {
-                app.launcher.select(Some(project.id.clone()));
-                app.request_details();
-                // Clicking a row gives it the focus, which the search field
-                // then no longer has: the palette stays keyboard-first, so
-                // the field takes it back on the next frame.
-                app.launcher.request_focus();
-                match project.id.local_path() {
-                    Some(path) => app.navigation.select(path.to_owned()),
-                    None => app.navigation.deselect(),
+        None => {
+            let action = cellworks_workspace::ui::launcher(ui, &app.universe, &mut app.launcher);
+            if nav_frame && let Some(id) = ui.memory(|memory| memory.focused()) {
+                let clicked_field = cellworks_workspace::ui::search_focused(ui)
+                    && ui.input(|input| input.pointer.any_pressed());
+                if !clicked_field {
+                    ui.memory_mut(|memory| memory.surrender_focus(id));
                 }
             }
-            Some(LauncherAction::Opened(project)) => app.open(project),
-            None => {}
-        },
+            match action {
+                Some(LauncherAction::Selected(project)) => {
+                    app.launcher.select(Some(project.id.clone()));
+                    app.request_details();
+                    match project.id.local_path() {
+                        Some(path) => app.navigation.select(path.to_owned()),
+                        None => app.navigation.deselect(),
+                    }
+                }
+                Some(LauncherAction::Opened(project)) => app.open(project),
+                None => {}
+            }
+        }
         Some(opened) => {
             let crumbs = app.navigation.breadcrumb(&opened.project().name, app.map());
             let mode = if app.navigation.is_locked() {
@@ -2361,6 +2454,52 @@ pub fn native_options() -> eframe::NativeOptions {
     }
 }
 
+/// Whether `output` — the trimmed stdout of the platform's own read of the
+/// system's reduced-motion setting — says to switch motion off (STORY-083
+/// Decision 7): `"1"` on macOS (`defaults read
+/// com.apple.universalaccess reduceMotion`), `"false"` on Linux (`gsettings
+/// get org.gnome.desktop.interface enable-animations`). Anything else,
+/// including an empty or garbled read, means not reduced: failure means
+/// animate.
+pub(crate) fn reduces_motion(output: &str, macos: bool) -> bool {
+    let output = output.trim();
+    if macos {
+        output == "1"
+    } else {
+        output == "false"
+    }
+}
+
+/// Reads whether the system currently asks for reduced motion, by a
+/// read-only child process (ADR-0003): `defaults read
+/// com.apple.universalaccess reduceMotion` on macOS, `gsettings get
+/// org.gnome.desktop.interface enable-animations` elsewhere. A command that
+/// fails to spawn, exits non-zero, or whose stdout is not valid UTF-8, reads
+/// as empty — [`reduces_motion`] already treats that, like every other
+/// unrecognised read, as "animate".
+pub(crate) fn reduced_motion_requested() -> bool {
+    let macos = cfg!(target_os = "macos");
+    let output = if macos {
+        Command::new("defaults")
+            .args(["read", "com.apple.universalaccess", "reduceMotion"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+    } else {
+        Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.interface", "enable-animations"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+    };
+    let read = output
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .unwrap_or_default();
+    reduces_motion(&read, macos)
+}
+
 /// Opens the window and runs until it closes.
 ///
 /// Returns `Err` when there is no wgpu adapter and no display — a headless
@@ -2374,7 +2513,14 @@ pub fn run() -> eframe::Result {
         Box::new(|cc| {
             // The city is drawn at night, whatever the system's appearance.
             cc.egui_ctx.set_theme(egui::Theme::Dark);
+            cellworks_workspace::ui::install_fonts(&cc.egui_ctx);
             cellworks_map::ui::case::install_fonts(&cc.egui_ctx);
+            if reduced_motion_requested() {
+                cc.egui_ctx.all_styles_mut(|style| {
+                    style.animation_time = 0.0;
+                    style.visuals.text_cursor.blink = false;
+                });
+            }
             let mut app = CellworksApp::start();
             // PROTOTYPE: CELLWORKS_OPEN_CASE=<KEY> starts with that case open
             // (any other value opens SHOP-42).
@@ -2419,5 +2565,37 @@ mod tests {
         let options = native_options();
 
         assert!(matches!(options.renderer, eframe::Renderer::Wgpu));
+    }
+
+    /// STORY-083 Decision 7: `reduces_motion` reads a platform-specific value
+    /// for "reduced" — "1" from `defaults read` on macOS, "false" from
+    /// `gsettings get` on Linux — and treats anything else, including an
+    /// empty or garbled read, as "animate": failure means animate.
+    #[test]
+    fn reduces_motion_reads_the_platform_specific_value_for_reduced() {
+        assert!(
+            reduces_motion("1", true),
+            "macOS reports reduced motion with \"1\""
+        );
+        assert!(
+            !reduces_motion("0", true),
+            "macOS: anything but \"1\" animates"
+        );
+        assert!(
+            reduces_motion("false", false),
+            "Linux reports reduced motion with \"false\""
+        );
+        assert!(
+            !reduces_motion("true", false),
+            "Linux: anything but \"false\" animates"
+        );
+        assert!(
+            !reduces_motion("", true),
+            "an empty read means animate, not reduced"
+        );
+        assert!(
+            !reduces_motion("garbage", false),
+            "a garbled read means animate, not reduced"
+        );
     }
 }

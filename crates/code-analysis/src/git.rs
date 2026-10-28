@@ -49,6 +49,13 @@ pub trait GitListing {
         Err(GitUnavailable(String::new()))
     }
 
+    /// The time of the repository's newest commit, seconds since the Unix
+    /// epoch. The default returns `Err`: a listing that only knows files
+    /// knows no history.
+    fn last_commit(&self, _repository: &Path) -> Result<i64, GitUnavailable> {
+        Err(GitUnavailable(String::new()))
+    }
+
     /// The project's commits, oldest first, each with its id, commit time and
     /// whole message. Empty by default.
     fn log(&self, _repository: &Path) -> Result<Vec<LoggedCommit>, GitUnavailable> {
@@ -84,6 +91,9 @@ const DELETED: &[&str] = &["ls-files", "-z", "--deleted"];
 
 /// The name of the branch currently checked out.
 const BRANCH: &[&str] = &["rev-parse", "--abbrev-ref", "HEAD"];
+
+/// The commit time of the newest commit, in seconds since the Unix epoch.
+const LAST_COMMIT: &[&str] = &["log", "-1", "--format=%ct"];
 
 /// The files of the last 500 commits, each commit opened by a line holding
 /// only the record separator.
@@ -135,6 +145,20 @@ impl GitListing for GitCli {
             return Err(GitUnavailable(message.trim().chars().take(200).collect()));
         }
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    fn last_commit(&self, repository: &Path) -> Result<i64, GitUnavailable> {
+        let output = command(repository, LAST_COMMIT)
+            .output()
+            .map_err(|error| GitUnavailable(format!("git could not be started: {error}")))?;
+        if !output.status.success() {
+            let message = String::from_utf8_lossy(&output.stderr);
+            return Err(GitUnavailable(message.trim().chars().take(200).collect()));
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .map_err(|_| GitUnavailable("no commit time".to_owned()))
     }
 
     fn log(&self, repository: &Path) -> Result<Vec<LoggedCommit>, GitUnavailable> {

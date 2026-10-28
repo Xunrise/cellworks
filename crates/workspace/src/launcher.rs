@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use crate::event::WorkspaceEvent;
 use crate::project::{Project, ProjectId};
+use crate::words::{PLAIN, THEMED, Words};
 
 /// A left-column entry the launcher can be narrowed to: this Mac, or one
 /// remote host. "Location" because "source" already names the Sources
@@ -41,23 +42,6 @@ pub enum HostState {
     Connected,
     Offline,
 }
-
-impl HostState {
-    /// The state's word, as a chip reads it: "connected", "checking" or
-    /// "offline", never a glyph (STORY-082 ASSUMED (Q-1)).
-    pub fn word(self) -> &'static str {
-        match self {
-            HostState::Checking => "checking",
-            HostState::Connected => "connected",
-            HostState::Offline => "offline",
-        }
-    }
-}
-
-/// What every local project's location is called — the chip, the list
-/// heading and the preview pane all name it the same way (STORY-082
-/// requirements 3, 5 and 7).
-const THIS_MAC: &str = "This Mac";
 
 /// Sort key for ASSUMED (Q-2)'s chip and `cycle_pick` order: connected hosts
 /// before checking ones before offline ones, name breaking a tie.
@@ -107,13 +91,53 @@ pub enum ProjectKind {
     Remote,
 }
 
-/// A local project's branch and file count, read off the frame loop; each
-/// `None` until it is known, and a plain folder's `files` stays `None`
-/// rather than becoming zero (requirement 9).
+/// A local project's branch, file count, last commit time and folder
+/// modification time, read off the frame loop; each `None` until it is
+/// known, and a plain folder's `files` and `committed` stay `None` rather
+/// than becoming zero (requirement 9). Times are seconds since the Unix
+/// epoch.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProjectDetails {
     pub branch: Option<String>,
     pub files: Option<usize>,
+    pub committed: Option<i64>,
+    pub changed: Option<i64>,
+}
+
+/// How the rows inside each location group are ordered (STORY-083
+/// requirement 15). Cycled by the sort chip and Shift+Tab.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Sort {
+    /// By parent folder, then name: the folders read as blocks.
+    #[default]
+    Dir,
+    /// Last opened in Cellworks first, then the never-opened by name.
+    Opened,
+    /// Newest last git commit first, the unknown by name.
+    Commit,
+    /// Newest folder modification first, the unknown by name.
+    Changed,
+}
+
+impl Sort {
+    /// The sort chip's text; the same with theme words on or off.
+    pub fn label(self) -> &'static str {
+        match self {
+            Sort::Dir => "Sort: dir",
+            Sort::Opened => "Sort: opened",
+            Sort::Commit => "Sort: commit",
+            Sort::Changed => "Sort: changed",
+        }
+    }
+
+    fn next(self) -> Sort {
+        match self {
+            Sort::Dir => Sort::Opened,
+            Sort::Opened => Sort::Commit,
+            Sort::Commit => Sort::Changed,
+            Sort::Changed => Sort::Dir,
+        }
+    }
 }
 
 /// The view model the launcher draws: what the scan has found, which
@@ -129,14 +153,21 @@ pub struct Launcher {
     projects: Vec<Project>,
     search: String,
     pick: Pick,
+    sort: Sort,
     selected: Option<ProjectId>,
     recent: Vec<ProjectId>,
     hosts: HashMap<String, HostState>,
     details: HashMap<PathBuf, ProjectDetails>,
-    /// Whether the search field should take focus this frame: set on launch
-    /// and on ⌘K, read (and cleared) once by the view (STORY-082 requirement
-    /// 2).
-    focus_requested: bool,
+    /// What the view should do with the search field's focus this frame:
+    /// `Some(true)` takes it (CMD), `Some(false)` gives it up (NAV), read
+    /// (and cleared) once by the view. The mode itself is whether the field
+    /// has focus, so there is no second state to drift (STORY-083
+    /// requirement 8).
+    focus_request: Option<bool>,
+    /// The vocabulary the launcher currently speaks (STORY-083 requirement
+    /// 6): themed by default, switched to [`PLAIN`] once the settings file's
+    /// `ThemeWordsTurnedOff` is applied.
+    words: &'static Words,
 }
 
 impl Launcher {
@@ -149,12 +180,26 @@ impl Launcher {
             projects: Vec::new(),
             search: String::new(),
             pick: Pick::All,
+            sort: Sort::default(),
             selected: None,
             recent: Vec::new(),
             hosts: HashMap::new(),
             details: HashMap::new(),
-            focus_requested: true,
+            focus_request: None,
+            words: &THEMED,
         }
+    }
+
+    /// The vocabulary currently in effect, for the view to read its words
+    /// from (STORY-083 requirement 6). `pub(crate)`, not `pub`, because
+    /// [`Words`] itself is `pub(crate)` — only `ui.rs`, inside this crate,
+    /// reaches it this way.
+    ///
+    /// Not yet called outside this file's own tests — step 2 wires `ui.rs`
+    /// to it — hence `#[allow(dead_code)]`.
+    #[allow(dead_code)]
+    pub(crate) fn words(&self) -> &'static Words {
+        self.words
     }
 
     /// Folds one scan event into the state. Every variant of `WorkspaceEvent`
@@ -171,6 +216,7 @@ impl Launcher {
                 self.hosts.insert(host, state);
             }
             WorkspaceEvent::RecentRead(ids) => self.recent = ids,
+            WorkspaceEvent::ThemeWordsTurnedOff => self.words = &PLAIN,
             WorkspaceEvent::HostSkipped { .. }
             | WorkspaceEvent::ProjectsFolderUnreadable { .. }
             | WorkspaceEvent::AddedFolderSkipped { .. }
@@ -208,6 +254,16 @@ impl Launcher {
         &self.pick
     }
 
+    /// The order the rows inside each group are in.
+    pub fn sort(&self) -> Sort {
+        self.sort
+    }
+
+    /// Moves to the next sort, wrapping from the last back to the first.
+    pub fn cycle_sort(&mut self) {
+        self.sort = self.sort.next();
+    }
+
     /// Selects `id`, or clears the selection.
     pub fn select(&mut self, id: Option<ProjectId>) {
         self.selected = id;
@@ -223,8 +279,7 @@ impl Launcher {
         self.selected.as_ref().and_then(|id| self.project(id))
     }
 
-    /// Moves the selection `by` rows through the recent row followed by every
-    /// group, wrapping at either end (requirement 11's ↑/↓). Nothing while
+    /// Moves the selection `by` rows through every group, wrapping at either end (requirement 11's ↑/↓). Nothing while
     /// nothing is shown.
     pub fn move_selection(&mut self, by: isize) {
         let order = self.visible_order();
@@ -244,21 +299,34 @@ impl Launcher {
         self.selected = Some(order[next as usize].clone());
     }
 
-    /// Every id shown, the recent row first then every group, in the order
-    /// the view draws them: what `move_selection` steps through. A project
-    /// shown twice (recent and in its group) is listed once, at its first
-    /// place, so each keypress moves to a different row.
+    /// Moves the selection `by` rows through every group like
+    /// [`Launcher::move_selection`], but stopping at the first and last row
+    /// instead of wrapping: a page move (STORY-083 requirement 14).
+    pub fn move_selection_clamped(&mut self, by: isize) {
+        let order = self.visible_order();
+        if order.is_empty() {
+            return;
+        }
+        let at = self
+            .selected
+            .as_ref()
+            .and_then(|id| order.iter().position(|shown| shown == id));
+        let last = order.len() as isize - 1;
+        let next = match at {
+            Some(at) => (at as isize + by).clamp(0, last),
+            None if by >= 0 => 0,
+            None => last,
+        };
+        self.selected = Some(order[next as usize].clone());
+    }
+
+    /// Every selectable id, in the order the view draws the group rows: what
+    /// `move_selection` steps through. The recent row is left out: it never
+    /// shows the selection, so stepping onto it would make the highlight jump.
     fn visible_order(&self) -> Vec<ProjectId> {
-        let mut seen = BTreeSet::new();
-        self.recent_row()
+        self.groups()
             .into_iter()
-            .map(|project| project.id.clone())
-            .chain(
-                self.groups().into_iter().flat_map(|(_, projects)| {
-                    projects.into_iter().map(|project| project.id.clone())
-                }),
-            )
-            .filter(|id| seen.insert(id.clone()))
+            .flat_map(|(_, projects)| projects.into_iter().map(|project| project.id.clone()))
             .collect()
     }
 
@@ -271,10 +339,9 @@ impl Launcher {
         self.recent.truncate(5);
     }
 
-    /// Records `project`'s branch and file count, read off the frame loop.
-    pub fn detailed(&mut self, project: PathBuf, branch: Option<String>, files: Option<usize>) {
-        self.details
-            .insert(project, ProjectDetails { branch, files });
+    /// Records `project`'s details, read off the frame loop.
+    pub fn detailed(&mut self, project: PathBuf, details: ProjectDetails) {
+        self.details.insert(project, details);
     }
 
     /// `id`'s details, for a local project whose read has come back.
@@ -308,7 +375,7 @@ impl Launcher {
     /// state — that is what the host's chip says, and it is not a location.
     pub fn location_of(&self, id: &ProjectId) -> String {
         match id {
-            ProjectId::Local(_) => THIS_MAC.to_owned(),
+            ProjectId::Local(_) => self.words.this_mac_location.to_owned(),
             ProjectId::Remote { host, .. } => host.clone(),
         }
     }
@@ -357,13 +424,13 @@ impl Launcher {
         let mut chips = vec![
             Chip {
                 pick: Pick::All,
-                label: "All".to_owned(),
+                label: self.words.all_chip.to_owned(),
                 count: self.projects.len(),
                 state: None,
             },
             Chip {
                 pick: Pick::Location(Location::ThisMac),
-                label: THIS_MAC.to_owned(),
+                label: self.words.this_mac_label.to_owned(),
                 count: self
                     .projects
                     .iter()
@@ -433,11 +500,11 @@ impl Launcher {
     /// the explaining hover text); any other remote host reads "connect the
     /// host first".
     pub fn open_label(&self, id: &ProjectId) -> &'static str {
-        match id.host() {
-            None => "Open · Enter",
-            Some(host) if self.host_state(host) == HostState::Connected => "Open · Enter",
-            Some(_) => "Open · connect the host first",
-        }
+        let connected = match id.host() {
+            None => true,
+            Some(host) => self.host_state(host) == HostState::Connected,
+        };
+        self.words.open_label(connected)
     }
 
     /// `id`'s branch label for a row or the inspector: the known branch, or
@@ -455,7 +522,7 @@ impl Launcher {
             details
                 .branch
                 .clone()
-                .unwrap_or_else(|| "folder".to_owned()),
+                .unwrap_or_else(|| self.words.branchless.to_owned()),
         )
     }
 
@@ -464,17 +531,30 @@ impl Launcher {
         self.search.clear();
     }
 
-    /// Asks the search field to take focus on the next frame, as ⌘K does
-    /// (STORY-082 requirement 2).
+    /// Asks the search field to take focus (CMD mode) on the next frame.
     pub fn request_focus(&mut self) {
-        self.focus_requested = true;
+        self.focus_request = Some(true);
     }
 
-    /// Reads and clears the focus request: true on the first frame or right
-    /// after [`Launcher::request_focus`], false otherwise, so the view asks
-    /// for focus exactly once per request (STORY-082 requirement 2).
-    pub fn take_focus_request(&mut self) -> bool {
-        std::mem::take(&mut self.focus_requested)
+    /// Asks the search field to give up focus (NAV mode) on the next frame.
+    pub fn request_unfocus(&mut self) {
+        self.focus_request = Some(false);
+    }
+
+    /// Reads and clears the focus request, so the view acts on each exactly
+    /// once.
+    pub fn take_focus_request(&mut self) -> Option<bool> {
+        self.focus_request.take()
+    }
+
+    /// Selects the first (`false`) or last (`true`) row shown, as g and G do.
+    /// Nothing while nothing is shown.
+    pub fn select_end(&mut self, last: bool) {
+        let order = self.visible_order();
+        let end = if last { order.last() } else { order.first() };
+        if let Some(id) = end.cloned() {
+            self.selected = Some(id);
+        }
     }
 
     /// Up to five of the most recently opened projects, most recent first,
@@ -505,9 +585,10 @@ impl Launcher {
     /// Each group is narrowed by the current pick and search (requirements 1
     /// and 8).
     ///
-    /// Local projects keep STORY-078's order inside the group — by parent
-    /// folder, then by name — so the folders still read as blocks, and each
-    /// row names its own folder through the path beside it.
+    /// Inside a group the rows follow the current [`Sort`]; by default local
+    /// projects keep STORY-078's order — by parent folder, then by name — so
+    /// the folders still read as blocks, and each row names its own folder
+    /// through the path beside it.
     pub fn groups(&self) -> Vec<(String, Vec<&Project>)> {
         let mut local: Vec<&Project> = Vec::new();
         let mut remote: BTreeMap<&str, Vec<&Project>> = BTreeMap::new();
@@ -523,20 +604,57 @@ impl Launcher {
 
         let mut groups = Vec::new();
         if !local.is_empty() {
-            local.sort_by_key(|project| {
-                let path = project.id.local_path().unwrap_or(Path::new("/"));
-                (
-                    path.parent().unwrap_or(Path::new("/")).to_path_buf(),
-                    project.name.clone(),
-                )
-            });
-            groups.push((THIS_MAC.to_owned(), local));
+            self.sort_rows(&mut local);
+            groups.push((self.words.this_mac_label.to_owned(), local));
         }
         for (host, mut projects) in remote {
-            projects.sort_by(|one, other| one.name.cmp(&other.name));
+            self.sort_rows(&mut projects);
             groups.push((host.to_owned(), projects));
         }
         groups
+    }
+
+    /// Orders one group's rows by the current sort. `Dir` is the parent
+    /// folder for a local project and just the name for a remote one (a
+    /// remote host has no folders of ours); `Commit` and `Changed` have
+    /// nothing to read for a remote project, so those fall back to the name.
+    fn sort_rows(&self, rows: &mut [&Project]) {
+        let time = |project: &Project, read: fn(&ProjectDetails) -> Option<i64>| {
+            std::cmp::Reverse(self.details_of(&project.id).and_then(read))
+        };
+        match self.sort {
+            Sort::Dir => rows.sort_by_key(|project| {
+                let parent = project
+                    .id
+                    .local_path()
+                    .and_then(Path::parent)
+                    .map(Path::to_path_buf);
+                (parent, project.name.clone())
+            }),
+            Sort::Opened => rows.sort_by_key(|project| {
+                let place = self.recent.iter().position(|id| id == &project.id);
+                (place.unwrap_or(usize::MAX), project.name.clone())
+            }),
+            Sort::Commit => rows.sort_by_key(|project| {
+                (
+                    time(project, |details| details.committed),
+                    project.name.clone(),
+                )
+            }),
+            Sort::Changed => rows.sort_by_key(|project| {
+                (
+                    time(project, |details| details.changed),
+                    project.name.clone(),
+                )
+            }),
+        }
+    }
+
+    /// The folder `project` sits in, as a row's path shows it (`~/Projects`),
+    /// for the view's folder subheading; `None` for a remote project.
+    pub fn folder_of(&self, project: &Project) -> Option<String> {
+        let path = project.id.local_path()?;
+        Some(self.tilde(path.parent().unwrap_or(Path::new("/"))))
     }
 
     /// `path` as the engineer wrote it, with this machine's home folder shown
@@ -623,28 +741,29 @@ mod tests {
             .collect()
     }
 
-    /// STORY-078, requirement 11: a project in both the recent row and its
-    /// group is stepped through once, so ↓/↑ never spend a keypress on a
-    /// duplicate.
+    /// The arrows walk the group rows as drawn, top to bottom: a project in
+    /// the recent row is stepped onto at its place in its group, never first.
     #[test]
-    fn arrow_order_lists_each_project_once() {
+    fn arrow_order_walks_the_group_rows_as_drawn() {
         let mut launcher = Launcher::new(None);
         let a = Project::at(PathBuf::from("/p/a"));
         let b = Project::at(PathBuf::from("/p/b"));
+        let c = Project::at(PathBuf::from("/p/c"));
         launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![
             a.clone(),
             b.clone(),
+            c.clone(),
         ]));
-        launcher.opened(a.id.clone());
+        launcher.opened(c.id.clone());
 
         let order = launcher.visible_order();
-        assert_eq!(order, vec![a.id.clone(), b.id.clone()]);
+        assert_eq!(order, vec![a.id.clone(), b.id.clone(), c.id.clone()]);
 
-        launcher.select(Some(b.id.clone()));
-        launcher.move_selection(1);
-        assert_eq!(launcher.selected(), Some(&a.id));
+        launcher.select(Some(a.id.clone()));
         launcher.move_selection(1);
         assert_eq!(launcher.selected(), Some(&b.id));
+        launcher.move_selection(1);
+        assert_eq!(launcher.selected(), Some(&c.id));
     }
 
     /// STORY-078, requirement 6: opening a project already in the recent row
@@ -687,6 +806,10 @@ mod tests {
     #[test]
     fn groups_are_this_mac_then_hosts() {
         let mut launcher = Launcher::new(None);
+        // STORY-083: this STORY-082 test pins STORY-082's own plain text
+        // ("This Mac"); theme words now default on, so it opts into plain
+        // words explicitly, the same way the STORY-082 acceptance tests do.
+        launcher.apply(WorkspaceEvent::ThemeWordsTurnedOff);
         launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![
             Project::at(PathBuf::from("/Users/engineer/scratch/tool")),
             Project::at(PathBuf::from("/Users/engineer/Projects/cellworks")),
@@ -768,8 +891,13 @@ mod tests {
 
     /// The STORY-082 Proof fixture, shared by the tests below: two local
     /// projects, one project on a connected host, one on an offline host.
+    ///
+    /// STORY-083: theme words default on now, but these tests pin STORY-082's
+    /// own plain text ("This Mac"), so this fixture opts into plain words
+    /// explicitly — the same way the STORY-082 acceptance tests do.
     fn four_projects() -> Launcher {
         let mut launcher = Launcher::new(None);
+        launcher.apply(WorkspaceEvent::ThemeWordsTurnedOff);
         launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![
             Project::at(PathBuf::from("/Users/engineer/Projects/cellworks")),
             Project::at(PathBuf::from("/Users/engineer/Projects/The-Factory")),
@@ -874,6 +1002,51 @@ mod tests {
         );
     }
 
+    /// `location_chips`'s chip for the local location ("This Mac" or its
+    /// themed name), wherever it sits in the row.
+    fn this_mac_chip_label(launcher: &Launcher) -> String {
+        launcher
+            .location_chips()
+            .into_iter()
+            .find(|chip| chip.pick == Pick::Location(Location::ThisMac))
+            .expect("a launcher with a local project has a This Mac chip")
+            .label
+    }
+
+    /// STORY-083 requirements 6 to 8: a new launcher speaks theme words by
+    /// default — the local location's chip reads "Local net" (themed; the
+    /// view draws it upper case per requirement 10) — and switches to
+    /// STORY-082's unchanged "This Mac" once `ThemeWordsTurnedOff` is
+    /// applied. `can_open` is a behaviour, not a word, and does not move with
+    /// the switch.
+    #[test]
+    fn theme_words_switch_the_local_location_s_name_without_touching_can_open() {
+        let mut launcher = Launcher::new(None);
+        let local = Project::at(PathBuf::from("/Users/engineer/Projects/cellworks"));
+        launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![local.clone()]));
+
+        assert!(
+            this_mac_chip_label(&launcher)
+                .to_lowercase()
+                .contains("local net"),
+            "theme words are on by default: {:?}",
+            this_mac_chip_label(&launcher)
+        );
+        assert!(launcher.can_open(&local.id));
+
+        launcher.apply(WorkspaceEvent::ThemeWordsTurnedOff);
+
+        assert_eq!(
+            this_mac_chip_label(&launcher),
+            "This Mac",
+            "STORY-082's plain text, exactly, once theme words are off"
+        );
+        assert!(
+            launcher.can_open(&local.id),
+            "switching the words never touches what can be opened"
+        );
+    }
+
     /// STORY-082 Decision 3: chip counts are unfiltered totals, unchanged by
     /// a query.
     #[test]
@@ -944,24 +1117,29 @@ mod tests {
         );
     }
 
-    /// STORY-082 requirement 8: Open is enabled, and reads "Open · Enter",
-    /// for a local project.
+    /// STORY-082 requirement 8, STORY-083 requirement 8: Open is enabled, and
+    /// reads "Open project" (STORY-083's plain wording, opted into the same
+    /// way the STORY-082 acceptance tests do, since theme words now default
+    /// on), for a local project.
     #[test]
     fn can_open_and_open_label_for_a_local_project() {
         let mut launcher = Launcher::new(None);
+        launcher.apply(WorkspaceEvent::ThemeWordsTurnedOff);
         let local = Project::at(PathBuf::from("/Users/engineer/Projects/cellworks"));
         launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![local.clone()]));
 
         assert!(launcher.can_open(&local.id));
-        assert_eq!(launcher.open_label(&local.id), "Open · Enter");
+        assert_eq!(launcher.open_label(&local.id), "Open project");
     }
 
-    /// STORY-082 requirement 8: a remote project on a host that is not
-    /// connected — offline, or never probed at all ("checking" or unknown) —
-    /// cannot be opened, and the label asks to connect the host first.
+    /// STORY-082 requirement 8, STORY-083 requirement 8: a remote project on
+    /// a host that is not connected — offline, or never probed at all
+    /// ("checking" or unknown) — cannot be opened, and the label asks to
+    /// connect the host first (STORY-083's plain wording).
     #[test]
     fn can_open_and_open_label_for_a_remote_project_on_an_unconnected_host() {
         let mut launcher = Launcher::new(None);
+        launcher.apply(WorkspaceEvent::ThemeWordsTurnedOff);
         let offline = Project::remote("devbox".to_owned(), PathBuf::from("/srv/surface-kit"));
         let unknown = Project::remote("ghost".to_owned(), PathBuf::from("/srv/unknown"));
         launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![
@@ -976,11 +1154,7 @@ mod tests {
 
         for id in [&offline.id, &unknown.id] {
             assert!(!launcher.can_open(id), "{id:?}");
-            assert_eq!(
-                launcher.open_label(id),
-                "Open · connect the host first",
-                "{id:?}"
-            );
+            assert_eq!(launcher.open_label(id), "Connect the host first", "{id:?}");
         }
     }
 
@@ -991,6 +1165,7 @@ mod tests {
     #[test]
     fn can_open_is_false_for_a_remote_project_even_on_a_connected_host() {
         let mut launcher = Launcher::new(None);
+        launcher.apply(WorkspaceEvent::ThemeWordsTurnedOff);
         let connected = Project::remote("wsl".to_owned(), PathBuf::from("~/src/factory-evals"));
         launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![connected.clone()]));
         launcher.apply(WorkspaceEvent::HostProbed {
@@ -999,7 +1174,7 @@ mod tests {
         });
 
         assert!(!launcher.can_open(&connected.id));
-        assert_eq!(launcher.open_label(&connected.id), "Open · Enter");
+        assert_eq!(launcher.open_label(&connected.id), "Open project");
     }
 
     /// STORY-082 requirement 5: "folder" means the project has no branch, so
@@ -1020,8 +1195,11 @@ mod tests {
 
         launcher.detailed(
             local.id.local_path().unwrap().to_path_buf(),
-            Some("main".to_owned()),
-            Some(2),
+            ProjectDetails {
+                branch: Some("main".to_owned()),
+                files: Some(2),
+                ..ProjectDetails::default()
+            },
         );
         assert_eq!(launcher.branch_label(&local.id), Some("main".to_owned()));
     }
@@ -1031,10 +1209,17 @@ mod tests {
     #[test]
     fn branch_label_is_folder_for_a_project_read_without_a_branch() {
         let mut launcher = Launcher::new(None);
+        // "folder" is STORY-082's plain word; theme words default on now, so
+        // this test opts into plain words explicitly to pin it (THEMED's
+        // branch-less word is "block").
+        launcher.apply(WorkspaceEvent::ThemeWordsTurnedOff);
         let local = Project::at(PathBuf::from("/Users/engineer/scratch/tool"));
         launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![local.clone()]));
 
-        launcher.detailed(local.id.local_path().unwrap().to_path_buf(), None, None);
+        launcher.detailed(
+            local.id.local_path().unwrap().to_path_buf(),
+            ProjectDetails::default(),
+        );
 
         assert_eq!(launcher.branch_label(&local.id), Some("folder".to_owned()));
     }
@@ -1068,19 +1253,6 @@ mod tests {
         );
     }
 
-    /// STORY-082 ASSUMED (Q-1): a state's text is the word alone; the glyph
-    /// is a shape the view paints beside it, never part of a label.
-    #[test]
-    fn a_host_state_reads_as_its_word_without_a_glyph() {
-        for (state, word) in [
-            (HostState::Connected, "connected"),
-            (HostState::Checking, "checking"),
-            (HostState::Offline, "offline"),
-        ] {
-            assert_eq!(state.word(), word);
-        }
-    }
-
     /// STORY-082 requirement 9's "Esc clear": clearing the search empties
     /// the query and lists every project again.
     #[test]
@@ -1107,21 +1279,188 @@ mod tests {
         assert_eq!(names, expected, "every project is listed again");
     }
 
-    /// STORY-082 requirement 2: the search field asks for focus on the very
-    /// first frame, and the request is read exactly once, until something
-    /// (⌘K) asks again.
+    /// STORY-083 requirement 8: the launcher opens in NAV (no focus request),
+    /// and each request is read exactly once.
     #[test]
-    fn take_focus_request_is_true_once_then_false_until_asked_again() {
+    fn take_focus_request_reads_each_request_once() {
         let mut launcher = Launcher::new(None);
-
-        assert!(
-            launcher.take_focus_request(),
-            "the first frame autofocuses the search field"
-        );
-        assert!(!launcher.take_focus_request(), "reading the flag clears it");
+        assert_eq!(launcher.take_focus_request(), None, "NAV at launch");
 
         launcher.request_focus();
-        assert!(launcher.take_focus_request(), "⌘K asks again");
-        assert!(!launcher.take_focus_request());
+        assert_eq!(launcher.take_focus_request(), Some(true));
+        assert_eq!(launcher.take_focus_request(), None);
+
+        launcher.request_unfocus();
+        assert_eq!(launcher.take_focus_request(), Some(false));
+        assert_eq!(launcher.take_focus_request(), None);
+    }
+
+    #[test]
+    fn select_end_picks_the_first_and_last_row_shown() {
+        let mut launcher = Launcher::new(None);
+        launcher.select_end(true);
+        assert!(
+            launcher.selected().is_none(),
+            "nothing shown, nothing picked"
+        );
+
+        let a = Project::at(PathBuf::from("/p/a"));
+        let b = Project::at(PathBuf::from("/p/b"));
+        launcher.apply(WorkspaceEvent::ProjectsDiscovered(vec![
+            a.clone(),
+            b.clone(),
+        ]));
+        launcher.select_end(true);
+        assert_eq!(launcher.selected(), Some(&b.id));
+        launcher.select_end(false);
+        assert_eq!(launcher.selected(), Some(&a.id));
+    }
+
+    /// A launcher over `paths`, all local, with theme words as they are.
+    fn local_launcher(paths: &[&str]) -> Launcher {
+        let mut launcher = Launcher::new(None);
+        launcher.apply(WorkspaceEvent::ProjectsDiscovered(
+            paths
+                .iter()
+                .map(|p| Project::at(PathBuf::from(p)))
+                .collect(),
+        ));
+        launcher
+    }
+
+    fn timed(launcher: &mut Launcher, path: &str, committed: Option<i64>, changed: Option<i64>) {
+        launcher.detailed(
+            PathBuf::from(path),
+            ProjectDetails {
+                committed,
+                changed,
+                ..ProjectDetails::default()
+            },
+        );
+    }
+
+    /// STORY-083 requirement 15: dir orders by parent folder, then name.
+    #[test]
+    fn dir_sort_orders_by_parent_folder_then_name() {
+        let launcher = local_launcher(&["/b/x", "/a/z", "/a/y"]);
+
+        assert_eq!(launcher.sort(), Sort::Dir);
+        assert_eq!(group_names(&launcher), ["y", "z", "x"]);
+    }
+
+    /// Requirement 15: opened puts the recent list first, in its order, then
+    /// the never-opened by name.
+    #[test]
+    fn opened_sort_follows_the_recent_list_then_names() {
+        let mut launcher = local_launcher(&["/p/a", "/p/b", "/p/c", "/p/d"]);
+        launcher.opened(Project::at(PathBuf::from("/p/c")).id);
+        launcher.opened(Project::at(PathBuf::from("/p/d")).id);
+        launcher.cycle_sort();
+
+        assert_eq!(launcher.sort(), Sort::Opened);
+        assert_eq!(group_names(&launcher), ["d", "c", "a", "b"]);
+    }
+
+    /// Requirement 15: commit puts the newest commit first and a project
+    /// with no known commit time last, by name.
+    #[test]
+    fn commit_sort_puts_the_newest_commit_first_and_unknown_last() {
+        let mut launcher = local_launcher(&["/p/a", "/p/b", "/p/c", "/p/d"]);
+        timed(&mut launcher, "/p/b", Some(100), None);
+        timed(&mut launcher, "/p/c", Some(200), None);
+        timed(&mut launcher, "/p/d", None, None);
+        launcher.cycle_sort();
+        launcher.cycle_sort();
+
+        assert_eq!(launcher.sort(), Sort::Commit);
+        assert_eq!(group_names(&launcher), ["c", "b", "a", "d"]);
+    }
+
+    /// Requirement 15: changed puts the newest folder modification first and
+    /// the unknown last, by name.
+    #[test]
+    fn changed_sort_puts_the_newest_modification_first_and_unknown_last() {
+        let mut launcher = local_launcher(&["/p/a", "/p/b", "/p/c"]);
+        timed(&mut launcher, "/p/a", None, Some(10));
+        timed(&mut launcher, "/p/c", None, Some(20));
+        for _ in 0..3 {
+            launcher.cycle_sort();
+        }
+
+        assert_eq!(launcher.sort(), Sort::Changed);
+        assert_eq!(group_names(&launcher), ["c", "a", "b"]);
+    }
+
+    /// Requirement 15: the sort cycles dir, opened, commit, changed and back,
+    /// and its chip text is the same in either vocabulary.
+    #[test]
+    fn the_sort_cycles_and_reads_the_same_in_both_vocabularies() {
+        let mut launcher = Launcher::new(None);
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            seen.push(launcher.sort().label());
+            launcher.cycle_sort();
+        }
+        assert_eq!(
+            seen,
+            [
+                "Sort: dir",
+                "Sort: opened",
+                "Sort: commit",
+                "Sort: changed",
+                "Sort: dir"
+            ]
+        );
+        let mut plain = Launcher::new(None);
+        plain.apply(WorkspaceEvent::ThemeWordsTurnedOff);
+        assert_eq!(plain.sort().label(), "Sort: dir");
+    }
+
+    /// Requirement 15: `visible_order` follows `groups` under every sort, so
+    /// j and k still walk the rows as drawn.
+    #[test]
+    fn walking_the_rows_follows_the_current_sort() {
+        let mut launcher = local_launcher(&["/p/a", "/p/b", "/p/c"]);
+        timed(&mut launcher, "/p/c", Some(5), None);
+        launcher.cycle_sort();
+        launcher.cycle_sort();
+
+        launcher.select_end(false);
+        assert_eq!(launcher.selected_project().unwrap().name, "c");
+        launcher.move_selection(1);
+        assert_eq!(launcher.selected_project().unwrap().name, "a");
+    }
+
+    /// Requirement 14: a page move steps that many rows and stops at either
+    /// end instead of wrapping.
+    #[test]
+    fn a_page_move_clamps_at_the_first_and_last_row() {
+        let mut launcher = local_launcher(&["/p/a", "/p/b", "/p/c", "/p/d", "/p/e"]);
+
+        launcher.move_selection_clamped(3);
+        assert_eq!(launcher.selected_project().unwrap().name, "a");
+        launcher.move_selection_clamped(3);
+        assert_eq!(launcher.selected_project().unwrap().name, "d");
+        launcher.move_selection_clamped(3);
+        assert_eq!(launcher.selected_project().unwrap().name, "e");
+        launcher.move_selection_clamped(-3);
+        assert_eq!(launcher.selected_project().unwrap().name, "b");
+        launcher.move_selection_clamped(-3);
+        assert_eq!(launcher.selected_project().unwrap().name, "a");
+    }
+
+    /// Requirement 16: a search naming a folder lists every project in it,
+    /// because search matches the displayed path.
+    #[test]
+    fn a_folder_search_lists_the_whole_folder() {
+        let mut launcher = local_launcher(&["/h/Projects/a", "/h/Projects/b", "/h/Other/c"]);
+        launcher.search("projects".to_owned());
+
+        assert_eq!(group_names(&launcher), ["a", "b"]);
+        let projects = launcher.groups().remove(0).1;
+        assert_eq!(
+            launcher.folder_of(projects[0]),
+            Some("/h/Projects".to_owned())
+        );
     }
 }

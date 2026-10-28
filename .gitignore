@@ -19,3 +19,6 @@ factory-context
 # Local output of Claude sessions; never part of the repository
 /Claude outputs/
 demo/.cache
+
+# Launcher render snapshots (tests/launcher_look.rs), never committed
+tests/snapshots/

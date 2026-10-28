@@ -21,6 +21,7 @@ mod registry;
 mod settings;
 pub mod ui;
 mod universe;
+mod words;
 
 #[cfg(test)]
 mod test_tree;
@@ -31,7 +32,7 @@ use std::sync::mpsc;
 pub use arrangement::{Arrangement, ArrangementKeeper, ArrangementStore};
 pub use event::WorkspaceEvent;
 pub use hosts::{HostProbe, SshProbe, start_probes};
-pub use launcher::{HostState, Launcher, Location, Pick, ProjectDetails, ProjectKind};
+pub use launcher::{HostState, Launcher, Location, Pick, ProjectDetails, ProjectKind, Sort};
 pub use project::{Project, ProjectId};
 pub use recent::{RecentKeeper, RecentStore};
 pub use universe::{Notice, NoticeKind, ScanState, Universe};
@@ -89,6 +90,7 @@ fn non_empty(variable: &str) -> Option<std::ffi::OsString> {
 pub fn scan(sources: &Sources) -> Vec<WorkspaceEvent> {
     let discovered = discovery::discover(&sources.projects_folder);
     let added = settings::read(&sources.settings_file);
+    let theme_words_off = added.theme_words_off;
     let (mut projects, unidentified) = registry::merge(&discovered.folders, &added.folders);
     registry::attach_district_prefixes(&mut projects, &added.district_prefixes);
     registry::attach_contexts(&mut projects, &added.contexts);
@@ -106,6 +108,10 @@ pub fn scan(sources: &Sources) -> Vec<WorkspaceEvent> {
         for path in paths {
             projects.push(Project::remote(host.clone(), path));
         }
+    }
+
+    if theme_words_off {
+        events.push(WorkspaceEvent::ThemeWordsTurnedOff);
     }
 
     events.push(WorkspaceEvent::ProjectsDiscovered(projects));
@@ -303,6 +309,54 @@ mod tests {
             fs::read(&settings).expect("the settings file is still readable"),
             before,
             "this story never writes the settings file"
+        );
+    }
+
+    /// STORY-083, requirement 6: `scan` reports `ThemeWordsTurnedOff` exactly
+    /// once when the settings file switches theme words off — and, per
+    /// `projects_of`'s own assertion above, never at the cost of reporting
+    /// `ProjectsDiscovered` more or less than once.
+    #[test]
+    fn scan_reports_theme_words_turned_off_when_the_setting_is_off() {
+        let tree = TestTree::new();
+        tree.file("settings.toml", "[launcher]\ntheme_words = false\n");
+
+        let events = scan(&tree.sources());
+
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, WorkspaceEvent::ThemeWordsTurnedOff))
+                .count(),
+            1,
+            "exactly one ThemeWordsTurnedOff when the setting is off: {events:?}"
+        );
+        // Still reports exactly once, unaffected by the new event.
+        projects_of(&events);
+    }
+
+    /// STORY-083, requirement 6: a settings file without the key, and no
+    /// settings file at all, both leave theme words on — `scan` never reports
+    /// `ThemeWordsTurnedOff` for either.
+    #[test]
+    fn scan_never_reports_theme_words_turned_off_without_the_setting() {
+        let without_key = TestTree::new();
+        without_key.file("settings.toml", "added_folders = []\n");
+        let events = scan(&without_key.sources());
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, WorkspaceEvent::ThemeWordsTurnedOff)),
+            "a settings file without [launcher]: {events:?}"
+        );
+
+        let without_file = TestTree::new();
+        let events = scan(&without_file.sources());
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, WorkspaceEvent::ThemeWordsTurnedOff)),
+            "no settings file at all: {events:?}"
         );
     }
 

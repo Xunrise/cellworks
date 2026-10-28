@@ -170,20 +170,31 @@ pub fn start_load(
 }
 
 /// Reads `root`'s branch and, only when it is a repository, how many files
-/// git shows — a plain folder has no file count, never zero (requirement 9).
+/// git shows and when it was last committed to — a plain folder has no file
+/// count and no commit time, never zero (requirement 9) — and when the folder
+/// itself last changed, for any project.
 ///
 /// Blocking: called on the background thread [`start_details`] spawns.
 pub fn details(root: &Path, git: &dyn GitListing) -> CodeAnalysisEvent {
+    let changed = std::fs::metadata(root)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|elapsed| i64::try_from(elapsed.as_secs()).ok());
     match git.branch(root) {
         Ok(branch) => CodeAnalysisEvent::DetailsRead {
             project: root.to_path_buf(),
             branch: Some(branch),
             files: git.visible_files(root).ok().map(|files| files.len()),
+            committed: git.last_commit(root).ok(),
+            changed,
         },
         Err(_) => CodeAnalysisEvent::DetailsRead {
             project: root.to_path_buf(),
             branch: None,
             files: None,
+            committed: None,
+            changed,
         },
     }
 }
@@ -472,6 +483,8 @@ mod tests {
                 project: repository.to_path_buf(),
                 branch: Some("main".to_owned()),
                 files: Some(2),
+                committed: None,
+                changed: None,
             }
         );
 
@@ -487,8 +500,45 @@ mod tests {
                 project: folder.to_path_buf(),
                 branch: None,
                 files: None,
+                committed: None,
+                changed: None,
             }
         );
+    }
+
+    /// A git listing that also knows when the last commit was made.
+    struct Committed(i64);
+
+    impl GitListing for Committed {
+        fn visible_files(&self, _: &Path) -> Result<Vec<PathBuf>, GitUnavailable> {
+            Ok(Vec::new())
+        }
+
+        fn branch(&self, _: &Path) -> Result<String, GitUnavailable> {
+            Ok("main".to_owned())
+        }
+
+        fn last_commit(&self, _: &Path) -> Result<i64, GitUnavailable> {
+            Ok(self.0)
+        }
+    }
+
+    /// STORY-083: details carry the last commit time of a repository, and
+    /// the folder's modification time of any folder that exists.
+    #[test]
+    fn details_carry_the_commit_time_and_the_folder_change_time() {
+        let folder = tree(&["a.txt"]);
+
+        let event = details(folder.path(), &Committed(1_700_000_000));
+
+        let CodeAnalysisEvent::DetailsRead {
+            committed, changed, ..
+        } = event
+        else {
+            panic!("expected DetailsRead");
+        };
+        assert_eq!(committed, Some(1_700_000_000));
+        assert!(changed.is_some_and(|seconds| seconds > 0));
     }
 
     #[test]
