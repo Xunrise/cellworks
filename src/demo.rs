@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cellworks_agent_sessions::{Agent, AgentList, ClaudeUnavailable, SessionSources, parse_agents};
-use cellworks_workspace::{HostProbe, Sources};
+use cellworks_workspace::{HostProbe, Project, Sources};
 use serde_json::{Value, json};
 
 use crate::app::CellworksApp;
@@ -200,6 +200,7 @@ const STEPS: [Step; 11] = [
             "wait 2000",
             "commit feat(checkout): charge the discounted total\\n\\nRefs: STORY-042",
             "--",
+            "pipeline deliver",
             "write factory/step-3",
             "agent factory-3 docs/domain/contexts/Cart/glossary.md",
             "wait 2000",
@@ -221,7 +222,15 @@ const STEPS: [Step; 11] = [
     Step {
         title: "History",
         body: "Scrub through the commits and watch the city grow. Per-line history says why a line exists, and it leads back to SHOP-42.",
-        lines: &["history 0"],
+        lines: &[
+            "history 0",
+            "wait 2500",
+            "history 3",
+            "wait 2500",
+            "history 6",
+            "wait 2500",
+            "history last",
+        ],
     },
 ];
 
@@ -232,6 +241,24 @@ pub struct Tour {
     queue: VecDeque<String>,
     resume: Option<Instant>,
     servers: Vec<Child>,
+    /// The Factory strip: the stage running, `None` while it is hidden.
+    pipeline: Option<usize>,
+    pipeline_done: bool,
+    /// When the deploy packet left the Depot, in egui time.
+    deploy_at: Option<f64>,
+    history: Option<History>,
+}
+
+const STAGES: [&str; 5] = ["BUILD", "CHECKS", "DELIVER", "REVIEW", "DEPLOY"];
+const TRAVEL: f64 = 2.5;
+
+/// The history scrubber: the commits of the shop's main branch, oldest first,
+/// and the one `shopfront-history` shows.
+struct History {
+    commits: Vec<(String, String)>,
+    idx: usize,
+    applied: Option<usize>,
+    last: Instant,
 }
 
 impl Drop for Tour {
@@ -335,6 +362,8 @@ pub fn overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 next |= ui.button(label).clicked();
             });
         });
+    pipeline_strip(ui, tour);
+    let close = history_bar(ui, tour);
     if back {
         tour.back();
     } else if next {
@@ -343,6 +372,324 @@ pub fn overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
     for line in due {
         crate::app::drive_line(ui, app, &line);
     }
+    if close {
+        history_close(app);
+    }
+    history_tick(ui, app);
+}
+
+/// Top-centre strip: BUILD, CHECKS, DELIVER, REVIEW, DEPLOY.
+fn pipeline_strip(ui: &egui::Ui, tour: &Tour) {
+    let Some(running) = tour.pipeline else {
+        return;
+    };
+    let ctx = ui.ctx();
+    let pulse = ((ctx.input(|i| i.time) * 4.0).sin() * 0.5 + 0.5) as f32;
+    egui::Area::new(egui::Id::new("demo-pipeline"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_TOP, [0.0, 12.0])
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.strong("The Factory");
+                    for (i, name) in STAGES.iter().enumerate() {
+                        ui.label("·");
+                        let text = if tour.pipeline_done || i < running {
+                            egui::RichText::new(format!("\u{2714} {name}"))
+                                .color(egui::Color32::from_rgb(90, 200, 110))
+                        } else if i == running {
+                            egui::RichText::new(format!("\u{25CF} {name}"))
+                                .strong()
+                                .color(
+                                    egui::Color32::from_rgb(255, 190, 60)
+                                        .gamma_multiply(0.6 + 0.4 * pulse),
+                                )
+                        } else {
+                            egui::RichText::new(*name).weak()
+                        };
+                        ui.label(text);
+                    }
+                });
+            });
+        });
+    if !tour.pipeline_done {
+        ctx.request_repaint_after(Duration::from_millis(60));
+    }
+}
+
+fn shop() -> PathBuf {
+    root().join("projects/shopfront")
+}
+
+fn history_dir() -> PathBuf {
+    root().join("projects/shopfront-history")
+}
+
+/// Bottom slider over the commits of main. `true` when it was closed.
+fn history_bar(ui: &egui::Ui, tour: &mut Tour) -> bool {
+    let Some(h) = &mut tour.history else {
+        return false;
+    };
+    let mut close = false;
+    egui::Window::new("History")
+        .title_bar(false)
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_BOTTOM, [-120.0, -16.0])
+        .resizable(false)
+        .collapsible(false)
+        .show(ui.ctx(), |ui| {
+            let last = h.commits.len().saturating_sub(1);
+            ui.set_width(560.0);
+            ui.horizontal(|ui| {
+                ui.strong("History");
+                ui.weak(format!("{}/{}", h.idx + 1, h.commits.len()));
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+            ui.spacing_mut().slider_width = 540.0;
+            let slider = ui.add(egui::Slider::new(&mut h.idx, 0..=last).show_value(false));
+            if last > 0 {
+                let r = slider.rect;
+                let y = r.bottom() + 1.0;
+                for i in 0..=last {
+                    let x = r.left() + 8.0 + (r.width() - 16.0) * i as f32 / last as f32;
+                    let colour = if i == h.idx {
+                        egui::Color32::WHITE
+                    } else {
+                        egui::Color32::GRAY
+                    };
+                    ui.painter().line_segment(
+                        [egui::pos2(x, y), egui::pos2(x, y + 5.0)],
+                        egui::Stroke::new(1.0, colour),
+                    );
+                }
+                ui.add_space(6.0);
+            }
+            if let Some((sha, subject)) = h.commits.get(h.idx) {
+                ui.label(format!(
+                    "{}  {}",
+                    &sha[..sha.len().min(7)],
+                    subject.lines().next().unwrap_or("")
+                ));
+            }
+        });
+    close
+}
+
+/// Checks the chosen commit out into `shopfront-history` and shows it, at
+/// most every 300 ms so a drag does not queue reads.
+fn history_tick(ui: &egui::Ui, app: &mut CellworksApp) {
+    let Some(h) = app.demo.as_mut().and_then(|t| t.history.as_mut()) else {
+        return;
+    };
+    if h.applied == Some(h.idx) {
+        return;
+    }
+    if h.last.elapsed() < Duration::from_millis(300) {
+        ui.ctx().request_repaint_after(Duration::from_millis(100));
+        return;
+    }
+    let dir = history_dir();
+    let sha = h.commits[h.idx].0.clone();
+    h.applied = Some(h.idx);
+    h.last = Instant::now();
+    git(&dir, &["checkout", "-q", "--detach", &sha]);
+    open_or_rescan(app, &dir);
+}
+
+fn open_or_rescan(app: &mut CellworksApp, dir: &Path) {
+    let open = app
+        .opened()
+        .as_ref()
+        .and_then(|o| o.project().id.local_path().map(Path::to_owned));
+    if open.as_deref() == Some(dir) {
+        app.rescan();
+    } else {
+        app.open(Project::at(dir.to_owned()));
+    }
+}
+
+fn history_close(app: &mut CellworksApp) {
+    if let Some(tour) = &mut app.demo {
+        tour.history = None;
+    }
+    app.open(Project::at(shop()));
+}
+
+/// `history` toggles the bar; `history <n>` or `history last` opens it at that commit.
+fn history(app: &mut CellworksApp, arg: &str) {
+    let open = app.demo.as_ref().is_some_and(|t| t.history.is_some());
+    if open && arg.is_empty() {
+        history_close(app);
+        return;
+    }
+    let Some(tour) = &mut app.demo else {
+        return;
+    };
+    if tour.history.is_none() {
+        let out = Command::new("git")
+            .current_dir(shop())
+            .args(["log", "--reverse", "--format=%H%x09%s", "main"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        let commits: Vec<(String, String)> = out
+            .lines()
+            .filter_map(|l| l.split_once('\t'))
+            .map(|(a, b)| (a.to_owned(), b.to_owned()))
+            .collect();
+        if commits.is_empty() {
+            return;
+        }
+        tour.history = Some(History {
+            idx: commits.len() - 1,
+            commits,
+            applied: None,
+            last: Instant::now() - Duration::from_secs(1),
+        });
+    }
+    if let Some(h) = &mut tour.history {
+        if arg == "last" {
+            h.idx = h.commits.len() - 1;
+        } else if let Ok(n) = arg.parse::<usize>() {
+            h.idx = n.min(h.commits.len() - 1);
+        }
+        h.last = Instant::now() - Duration::from_secs(1);
+    }
+}
+
+/// Paints what only the demo has in the city: the staging server and the
+/// deploy packet, in the map's own projection. Called over the map.
+pub fn paint_world(
+    ui: &egui::Ui,
+    tour: &mut Tour,
+    map: &cellworks_map::ProjectMap,
+    view: &cellworks_map::View,
+) {
+    use egui::{Color32, Stroke, pos2, vec2};
+    if map.root.file_name().is_none_or(|n| n != "shopfront") {
+        return;
+    }
+    let now = ui.input(|i| i.time);
+    let depot = map
+        .find(&map.root.join("Dockerfile"))
+        .map(|f| f.area.center())
+        .unwrap_or_else(|| map.extent.left_center());
+    let ground = pos2(map.extent.right() + 30.0, depot.y);
+    let painter = ui.painter();
+
+    // Packet: depot to server, with a short arc and a fading trail.
+    let at = |t: f64| {
+        let t = t.clamp(0.0, 1.0);
+        let e = (t * t * (3.0 - 2.0 * t)) as f32;
+        let g = depot + (ground - depot) * e;
+        view.to_screen(g, 30.0 * (std::f32::consts::PI * e).sin())
+    };
+    let progress = tour.deploy_at.map(|start| (now - start) / TRAVEL);
+    let arrived = progress.is_some_and(|p| p >= 1.0);
+    if let Some(p) = progress
+        && (0.0..1.0).contains(&p)
+    {
+        for k in (1..14).rev() {
+            let fade = 1.0 - k as f32 / 14.0;
+            painter.circle_filled(
+                at(p - k as f64 * 0.012),
+                4.0 * fade + 1.0,
+                Color32::from_white_alpha((150.0 * fade) as u8),
+            );
+        }
+        painter.circle_filled(
+            at(p),
+            9.0,
+            Color32::from_rgba_unmultiplied(90, 200, 255, 60),
+        );
+        painter.circle_filled(at(p), 5.0, Color32::from_rgb(180, 240, 255));
+    }
+    if arrived && tour.pipeline == Some(4) {
+        tour.pipeline_done = true;
+    }
+    let since = progress.map_or(f64::MAX, |p| (p - 1.0) * TRAVEL);
+
+    // Server: a rack tower with blinking lights.
+    let base = view.to_screen(ground, 0.0);
+    let w = (view.to_screen(ground + vec2(7.0, 0.0), 0.0) - base)
+        .length()
+        .max(10.0);
+    let h = (base - view.to_screen(ground, 28.0)).length().max(26.0);
+    let body = egui::Rect::from_min_max(base + vec2(-w, -h), base + vec2(w, 0.0));
+    painter.rect_filled(
+        body.translate(vec2(5.0, 3.0)),
+        2.0,
+        Color32::from_black_alpha(70),
+    );
+    painter.rect_filled(body, 2.0, Color32::from_rgb(38, 44, 56));
+    painter.rect_stroke(
+        body,
+        2.0,
+        Stroke::new(1.5, Color32::from_rgb(120, 140, 170)),
+        egui::StrokeKind::Inside,
+    );
+    for i in 0..5 {
+        let y = body.top() + h * (i as f32 + 0.5) / 5.0;
+        painter.line_segment(
+            [
+                pos2(body.left() + 3.0, y - h / 10.0),
+                pos2(body.right() - 3.0, y - h / 10.0),
+            ],
+            Stroke::new(1.0, Color32::from_rgb(70, 80, 100)),
+        );
+        let on = ((now * 3.0 + i as f64 * 1.9).sin() > -0.3) as u8;
+        let colour = if on == 1 {
+            if i % 2 == 0 {
+                Color32::from_rgb(90, 220, 120)
+            } else {
+                Color32::from_rgb(255, 190, 60)
+            }
+        } else {
+            Color32::from_rgb(50, 60, 70)
+        };
+        painter.circle_filled(pos2(body.left() + w * 0.5, y), 2.2, colour);
+        painter.circle_filled(
+            pos2(body.left() + w * 0.5 + 7.0, y),
+            2.2,
+            Color32::from_rgb(90, 220, 120).gamma_multiply(0.6),
+        );
+    }
+
+    // Version label, flashing when the deploy lands.
+    let version = if arrived { "v1.4.0" } else { "v1.3.0" };
+    let flash = (1.0 - since / 0.9).clamp(0.0, 1.0) as f32;
+    let top = body.center_top() - vec2(0.0, 14.0);
+    if flash > 0.0 {
+        painter.circle_stroke(
+            body.center_top(),
+            12.0 + 40.0 * (1.0 - flash),
+            Stroke::new(
+                2.0,
+                Color32::from_rgba_unmultiplied(120, 255, 160, (200.0 * flash) as u8),
+            ),
+        );
+    }
+    painter.text(
+        top,
+        egui::Align2::CENTER_BOTTOM,
+        version,
+        egui::FontId::proportional(15.0),
+        if flash > 0.0 {
+            Color32::from_rgb(160, 255, 190)
+        } else {
+            Color32::WHITE
+        },
+    );
+    painter.text(
+        base + vec2(0.0, 4.0),
+        egui::Align2::CENTER_TOP,
+        "staging",
+        egui::FontId::proportional(12.0),
+        Color32::from_rgb(170, 180, 200),
+    );
+    ui.ctx().request_repaint_after(Duration::from_millis(60));
 }
 
 // ---------------------------------------------------------------- commands
@@ -350,7 +697,6 @@ pub fn overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
 /// The demo's own drive commands. `true` when `line` was one of them.
 pub fn command(ui: &mut egui::Ui, app: &mut CellworksApp, line: &str) -> bool {
     let (cmd, arg) = line.split_once(' ').unwrap_or((line, ""));
-    let _ = ui;
     match cmd {
         "tour-next" => {
             if let Some(tour) = &mut app.demo {
@@ -410,9 +756,25 @@ pub fn command(ui: &mut egui::Ui, app: &mut CellworksApp, line: &str) -> bool {
             }
         }
         "app-window" => app_window(),
-        // ponytail: stubs until the pipeline strip, the deploy packet and the
-        // history scrubber exist.
-        "pipeline" | "deploy" | "history" => eprintln!("demo: {cmd} {arg} (not built yet)"),
+        "pipeline" => {
+            if let Some(tour) = &mut app.demo {
+                tour.pipeline_done = arg == "done";
+                tour.pipeline = Some(
+                    STAGES
+                        .iter()
+                        .position(|s| s.eq_ignore_ascii_case(arg))
+                        .unwrap_or(0),
+                );
+            }
+        }
+        "deploy" => {
+            if let Some(tour) = &mut app.demo {
+                tour.deploy_at = Some(ui.input(|i| i.time));
+                tour.pipeline = Some(4);
+                tour.pipeline_done = false;
+            }
+        }
+        "history" => history(app, arg),
         _ => return false,
     }
     true

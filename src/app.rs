@@ -1316,6 +1316,9 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                         };
                         let sessions_result =
                             sessions_view.paint(ui, map, common_dir.as_deref(), &shown.view);
+                        if let Some(tour) = app.demo.as_mut() {
+                            crate::demo::paint_world(ui, tour, map, &shown.view);
+                        }
                         let floor = app.navigation.inside().and_then(|(item, floor)| {
                             cellworks_map::ui::inside(ui, map, item, floor, shown.panel)
                         });
