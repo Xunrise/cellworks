@@ -153,13 +153,21 @@ const STEPS: [Step; 12] = [
     Step {
         title: "A ticket arrives",
         body: "Open the tickets and pick SHOP-42, Apply a promo code at checkout. The case shows the problem in plain words, and a schematic of the code and the outside systems it touches: the checkout pod, the orders database and the payment secret. Press INGEST to let the case be written. The map takes on the ticket's perspective: only what SHOP-42 touches stays lit.",
-        lines: &["lens-show shop-42"],
+        lines: &[
+            "lens-show shop-42",
+            "case-open SHOP-42",
+            "--",
+            "case-file ingested",
+        ],
     },
     Step {
         title: "Iterate with the app running",
-        body: "PROTOTYPE makes a worktree and a branch for the ticket. The shop starts in its own window and the agent builds the promo code while you watch the towers rise. Pin the checkout view, capture the app window and send round 1: show the discount on the total.",
+        body: "PROTOTYPE makes a worktree and a branch for the ticket. The shop starts in its own window and the agent builds the promo code while you watch the towers rise. The round 1 note is pinned on the checkout view and typed for you: press C and click the shop window to attach a screenshot, then continue to send it. The agent answers with round 2 and the shop reloads with the discount on the total.",
         lines: &[
             "lens-reset",
+            "wait 1500",
+            "case-prototype",
+            "wait 1500",
             "devserver",
             "wait 4000",
             "app-window",
@@ -169,6 +177,11 @@ const STEPS: [Step; 12] = [
             "wait 2500",
             "agent shop-42 src/ui/checkoutView.ts",
             "--",
+            "pin src/ui/checkoutView.ts",
+            "type Show the discount on the total, with the old total struck through",
+            "--",
+            "send",
+            "wait 1500",
             "write round-2",
             "agent shop-42 src/cart/totals.ts",
             "wait 2500",
@@ -178,17 +191,20 @@ const STEPS: [Step; 12] = [
     Step {
         title: "Freeze the prototype",
         body: "When the behaviour is right, freeze it. The session is distilled into a prototype note and the work is handed to the pipeline. Nothing is built here from now on.",
-        lines: &["case-file prototyped"],
+        lines: &["case-go 5", "--", "case-file prototyped"],
     },
     Step {
         title: "Plan",
         body: "The plan comes back as steps, each with the files it touches, the evidence and the risks. Read the risks, then approve.",
-        lines: &["case-file planned"],
+        lines: &["case-file planned", "wait 1500", "case-go 3"],
     },
     Step {
         title: "The Factory builds",
         body: "The pipeline builds, checks, delivers and reviews. Three agents commit in turn and the buildings rise: the promo rules, then the order, then the docs.",
         lines: &[
+            "case-close",
+            "open {ROOT}/projects/shopfront-shop-42",
+            "wait 2000",
             "pipeline build",
             "write factory/step-1",
             "agent factory-1 src/cart/promo.ts",
@@ -213,12 +229,18 @@ const STEPS: [Step; 12] = [
     Step {
         title: "Review",
         body: "The commits column lists what the agents did. Open each file to see its diff against main, then mark the case reviewed.",
-        lines: &[],
+        lines: &["case-open SHOP-42", "wait 1500", "case-go 6"],
     },
     Step {
         title: "Deploy",
-        body: "The reviewed change goes to the staging server and its version moves on. The app window reloads from staging.",
-        lines: &["deploy"],
+        body: "The reviewed change is merged and goes to the staging server; its version moves on. The app window reloads from staging.",
+        lines: &[
+            "case-close",
+            "merge-case",
+            "open {ROOT}/projects/shopfront",
+            "wait 2000",
+            "deploy",
+        ],
     },
     Step {
         title: "History",
@@ -380,7 +402,7 @@ fn pipeline_strip(ui: &egui::Ui, tour: &Tour) {
     let pulse = ((ctx.input(|i| i.time) * 4.0).sin() * 0.5 + 0.5) as f32;
     egui::Area::new(egui::Id::new("demo-pipeline"))
         .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_TOP, [0.0, 12.0])
+        .anchor(egui::Align2::CENTER_TOP, [0.0, 96.0])
         .show(ctx, |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -696,6 +718,12 @@ pub fn command(ui: &mut egui::Ui, app: &mut CellworksApp, line: &str) -> bool {
                 tour.advance();
             }
         }
+        "tour-go" => {
+            if let (Some(tour), Ok(step)) = (&mut app.demo, arg.trim().parse::<usize>()) {
+                tour.step = step.min(STEPS.len() - 1);
+                tour.beat = 0;
+            }
+        }
         "tour-back" => {
             if let Some(tour) = &mut app.demo {
                 tour.back();
@@ -734,6 +762,22 @@ pub fn command(ui: &mut egui::Ui, app: &mut CellworksApp, line: &str) -> bool {
             );
             app.rescan();
         }
+        "case-open" => {
+            let now = ui.input(|i| i.time);
+            app.open_case(arg.trim(), now);
+        }
+        "case-close" => app.case = None,
+        "merge-case" => git(
+            &root().join("projects/shopfront"),
+            &[
+                "merge",
+                "--no-ff",
+                "-q",
+                "-m",
+                "Merge SHOP-42: apply a promo code at checkout",
+                "proto/shop-42-shoppers-cannot-apply-promo",
+            ],
+        ),
         "case-file" => {
             let from = root().join(format!("case-snapshots/SHOP-42.{arg}.json"));
             if let Err(error) = std::fs::copy(&from, root().join("cases/SHOP-42.json")) {
@@ -981,7 +1025,7 @@ fn app_window() {
         eprintln!("demo: app-window (dry run)");
         return;
     }
-    let url = "http://localhost:5173";
+    let url = "http://localhost:5180";
     let opened = Command::new("open")
         .args(["-na", "Google Chrome", "--args"])
         .arg(format!("--app={url}"))

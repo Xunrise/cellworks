@@ -7,7 +7,7 @@ Vanilla TypeScript on Vite, no UI framework (see ADR-0001).
 
 ```
 npm install
-npm run dev      # http://localhost:5173
+npm run dev      # http://localhost:5180
 npm test
 npm run build
 ```

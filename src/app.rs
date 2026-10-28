@@ -143,7 +143,7 @@ pub struct CellworksApp {
     /// PROTOTYPE: what stages 4 and 5 keep between frames.
     iterate_view: crate::iterate_view::ViewState,
     /// PROTOTYPE: the open case, which takes over the window.
-    case: Option<cellworks_map::ui::case::Case>,
+    pub(crate) case: Option<cellworks_map::ui::case::Case>,
     /// PROTOTYPE: the ticket menu (T), from which a case opens.
     tickets_open: bool,
     /// PROTOTYPE: Jira, read-only, with the issues fetched this session.
@@ -2345,9 +2345,17 @@ fn notice_text(notice: &OpenedNotice) -> String {
 /// needs one to associate the window — and the wgpu renderer of ADR-0001.
 pub fn native_options() -> eframe::NativeOptions {
     eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Cellworks")
-            .with_app_id("cellworks"),
+        viewport: {
+            let viewport = egui::ViewportBuilder::default()
+                .with_title("Cellworks")
+                .with_app_id("cellworks");
+            // PROTOTYPE: the demo opens large enough to show the city beside the tour card.
+            if crate::demo::is_demo() {
+                viewport.with_inner_size([1600.0, 1000.0])
+            } else {
+                viewport
+            }
+        },
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     }
