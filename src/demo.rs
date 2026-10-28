@@ -191,7 +191,7 @@ const STEPS: [Step; 12] = [
     Step {
         title: "Freeze the prototype",
         body: "When the behaviour is right, freeze it. The session is distilled into a prototype note and the work is handed to the pipeline. Nothing is built here from now on.",
-        lines: &["case-go 5", "--", "case-file prototyped"],
+        lines: &["round-close", "case-go 5", "--", "case-file prototyped"],
     },
     Step {
         title: "Plan",
@@ -287,9 +287,44 @@ struct History {
 impl Drop for Tour {
     fn drop(&mut self) {
         for server in &mut self.servers {
+            let _ = Command::new("kill")
+                .args(["-TERM", &format!("-{}", server.id())])
+                .status();
             let _ = server.kill();
         }
     }
+}
+
+/// Test driver: (chapter, beats done in it, beats in it, chapter title).
+pub fn position(app: &CellworksApp) -> Option<(usize, usize, usize, &'static str)> {
+    let tour = app.demo.as_ref()?;
+    Some((
+        tour.step,
+        tour.beat,
+        tour.beats().len(),
+        STEPS[tour.step].title,
+    ))
+}
+
+/// Test driver: case stage, open project and lens, as one line.
+pub fn status(app: &CellworksApp) -> String {
+    let project = app
+        .opened()
+        .and_then(|o| o.root().map(|r| r.display().to_string()));
+    format!(
+        "case stage {:?}, project {}, lens {:?}, lens panel {}",
+        app.case.as_ref().map(|c| c.stage()),
+        project.as_deref().unwrap_or("-"),
+        app.opened().map(|o| o.lens()),
+        app.lens_panel.open
+    )
+}
+
+/// Test driver: nothing queued and no `wait` pending.
+pub fn idle(app: &CellworksApp) -> bool {
+    app.demo
+        .as_ref()
+        .is_none_or(|t| t.queue.is_empty() && t.resume.is_none())
 }
 
 impl Tour {
@@ -762,9 +797,16 @@ pub fn command(ui: &mut egui::Ui, app: &mut CellworksApp, line: &str) -> bool {
             );
             app.rescan();
         }
+        "round-close" => {
+            if let Some(it) = &mut app.iterate {
+                it.close_round();
+            }
+        }
         "case-open" => {
             let now = ui.input(|i| i.time);
             app.open_case(arg.trim(), now);
+            // The lens panel would stand behind the case sheets.
+            app.lens_panel.open = false;
         }
         "case-close" => app.case = None,
         "merge-case" => git(
@@ -1008,7 +1050,10 @@ fn devserver() -> Option<Child> {
         .create(true)
         .open(dir.join(".cellworks/run.log"))
         .ok()?;
-    Command::new("npm")
+    // Its own process group, so closing the tour also stops vite below npm.
+    let mut command = Command::new("npm");
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    command
         .args(["run", "dev"])
         .current_dir(&dir)
         .stdin(Stdio::null())
@@ -1094,8 +1139,9 @@ mod tests {
         tour.advance();
         assert_eq!(tour.beat, 1);
         assert!(!tour.queue.is_empty());
-        tour.advance();
-        tour.advance();
+        for _ in 0..tour.beats().len() {
+            tour.advance();
+        }
         assert_eq!((tour.step, tour.beat), (6, 0));
     }
 }

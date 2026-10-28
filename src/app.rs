@@ -137,7 +137,7 @@ pub struct CellworksApp {
     /// read from disk once per project, not every frame.
     common_dir_cache: Option<(std::path::PathBuf, Option<std::path::PathBuf>)>,
     /// PROTOTYPE: the iterate loop running from this window, if any.
-    iterate: Option<crate::iterate::Iterate>,
+    pub(crate) iterate: Option<crate::iterate::Iterate>,
     /// PROTOTYPE: whether the iterate session's pane was opened once.
     iterate_pane: bool,
     /// PROTOTYPE: what stages 4 and 5 keep between frames.
@@ -1591,7 +1591,7 @@ fn iterate_drive(ui: &mut egui::Ui, app: &mut CellworksApp) {
 }
 
 /// PROTOTYPE: runs one drive command; shared by the drive file and the demo tour.
-pub(crate) fn drive_line(ui: &mut egui::Ui, app: &mut CellworksApp, line: &str) {
+pub fn drive_line(ui: &mut egui::Ui, app: &mut CellworksApp, line: &str) {
     if crate::demo::is_demo() && crate::demo::command(ui, app, line) {
         return;
     }
