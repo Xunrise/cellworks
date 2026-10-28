@@ -3794,6 +3794,19 @@ fn ingest(key: &str, workspace: Option<&Path>) -> String {
     if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
         return format!("not an issue key: {key}");
     }
+    // PROTOTYPE (stakeholder demo): no session; the ingested case file is
+    // copied in from the demo's snapshots.
+    if std::env::var_os("CELLWORKS_DEMO").is_some() {
+        let target = casefile::path(key);
+        let snapshot = target
+            .parent()
+            .and_then(Path::parent)
+            .map(|root| root.join(format!("case-snapshots/{key}.ingested.json")));
+        return match snapshot.map(|from| std::fs::copy(from, &target)) {
+            Some(Ok(_)) => format!("demo: ingested {key}"),
+            _ => format!("demo: no ingested snapshot for {key}"),
+        };
+    }
     let dir = workspace
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()));

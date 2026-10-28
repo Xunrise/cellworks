@@ -420,6 +420,10 @@ fn inspector(ui: &mut egui::Ui, launcher: &Launcher, project: &Project) -> Optio
     {
         ui.label(format!("{files} file{}", if files == 1 { "" } else { "s" }));
     }
+    // PROTOTYPE (stakeholder demo): what the whole project holds, hardcoded.
+    if std::env::var_os("CELLWORKS_DEMO").is_some() && project.name == "shopfront" {
+        ui.label("22 code files · 9 docs · 7 open tickets · 4 external systems");
+    }
 
     let can_open = launcher.can_open(&project.id);
     let label = launcher.open_label(&project.id);

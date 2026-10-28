@@ -20,7 +20,7 @@ use egui::Pos2;
 
 use crate::terminal::Terminal;
 
-pub use claude::{Agent, AgentList, ClaudeCli, ClaudeUnavailable};
+pub use claude::{Agent, AgentList, ClaudeCli, ClaudeUnavailable, parse_agents};
 
 /// One file read or write a session made, placed relative to its own
 /// checkout so the open project's own city can decide whether it is in it.

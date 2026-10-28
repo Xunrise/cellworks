@@ -105,6 +105,8 @@ pub struct CellworksApp {
     launcher: Launcher,
     /// How a remote host's reachability is decided (STORY-078).
     probe: Arc<dyn HostProbe + Send + Sync>,
+    /// PROTOTYPE (stakeholder demo): the guided tour, in demo mode only.
+    pub(crate) demo: Option<crate::demo::Tour>,
     /// Where the host probes report, once started.
     probed: Option<Receiver<WorkspaceEvent>>,
     /// Whether a host probe is still running.
@@ -188,7 +190,7 @@ impl CellworksApp {
     /// With no `$HOME` there is nowhere to scan: no thread starts, and the
     /// universe is reported empty rather than left scanning for ever.
     pub fn start() -> CellworksApp {
-        match Sources::for_this_user() {
+        match crate::demo::sources().or_else(Sources::for_this_user) {
             Some(sources) => CellworksApp {
                 arrangements: Some(kept(ArrangementStore::beside(&sources.settings_file))),
                 launcher: Launcher::new(
@@ -197,19 +199,22 @@ impl CellworksApp {
                         .parent()
                         .map(std::path::Path::to_path_buf),
                 ),
-                probe: Arc::new(SshProbe),
+                probe: crate::demo::probe().unwrap_or_else(|| Arc::new(SshProbe)),
                 probed: None,
                 probing: false,
                 project_details: Vec::new(),
                 auto_detail: true,
                 recent: Some(kept_recent(RecentStore::beside(&sources.settings_file))),
-                sessions: match SessionSources::for_this_user() {
+                sessions: match crate::demo::session_sources()
+                    .or_else(SessionSources::for_this_user)
+                {
                     Some(session_sources) => SessionsView::watching(session_sources),
                     None => SessionsView::none(),
                 },
                 drawn_sessions: Vec::new(),
                 common_dir_cache: None,
                 iterate: None,
+                demo: crate::demo::tour(),
                 iterate_pane: false,
                 iterate_view: Default::default(),
                 case: None,
@@ -247,13 +252,16 @@ impl CellworksApp {
                 project_details: Vec::new(),
                 auto_detail: true,
                 recent: None,
-                sessions: match SessionSources::for_this_user() {
+                sessions: match crate::demo::session_sources()
+                    .or_else(SessionSources::for_this_user)
+                {
                     Some(session_sources) => SessionsView::watching(session_sources),
                     None => SessionsView::none(),
                 },
                 drawn_sessions: Vec::new(),
                 common_dir_cache: None,
                 iterate: None,
+                demo: crate::demo::tour(),
                 iterate_pane: false,
                 iterate_view: Default::default(),
                 case: None,
@@ -291,6 +299,7 @@ impl CellworksApp {
         CellworksApp {
             arrangements: None,
             launcher: Launcher::new(None),
+            demo: None,
             probe: Arc::new(SshProbe),
             probed: None,
             probing: false,
@@ -446,7 +455,10 @@ impl CellworksApp {
                     .sessions
                     .sessions()
                     .iter()
-                    .find(|s| s.name == it.session_name && s.attach_id.is_some())
+                    .find(|s| {
+                        s.name == it.session_name
+                            && (crate::demo::is_demo() || s.attach_id.is_some())
+                    })
                     .cloned()
             {
                 self.sessions.open_pane(&session);
@@ -774,6 +786,18 @@ impl CellworksApp {
         }
     }
 
+    /// PROTOTYPE (stakeholder demo): reads the open project again, leaving
+    /// the view where it is.
+    pub(crate) fn rescan(&mut self) {
+        let Some(project) = self.opened.as_ref().map(|opened| opened.project().clone()) else {
+            return;
+        };
+        let events = self.read(&project);
+        if let Some(opened) = &mut self.opened {
+            opened.reread(events);
+        }
+    }
+
     /// Starts reading `project` with the district prefix rule its settings
     /// name, or the default when the name is unknown.
     fn read(&self, project: &Project) -> Receiver<CodeAnalysisEvent> {
@@ -815,7 +839,7 @@ impl eframe::App for CellworksApp {
         {
             ui.ctx().request_repaint();
         }
-        if self.iterate.is_some() {
+        if self.iterate.is_some() || self.demo.is_some() {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(250));
         }
@@ -1453,6 +1477,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         app.open_case(&key, now);
     }
     iterate_overlay(ui, app);
+    crate::demo::overlay(ui, app);
     let (picked, (import_lanes, call_lanes)) = bar;
     if let Some(opened) = &mut app.opened {
         if let Some(lens) = picked {
@@ -1516,112 +1541,123 @@ fn iterate_drive(ui: &mut egui::Ui, app: &mut CellworksApp) {
     }
     let _ = std::fs::write(&file, "");
     for line in text.lines() {
-        let (cmd, arg) = line.split_once(' ').unwrap_or((line, ""));
-        match cmd {
-            "open" => app.open(Project::at(std::path::PathBuf::from(arg))),
-            "select" => {
-                if let Some(project) = app.project_at(std::path::Path::new(arg)) {
-                    app.launcher.select(Some(project.id.clone()));
-                }
+        drive_line(ui, app, line);
+    }
+}
+
+/// PROTOTYPE: runs one drive command; shared by the drive file and the demo tour.
+pub(crate) fn drive_line(ui: &mut egui::Ui, app: &mut CellworksApp, line: &str) {
+    if crate::demo::is_demo() && crate::demo::command(ui, app, line) {
+        return;
+    }
+    let (cmd, arg) = line.split_once(' ').unwrap_or((line, ""));
+    match cmd {
+        "open" => app.open(Project::at(std::path::PathBuf::from(arg))),
+        "select" => {
+            if let Some(project) = app.project_at(std::path::Path::new(arg)) {
+                app.launcher.select(Some(project.id.clone()));
             }
-            "proto" => prototype_this(app),
-            "case-go" => {
+        }
+        "proto" => prototype_this(app),
+        "case-go" => {
+            let now = ui.input(|i| i.time);
+            if let Some(case) = &mut app.case {
+                case.go(arg.parse().unwrap_or(1), now);
+            }
+        }
+        "case-prototype" => {
+            let now = ui.input(|i| i.time);
+            if let Some(case) = &mut app.case {
+                case.prototype_act(now);
+            }
+        }
+        "file" => {
+            if let Some(it) = &app.iterate {
+                let (label, lines) = it.file_view(arg);
                 let now = ui.input(|i| i.time);
-                if let Some(case) = &mut app.case {
-                    case.go(arg.parse().unwrap_or(1), now);
+                app.iterate_view.file = Some(crate::iterate_view::OpenFile {
+                    rel: arg.to_owned(),
+                    label,
+                    lines,
+                    opened: now,
+                });
+            }
+        }
+        "dock" => app.sessions.toggle_dock(),
+        "fold" => app.sessions.toggle_collapsed(),
+        "swap" => {
+            let now = ui.input(|i| i.time);
+            app.iterate_view.swap(now);
+        }
+        "type" => app.iterate_view.note = arg.to_owned(),
+        "attach" => {
+            let (path, name) = arg.split_once(' ').unwrap_or((arg, ""));
+            match crate::iterate::Iterate::attach(std::path::Path::new(path), name) {
+                Ok(it) => {
+                    let worktree = it.worktree.clone();
+                    app.iterate = Some(it);
+                    app.iterate_pane = false;
+                    app.open(Project::at(worktree));
                 }
+                Err(e) => eprintln!("attach failed: {e}"),
             }
-            "case-prototype" => {
-                let now = ui.input(|i| i.time);
-                if let Some(case) = &mut app.case {
-                    case.prototype_act(now);
+        }
+        "jump" => {
+            if let Some(root) = app.map().map(|m| m.root.clone()) {
+                app.jump(root.join(arg));
+            }
+        }
+        "shot" => ui
+            .ctx()
+            .send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
+                arg.to_owned(),
+            ))),
+        _ => {
+            let Some(it) = &mut app.iterate else {
+                return;
+            };
+            let draft = || crate::iterate::Draft {
+                anchor: None,
+                image: None,
+                note: String::new(),
+            };
+            match cmd {
+                "pin" => it.pin(arg.to_owned()),
+                "note" => it.draft.get_or_insert_with(draft).note = arg.to_owned(),
+                "image" => {
+                    it.draft.get_or_insert_with(draft).image = Some(arg.into());
                 }
-            }
-            "file" => {
-                if let Some(it) = &app.iterate {
-                    let (label, lines) = it.file_view(arg);
-                    let now = ui.input(|i| i.time);
-                    app.iterate_view.file = Some(crate::iterate_view::OpenFile {
-                        rel: arg.to_owned(),
-                        label,
-                        lines,
-                        opened: now,
-                    });
-                }
-            }
-            "dock" => app.sessions.toggle_dock(),
-            "fold" => app.sessions.toggle_collapsed(),
-            "swap" => {
-                let now = ui.input(|i| i.time);
-                app.iterate_view.swap(now);
-            }
-            "type" => app.iterate_view.note = arg.to_owned(),
-            "attach" => {
-                let (path, name) = arg.split_once(' ').unwrap_or((arg, ""));
-                match crate::iterate::Iterate::attach(std::path::Path::new(path), name) {
-                    Ok(it) => {
-                        let worktree = it.worktree.clone();
-                        app.iterate = Some(it);
-                        app.iterate_pane = false;
-                        app.open(Project::at(worktree));
+                "send" => {
+                    let typed = std::mem::take(&mut app.iterate_view.note);
+                    if !typed.trim().is_empty() {
+                        it.draft.get_or_insert_with(draft).note = typed;
                     }
-                    Err(e) => eprintln!("attach failed: {e}"),
-                }
-            }
-            "jump" => {
-                if let Some(root) = app.map().map(|m| m.root.clone()) {
-                    app.jump(root.join(arg));
-                }
-            }
-            "shot" => ui
-                .ctx()
-                .send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
-                    arg.to_owned(),
-                ))),
-            _ => {
-                let Some(it) = &mut app.iterate else {
-                    continue;
-                };
-                let draft = || crate::iterate::Draft {
-                    anchor: None,
-                    image: None,
-                    note: String::new(),
-                };
-                match cmd {
-                    "pin" => it.pin(arg.to_owned()),
-                    "note" => it.draft.get_or_insert_with(draft).note = arg.to_owned(),
-                    "image" => {
-                        it.draft.get_or_insert_with(draft).image = Some(arg.into());
-                    }
-                    "send" => {
-                        let typed = std::mem::take(&mut app.iterate_view.note);
-                        if !typed.trim().is_empty() {
-                            it.draft.get_or_insert_with(draft).note = typed;
+                    let session = app
+                        .sessions
+                        .sessions()
+                        .iter()
+                        .find(|s| {
+                            s.name == it.session_name
+                                && (crate::demo::is_demo() || s.attach_id.is_some())
+                        })
+                        .cloned();
+                    let delay = match &session {
+                        Some(s) if app.sessions.pane_session() == Some(s.id.as_str()) => {
+                            std::time::Duration::ZERO
                         }
-                        let session = app
-                            .sessions
-                            .sessions()
-                            .iter()
-                            .find(|s| s.name == it.session_name && s.attach_id.is_some())
-                            .cloned();
-                        let delay = match &session {
-                            Some(s) if app.sessions.pane_session() == Some(s.id.as_str()) => {
-                                std::time::Duration::ZERO
-                            }
-                            Some(s) => {
-                                app.sessions.open_pane(s);
-                                std::time::Duration::from_secs(2)
-                            }
-                            None => std::time::Duration::ZERO,
-                        };
-                        it.send(delay);
-                    }
-                    "respawn" => it.respawn(),
-                    "close" => it.close_round(),
-                    "step" => it.step(arg.parse().unwrap_or(0)),
-                    "revert" => it.revert(arg.parse().unwrap_or(0)),
-                    _ => eprintln!("drive: unknown {line}"),
+                        Some(s) => {
+                            app.sessions.open_pane(s);
+                            std::time::Duration::from_secs(2)
+                        }
+                        None => std::time::Duration::ZERO,
+                    };
+                    it.send(delay);
                 }
+                "respawn" => it.respawn(),
+                "close" => it.close_round(),
+                "step" => it.step(arg.parse().unwrap_or(0)),
+                "revert" => it.revert(arg.parse().unwrap_or(0)),
+                _ => eprintln!("drive: unknown {line}"),
             }
         }
     }
@@ -2110,7 +2146,9 @@ fn iterate_overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
             .sessions
             .sessions()
             .iter()
-            .find(|s| s.name == it.session_name && s.attach_id.is_some())
+            .find(|s| {
+                s.name == it.session_name && (crate::demo::is_demo() || s.attach_id.is_some())
+            })
             .cloned();
         let delay = match &session {
             Some(s) if app.sessions.pane_session() == Some(s.id.as_str()) => {
@@ -2276,6 +2314,7 @@ pub fn native_options() -> eframe::NativeOptions {
 /// machine, a broken driver, a remote shell. The caller reports it; nothing
 /// here panics, and no test calls this.
 pub fn run() -> eframe::Result {
+    crate::demo::init();
     eframe::run_native(
         "Cellworks",
         native_options(),

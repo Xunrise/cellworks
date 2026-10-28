@@ -253,8 +253,8 @@ impl Iterate {
                 l.split(" | ")
                     .next()
                     .unwrap_or(l)
-                    .splitn(2, "] ")
-                    .nth(1)
+                    .split_once("] ")
+                    .map(|x| x.1)
                     .unwrap_or(l)
                     .to_owned()
             })
@@ -676,6 +676,11 @@ impl Iterate {
 fn spawn(worktree: &Path, name: &str, brief: &str) -> Receiver<Result<String, String>> {
     let brief = brief.to_owned();
     let (spawn_tx, spawn_rx) = channel();
+    // PROTOTYPE (stakeholder demo): no real session; the tour plays the agent.
+    if std::env::var_os("CELLWORKS_DEMO").is_some() {
+        let _ = spawn_tx.send(Ok("demo".to_owned()));
+        return spawn_rx;
+    }
     let worktree = worktree.to_owned();
     let name = name.to_owned();
     std::thread::spawn(move || {
