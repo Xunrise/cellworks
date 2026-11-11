@@ -1346,6 +1346,14 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         );
     }
     explorer_framed = false;
+    // A trackpad pan moves the camera before the map is drawn, so it shows
+    // in the very frame it arrives in.
+    if scroll != egui::Vec2::ZERO
+        && let Some(view) = app.view
+    {
+        app.navigation.pan(view.visible, -view.ground_delta(scroll));
+        ui.ctx().request_repaint();
+    }
     if lock {
         app.navigation.toggle_lock();
     }
@@ -1671,11 +1679,6 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             }
             if drawn.dragged != egui::Vec2::ZERO {
                 app.navigation.pan(visible, -drawn.dragged);
-            }
-            if scroll != egui::Vec2::ZERO {
-                app.navigation
-                    .pan(visible, -drawn.view.ground_delta(scroll));
-                ui.ctx().request_repaint();
             }
             if let (Some((path, by)), Some(opened)) = (&drawn.moved, &mut app.opened) {
                 opened.move_by(path, *by);

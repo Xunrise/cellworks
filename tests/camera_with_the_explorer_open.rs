@@ -167,3 +167,27 @@ fn picking_a_sibling_in_the_explorer_never_zooms_out_on_the_way() {
         "zoomed out below {floor} between {start} and {end}: {flight:?}"
     );
 }
+
+/// A trackpad pan moves the ground under the pointer by its delta that frame
+#[test]
+fn a_trackpad_pan_moves_the_ground_under_the_pointer_in_the_same_frame() {
+    let mut harness = zoomed_in();
+    let ground = ground_under_pointer(&harness);
+    let by = vec2(-30.0, 20.0);
+    harness.event(Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: by,
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    harness.step();
+    let seen = harness
+        .state()
+        .view()
+        .expect("drawn")
+        .to_screen(ground, 0.0);
+    assert!(
+        (seen - (POINTER + by)).length() < 1e-3,
+        "{seen:?} is not {POINTER:?} + {by:?} the frame the pan arrived"
+    );
+}
