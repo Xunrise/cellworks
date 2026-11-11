@@ -175,10 +175,10 @@ pub(crate) fn fit(framing: Framing, panel: Rect) -> View {
     view
 }
 
-/// The scale `framing` is drawn at in `panel`: what [`fit`] picks, without
-/// the view.
-pub fn fit_scale(framing: Framing, panel: Rect) -> f32 {
-    fit(framing, panel).scale
+/// The part of the ground in view when `framing` is drawn in `panel`: the
+/// [`View::visible`] [`fit`] picks, without the view.
+pub fn fit_visible(framing: Framing, panel: Rect) -> Rect {
+    fit(framing, panel).visible
 }
 
 #[cfg(test)]

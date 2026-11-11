@@ -11,7 +11,7 @@ use cellworks::app::CellworksApp;
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, pos2, vec2};
 use egui_kittest::Harness;
 
-use common::shop_city;
+use common::{map, shop_city};
 
 /// Right of the Explorer panel, inside the map.
 const POINTER: Pos2 = pos2(800.0, 450.0);
@@ -100,5 +100,94 @@ fn picking_a_section_in_the_explorer_lands_where_it_stays() {
     assert!(
         steps[80..].iter().all(|step| *step < 1e-3),
         "moves once landed: {steps:?}"
+    );
+}
+
+/// The width the Explorer takes from the left of the map, margin included.
+const EXPLORER_SIDE: f32 = 330.0;
+
+/// Steps `frames` frames, returning the view's scale after each.
+fn scales(harness: &mut Harness<'_, CellworksApp>, frames: usize) -> Vec<f32> {
+    (0..frames)
+        .map(|_| {
+            harness.step();
+            harness.state().view().expect("drawn").scale()
+        })
+        .collect()
+}
+
+/// A section picked in the Explorer lands centred in the map beside the panel
+#[test]
+fn a_section_picked_in_the_explorer_lands_centred_beside_the_panel() {
+    let (_tree, mut harness) = shop_city();
+    harness.key_press(Key::ArrowDown);
+    scales(&mut harness, 90);
+
+    let map = map(&harness);
+    let framing = harness.state().navigation().framing(&map);
+    let view = harness.state().view().expect("drawn");
+    let area = framing.area;
+    let corners = [
+        area.left_top(),
+        area.right_top(),
+        area.right_bottom(),
+        area.left_bottom(),
+    ]
+    .map(|corner| view.to_screen(corner, 0.0));
+    let mut seen = egui::Rect::from_points(&corners);
+    seen.min.y -= framing.headroom * view.scale();
+
+    let panel = harness.state().panel().expect("drawn");
+    let beside = egui::Rect::from_min_max(panel.min + vec2(EXPLORER_SIDE, 0.0), panel.max);
+    assert!(
+        (seen.center() - beside.center()).length() < 1.0,
+        "{:?} is not centred in {beside:?}",
+        seen.center()
+    );
+    assert!(
+        beside.contains_rect(seen),
+        "{seen:?} does not fit in {beside:?}"
+    );
+}
+
+/// Picking the next sibling in the Explorer never zooms out past either end
+#[test]
+fn picking_a_sibling_in_the_explorer_never_zooms_out_on_the_way() {
+    let (_tree, mut harness) = shop_city();
+    harness.key_press(Key::ArrowDown);
+    scales(&mut harness, 90);
+    let start = harness.state().view().expect("drawn").scale();
+
+    harness.key_press(Key::ArrowDown);
+    let flight = scales(&mut harness, 90);
+    let end = *flight.last().expect("frames");
+    let floor = start.min(end) - 1e-3;
+    assert!(
+        flight.iter().all(|scale| *scale >= floor),
+        "zoomed out below {floor} between {start} and {end}: {flight:?}"
+    );
+}
+
+/// A trackpad pan moves the ground under the pointer by its delta that frame
+#[test]
+fn a_trackpad_pan_moves_the_ground_under_the_pointer_in_the_same_frame() {
+    let mut harness = zoomed_in();
+    let ground = ground_under_pointer(&harness);
+    let by = vec2(-30.0, 20.0);
+    harness.event(Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: by,
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    harness.step();
+    let seen = harness
+        .state()
+        .view()
+        .expect("drawn")
+        .to_screen(ground, 0.0);
+    assert!(
+        (seen - (POINTER + by)).length() < 1e-3,
+        "{seen:?} is not {POINTER:?} + {by:?} the frame the pan arrived"
     );
 }

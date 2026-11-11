@@ -41,7 +41,7 @@ pub use lanes::{LaneId, LaneKind, Lanes, Network};
 pub use lens::{Flight, Lens, relens};
 pub use review::{ReviewOverlay, TowerReview};
 pub use rules::{PREFIX_RULES, PrefixRule, default_prefix_rule, prefix_rule};
-pub use view::{Pivot, View, fit_scale, turn_at};
+pub use view::{Pivot, View, fit_visible, turn_at};
 pub use why::{PrKey, PrShare, Story, Why, floor_commit, why_of};
 
 impl ProjectMap {

@@ -548,6 +548,10 @@ pub struct ViewOptions<'a> {
     /// or impacted tower pulses. `None` leaves the city as it was
     /// (STORY-022).
     pub review: Option<&'a ReviewOverlay>,
+    /// The part of the space left that `framing` is fitted and centred in,
+    /// such as the map beside a panel drawn over it; all of it when `None`.
+    /// The map is still drawn across the whole space.
+    pub within: Option<Rect>,
 }
 
 /// A click on a lane: the lane, and with Cmd held the tower at its far end
@@ -574,12 +578,14 @@ pub fn project(ui: &mut egui::Ui, map: &ProjectMap, options: ViewOptions<'_>) ->
         cables,
         tint,
         review,
+        within,
     } = options;
     let panel = ui.available_rect_before_wrap();
-    let view = fit(framing, panel);
+    let seen = within.unwrap_or(panel);
+    let view = fit(framing, seen);
     let turn = turn_at(view.scale());
     let view = match pivot {
-        Some(pivot) if turn > 0.0 => view.turned(turn, pivot, panel.center()),
+        Some(pivot) if turn > 0.0 => view.turned(turn, pivot, seen.center()),
         _ => view,
     };
     ui.painter().rect_filled(panel, 0.0, NIGHT);
@@ -2417,6 +2423,7 @@ mod tests {
                     cables: false,
                     tint: None,
                     review: None,
+                    within: None,
                 },
             )
             .towers;
@@ -2507,6 +2514,7 @@ mod tests {
                     cables: false,
                     tint: None,
                     review: None,
+                    within: None,
                 },
             )
             .towers;
@@ -2595,6 +2603,7 @@ mod tests {
                         cables: true,
                         tint: None,
                         review: None,
+                        within: None,
                     },
                 )
                 .buildings;
@@ -2695,6 +2704,7 @@ mod tests {
                     cables: false,
                     tint: None,
                     review: Some(&overlay),
+                    within: None,
                 },
             )
             .towers;

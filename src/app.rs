@@ -63,7 +63,8 @@ const SCROLL_PER_E: f32 = 200.0;
 const WHY_WIDTH: f32 = 420.0;
 
 /// The Explorer's own width, and its margin from the left edge of the map
-/// (STORY-089): together, how far a framed element is shifted beside it.
+/// (STORY-089): together, the width it covers, right of which a framed
+/// element is centred.
 const EXPLORER_WIDTH: f32 = 320.0;
 const EXPLORER_MARGIN: f32 = 10.0;
 
@@ -1352,6 +1353,14 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         );
     }
     explorer_framed = false;
+    // A trackpad pan moves the camera before the map is drawn, so it shows
+    // in the very frame it arrives in.
+    if scroll != egui::Vec2::ZERO
+        && let Some(view) = app.view
+    {
+        app.navigation.pan(view.visible, -view.ground_delta(scroll));
+        ui.ctx().request_repaint();
+    }
     if lock {
         app.navigation.toggle_lock();
     }
@@ -1544,7 +1553,6 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             }
             app.sessions.pane(ui);
             let sessions_view = &mut app.sessions;
-            let mut unshift = egui::Vec2::ZERO;
             let (drawn, minimap, floor, (sessions_drawn, session_clicked, pane_opened)) =
                 egui::CentralPanel::default()
                     .frame(egui::Frame::central_panel(ui.style()).inner_margin(0.0))
@@ -1558,7 +1566,6 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                             review_overlay,
                             &mut app.explorer,
                             now,
-                            &mut unshift,
                         );
                         let (Some(shown), ProjectState::Mapped(map)) = (&drawn, opened.state())
                         else {
@@ -1606,8 +1613,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             if let Some(floor) = floor {
                 app.navigation.pick_floor(floor);
             }
-            // Input acts on the logical camera: undo the Explorer's shift.
-            let visible = drawn.view.visible.translate(unshift);
+            let visible = drawn.view.visible;
             app.view = Some(drawn.view);
             app.panel = Some(drawn.panel);
             // The Explorer, opaque over the left edge of the map, drawn last
@@ -1663,7 +1669,9 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             // glides to it over the next frames.
             if let Some(map) = mapped(&app.opened) {
                 let turn = cellworks_map::turn_at(drawn.view.scale());
-                let middle = drawn.view.to_ground(drawn.panel.center());
+                let middle = drawn
+                    .view
+                    .to_ground(seen_in(app.explorer.is_open(), drawn.panel).center());
                 let nearest = map
                     .item_nearest(middle, app.underground)
                     .map(|item| item.path.clone());
@@ -1682,11 +1690,6 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             }
             if drawn.dragged != egui::Vec2::ZERO {
                 app.navigation.pan(visible, -drawn.dragged);
-            }
-            if scroll != egui::Vec2::ZERO {
-                app.navigation
-                    .pan(visible, -drawn.view.ground_delta(scroll));
-                ui.ctx().request_repaint();
             }
             if let (Some((path, by)), Some(opened)) = (&drawn.moved, &mut app.opened) {
                 opened.move_by(path, *by);
@@ -1807,13 +1810,10 @@ fn zoomed(visible: egui::Rect, fixed: egui::Pos2, factor: f32) -> egui::Rect {
 
 /// Draws the opened project, and reports the map as drawn once there is one.
 ///
-/// While the Explorer is open, the area actually drawn is shifted beside its
-/// panel (STORY-089 requirements 9 and 10): mid-flight, wherever
-/// `explorer.flying` says; landed, `beside` of `navigation.framing`'s own
-/// area, using `last_panel`'s width and `last_view`'s scale — the previous
-/// frame's, since this frame's are not known until this very call returns.
-/// `navigation.framing` itself never changes: Esc, F and the acceptance
-/// tests all read the unshifted, instant truth.
+/// While the Explorer is open, what is framed is fitted and centred in the
+/// map beside its panel (STORY-089 requirements 9 and 10), mid-flight
+/// wherever `explorer.flying` says. The view's `visible` is then that of the
+/// map beside the panel, so input acts on it as it is drawn.
 #[allow(clippy::too_many_arguments)]
 fn project(
     ui: &mut egui::Ui,
@@ -1824,7 +1824,6 @@ fn project(
     review: Option<&ReviewOverlay>,
     explorer: &mut Explorer,
     now: f64,
-    unshift: &mut egui::Vec2,
 ) -> Option<Drawn> {
     for notice in opened.notices() {
         ui.label(notice_text(notice));
@@ -1844,25 +1843,30 @@ fn project(
         }
         ProjectState::Mapped(map) => {
             let framing = navigation.framing(map);
-            let area = if explorer.is_open() {
-                let flying = explorer.flying(now, EXPLORER_FLIGHT);
-                if flying.is_some() {
+            // Mid-flight, the ground in view is drawn as a free camera would.
+            let framing = match explorer
+                .is_open()
+                .then(|| explorer.flying(now, EXPLORER_FLIGHT))
+            {
+                Some(Some(area)) => {
                     ui.ctx().request_repaint();
+                    cellworks_map::Framing {
+                        area,
+                        fill: 1.0,
+                        closest: f32::INFINITY,
+                        headroom: 0.0,
+                    }
                 }
-                flying.unwrap_or_else(|| {
-                    shifted_beside(&framing, map.extent, ui.available_rect_before_wrap())
-                })
-            } else {
-                framing.area
+                _ => framing,
             };
-            *unshift = framing.area.center() - area.center();
+            let panel = ui.available_rect_before_wrap();
             Some(cellworks_map::ui::project(
                 ui,
                 &opened
                     .shown(ui.input(|input| input.time))
                     .unwrap_or(std::borrow::Cow::Borrowed(map)),
                 cellworks_map::ui::ViewOptions {
-                    framing: cellworks_map::Framing { area, ..framing },
+                    framing,
                     selected: navigation.selection(),
                     folder_view: navigation.folder_view(map),
                     pivot: navigation.pivot(map),
@@ -1873,34 +1877,32 @@ fn project(
                     cables: navigation.shows_cables(),
                     tint,
                     review,
+                    within: Some(seen_in(explorer.is_open(), panel)),
                 },
             ))
         }
     }
 }
 
-/// `framing`'s area shifted beside the Explorer's panel, at the scale it is
-/// drawn at in `panel` this very frame.
-fn shifted_beside(
-    framing: &cellworks_map::Framing,
-    whole: egui::Rect,
-    panel: egui::Rect,
-) -> egui::Rect {
-    cellworks_navigation::explorer::beside(
-        framing.area,
-        whole,
-        panel.width(),
-        cellworks_map::fit_scale(*framing, panel),
-        EXPLORER_WIDTH + EXPLORER_MARGIN,
-    )
+/// The part of the map `panel` that what is framed is fitted and centred
+/// in: beside the Explorer's panel while it is open.
+fn seen_in(explorer_open: bool, panel: egui::Rect) -> egui::Rect {
+    if explorer_open {
+        cellworks_navigation::explorer::beside(panel, EXPLORER_WIDTH + EXPLORER_MARGIN)
+    } else {
+        panel
+    }
 }
 
-/// Starts the Explorer's camera flight to wherever `navigation` now frames,
-/// shifted beside its panel: called whenever moving the cursor, unfolding to
-/// the parent or clicking a row changes what is framed (STORY-089 requirement
-/// 9). `panel` and `view` are the previous frame's — this frame's are not
-/// known yet at the points this is called from — matching the same fallback
-/// `project` itself uses.
+/// Starts the Explorer's camera flight to wherever `navigation` now frames:
+/// called whenever moving the cursor, unfolding to the parent or clicking a
+/// row changes what is framed (STORY-089 requirement 9). `panel` and `view`
+/// are the previous frame's — this frame's are not known yet at the points
+/// this is called from.
+///
+/// The flight runs between the ground in view now and the ground in view once
+/// landed, both drawn as a free camera, so it pans and zooms straight from one
+/// to the other without first zooming out.
 fn fly_explorer(
     explorer: &mut Explorer,
     navigation: &Navigation,
@@ -1909,13 +1911,11 @@ fn fly_explorer(
     view: Option<View>,
     now: f64,
 ) {
-    let framing = navigation.framing(map);
-    let target = match panel {
-        Some(panel) => shifted_beside(&framing, map.extent, panel),
-        None => framing.area,
+    let (Some(panel), Some(view)) = (panel, view) else {
+        return;
     };
-    let from = view.map(|view| view.visible).unwrap_or(target);
-    explorer.fly(from, target, now);
+    let target = cellworks_map::fit_visible(navigation.framing(map), seen_in(true, panel));
+    explorer.fly(view.visible, target, now);
 }
 
 /// `store`, with a thread keeping what is handed to it.

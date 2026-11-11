@@ -228,18 +228,15 @@ pub fn flown(from: Rect, to: Rect, t: f32) -> Rect {
     )
 }
 
-/// Shifts `area` left by a ground margin equal to `panel_width` screen points
-/// at `scale` points per ground unit, so that centring the result in a view
-/// `window_width` points wide puts `area` itself centred in the part of that
-/// view to the right of a panel `panel_width` points wide — unless
-/// `area == whole` (the whole-project overview) or `window_width` is less
-/// than twice `panel_width`.
-pub fn beside(area: Rect, whole: Rect, window_width: f32, scale: f32, panel_width: f32) -> Rect {
-    if area == whole || window_width < 2.0 * panel_width {
-        return area;
+/// The part of `panel` to the right of a panel `panel_width` points wide
+/// drawn over its left edge: where a framed element is fitted and centred
+/// while the Explorer is open. All of `panel` when it is narrower than twice
+/// `panel_width`.
+pub fn beside(panel: Rect, panel_width: f32) -> Rect {
+    if panel.width() < 2.0 * panel_width {
+        return panel;
     }
-    let margin = panel_width / scale;
-    area.translate(egui::vec2(-margin, 0.0))
+    Rect::from_min_max(panel.min + egui::vec2(panel_width, 0.0), panel.max)
 }
 
 /// A folder-shaped element of the map: a district, a sub-district or a
@@ -670,27 +667,19 @@ mod tests {
     }
 
     #[test]
-    fn beside_shifts_folder_and_node_framing_but_not_the_whole_project_nor_a_narrow_view() {
-        let area = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(30.0, 40.0));
-        let whole = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(500.0, 500.0));
-        let scale = 2.0;
+    fn beside_is_the_part_right_of_the_panel_unless_the_view_is_narrow() {
         let panel_width = 320.0;
-        let window_width = 1200.0;
-
-        let shifted = beside(area, whole, window_width, scale, panel_width);
-        let expected = area.translate(egui::vec2(-panel_width / scale, 0.0));
-        assert_eq!(shifted, expected);
-
+        let wide = egui::Rect::from_min_size(egui::pos2(0.0, 30.0), egui::vec2(1200.0, 800.0));
         assert_eq!(
-            beside(whole, whole, window_width, scale, panel_width),
-            whole,
-            "the whole-project overview is never shifted"
+            beside(wide, panel_width),
+            egui::Rect::from_min_max(egui::pos2(320.0, 30.0), wide.max)
         );
 
-        let narrow = 2.0 * panel_width - 1.0;
+        let narrow =
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(2.0 * panel_width - 1.0, 800.0));
         assert_eq!(
-            beside(area, whole, narrow, scale, panel_width),
-            area,
+            beside(narrow, panel_width),
+            narrow,
             "a view narrower than twice the panel is left alone"
         );
     }

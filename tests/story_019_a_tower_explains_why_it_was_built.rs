@@ -437,6 +437,7 @@ fn other_towers_are_dimmed_while_one_is_selected() {
                             cables: false,
                             tint,
                             review: None,
+                            within: None,
                         },
                     )
                     .towers;
