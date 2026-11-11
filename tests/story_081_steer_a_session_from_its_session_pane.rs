@@ -271,7 +271,7 @@ fn the_engineer_answers_a_session_in_its_pane() {
             .is_some_and(|text| text.contains("SESSION SCREEN"))
     }));
 
-    let tree_open_before = harness.state().tree_open();
+    let explorer_open_before = harness.state().explorer_open();
     let inside_before = harness.state().navigation().inside().is_some();
 
     for letter in ["y", "e", "s"] {
@@ -293,9 +293,9 @@ fn the_engineer_answers_a_session_in_its_pane() {
         harness.state().pane_text()
     );
     assert_eq!(
-        harness.state().tree_open(),
-        tree_open_before,
-        "typing 'e' into the session did not also toggle the map's tree"
+        harness.state().explorer_open(),
+        explorer_open_before,
+        "typing 'e' into the session did not also toggle the map's Explorer"
     );
     assert_eq!(
         harness.state().navigation().inside().is_some(),

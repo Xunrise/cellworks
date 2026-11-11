@@ -39,8 +39,9 @@ Navigation holds what is framed (the Universe, the open project, a folder or a n
   under the zoom point that spans at least half the view is framed, a node also selected.
 - Enter, Esc and a jump drop the zoom and frame what they move to; locking or unlocking changes neither the layer, the
   selection nor the view.
-- The tree lists what the current layer holds (the districts on the Project layer, the folder view's contents below
-  it), and its highlighted row is the selection, so the tree and the map never disagree.
+- The Explorer lists the whole open project as the current lens groups it, a file once; its cursor row is the
+  selection, and moving it frames the row's folder or node beside the panel; a selection made on the map unfolds the
+  Explorer to its row. (STORY-089)
 - At most one review is open at a time: opening a project, including implicitly by starting a different review, ends
   whatever review was already open (STORY-022).
 - Esc leaves an open review first, before any other step, even from inside a tower; the back control and a button do

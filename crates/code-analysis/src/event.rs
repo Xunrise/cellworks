@@ -1,5 +1,6 @@
 //! What the CodeAnalysis context tells the rest of the application.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use cellworks_map::ProjectMap;
@@ -38,5 +39,11 @@ pub enum CodeAnalysisEvent {
         files: Option<usize>,
         committed: Option<i64>,
         changed: Option<i64>,
+    },
+    /// The open project's uncommitted changes were read: absolute paths under
+    /// the project root with a modified or untracked working-tree file.
+    ChangesRead {
+        project: PathBuf,
+        changed: HashSet<PathBuf>,
     },
 }

@@ -179,8 +179,9 @@ impl OpenedProject {
             CodeAnalysisEvent::GitExcludesUnavailable { reason, .. } => {
                 self.note(OpenedNotice::GitExcludesUnavailable { reason });
             }
-            // The launcher's own read, never this one's.
-            CodeAnalysisEvent::DetailsRead { .. } => {}
+            // The launcher's own read, and the Explorer's changed-files read
+            // (`CellworksApp` keeps that one itself): never this one's.
+            CodeAnalysisEvent::DetailsRead { .. } | CodeAnalysisEvent::ChangesRead { .. } => {}
         }
     }
 
@@ -213,6 +214,12 @@ impl OpenedProject {
     /// The custom arrangement, once there is a map.
     pub fn arrangement(&self) -> Option<Arrangement> {
         self.folders.as_ref().map(|_| self.arrangement.clone())
+    }
+
+    /// How many files the project holds, by the un-lensed folders map — the
+    /// same in every lens (STORY-089).
+    pub fn files(&self) -> usize {
+        self.folders.as_ref().map_or(0, count_nodes)
     }
 
     /// Moves the district or block at `path` by `by`, as seen on the map: in
@@ -473,6 +480,28 @@ impl OpenedProject {
     }
 }
 
+/// The number of files `map` holds, across every district, sub-district and
+/// group, however deep (STORY-089's "`<N>` files").
+fn count_nodes(map: &ProjectMap) -> usize {
+    fn in_groups(groups: &[cellworks_map::Group]) -> usize {
+        groups
+            .iter()
+            .map(|group| group.nodes.len() + in_groups(&group.groups))
+            .sum()
+    }
+    map.districts
+        .iter()
+        .map(|district| {
+            district.nodes.len()
+                + district
+                    .sub_districts
+                    .iter()
+                    .map(|sub| sub.nodes.len() + in_groups(&sub.groups))
+                    .sum::<usize>()
+        })
+        .sum()
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -509,6 +538,22 @@ mod tests {
             path: PathBuf::from("/p/shop/closed"),
             reason: "denied".to_owned(),
         }
+    }
+
+    #[test]
+    fn files_counts_every_node_of_the_unlensed_map_in_every_lens() {
+        let (mut project, _sender) = opened();
+        assert_eq!(project.files(), 0, "nothing read yet");
+
+        project.apply(mapped(&["catalog/a.rs", "catalog/sub/b.rs", "orders/c.rs"]));
+        assert_eq!(project.files(), 3);
+
+        project.set_lens(Lens::Custom, 0.0);
+        assert_eq!(
+            project.files(),
+            3,
+            "the count is the same in every lens: it reads the un-lensed folders map"
+        );
     }
 
     #[test]

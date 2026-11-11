@@ -217,6 +217,38 @@ pub fn start_details(
     receiver
 }
 
+/// Reads which of `root`'s files have uncommitted changes, joined onto
+/// `root` so the Explorer can match them against the map's own absolute
+/// paths.
+///
+/// Blocking: called on the background thread [`start_changes`] spawns.
+pub fn changed(root: &Path, git: &dyn GitListing) -> CodeAnalysisEvent {
+    let changed = git
+        .changed(root)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|relative| root.join(relative))
+        .collect();
+    CodeAnalysisEvent::ChangesRead {
+        project: root.to_path_buf(),
+        changed,
+    }
+}
+
+/// Runs [`changed`] on a `std::thread` and hands back the receiving end.
+///
+/// A send that fails is the UI having gone away; the thread ends quietly.
+pub fn start_changes(
+    root: PathBuf,
+    git: Arc<dyn GitListing + Send + Sync>,
+) -> mpsc::Receiver<CodeAnalysisEvent> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(changed(&root, git.as_ref()));
+    });
+    receiver
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;

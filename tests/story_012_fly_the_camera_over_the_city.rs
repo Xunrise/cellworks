@@ -25,9 +25,14 @@ struct Shop {
     harness: Harness<'static, CellworksApp>,
 }
 
-/// The background: "shop" is open as a city.
+/// The background: "shop" is open as a city. The Explorer, open beside the
+/// map by default (STORY-089), is hidden: none of this story's own camera
+/// moves are about it, and its panel would otherwise sit over part of the
+/// map these scenarios point at and read exact positions from.
 fn shop() -> Shop {
-    let (tree, harness) = shop_city();
+    let (tree, mut harness) = shop_city();
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::B);
+    harness.run();
     Shop { tree, harness }
 }
 

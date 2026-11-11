@@ -67,7 +67,12 @@ fn shop() -> Shop {
             ("orders/order.rs", "fn place() {\n    let order = 1;\n}\n"),
         ],
     );
-    let harness = open(&tree, None, Recorded::listing(&[]));
+    let mut harness = open(&tree, None, Recorded::listing(&[]));
+    // "catalog" names both a district on the map and an Explorer row
+    // (STORY-089); the Explorer, open beside the map by default, is hidden
+    // so this story's own label lookups stay unambiguous.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::B);
+    harness.run();
     Shop { tree, harness }
 }
 

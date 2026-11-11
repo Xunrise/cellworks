@@ -20,7 +20,7 @@ mod common;
 use std::path::PathBuf;
 
 use cellworks::app::CellworksApp;
-use egui::Key;
+use egui::{Key, Modifiers};
 use egui_kittest::Harness;
 
 use common::{Recorded, Tree, await_lens, open};
@@ -163,7 +163,7 @@ fn cables_stay_shown_across_a_lens_switch() {
     shop.show_cables();
     let before = shop.harness.state().opened().map(|opened| opened.lens());
 
-    shop.harness.key_press(Key::L);
+    shop.harness.key_press_modifiers(Modifiers::SHIFT, Key::L);
     await_lens(&mut shop.harness);
     shop.harness.run_steps(150);
 

@@ -5,7 +5,7 @@
 //! shell is involved, so a project folder named like an option never reaches
 //! git's argument vector.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -72,6 +72,13 @@ pub trait GitListing {
     ) -> BTreeMap<PathBuf, Vec<Option<String>>> {
         BTreeMap::new()
     }
+
+    /// Paths of files with uncommitted changes — modified or untracked —
+    /// relative to the repository. Empty by default: a listing that only
+    /// knows files knows no working-tree status.
+    fn changed(&self, _repository: &Path) -> Result<HashSet<PathBuf>, GitUnavailable> {
+        Ok(HashSet::new())
+    }
 }
 
 /// [`GitListing`] by running `git ls-files` as a child process.
@@ -94,6 +101,9 @@ const BRANCH: &[&str] = &["rev-parse", "--abbrev-ref", "HEAD"];
 
 /// The commit time of the newest commit, in seconds since the Unix epoch.
 const LAST_COMMIT: &[&str] = &["log", "-1", "--format=%ct"];
+
+/// Modified, staged and untracked files, excluding submodule state.
+const STATUS: &[&str] = &["status", "--porcelain=v1", "-z", "--ignore-submodules=all"];
 
 /// The files of the last 500 commits, each commit opened by a line holding
 /// only the record separator.
@@ -159,6 +169,17 @@ impl GitListing for GitCli {
             .trim()
             .parse()
             .map_err(|_| GitUnavailable("no commit time".to_owned()))
+    }
+
+    fn changed(&self, repository: &Path) -> Result<HashSet<PathBuf>, GitUnavailable> {
+        let output = command(repository, STATUS)
+            .output()
+            .map_err(|error| GitUnavailable(format!("git could not be started: {error}")))?;
+        if !output.status.success() {
+            let message = String::from_utf8_lossy(&output.stderr);
+            return Err(GitUnavailable(message.trim().chars().take(200).collect()));
+        }
+        Ok(changed_paths(&output.stdout))
     }
 
     fn log(&self, repository: &Path) -> Result<Vec<LoggedCommit>, GitUnavailable> {
@@ -333,6 +354,32 @@ fn parse_blame(output: &[u8]) -> Vec<Option<String>> {
     result
 }
 
+/// `git status --porcelain=v1 -z` output: the path of every entry with
+/// uncommitted changes, relative to the repository. A rename or copy entry
+/// carries two NUL-terminated paths, both kept — which one is old and which
+/// is new does not matter just to mark a path changed, and the design does
+/// not promise which comes first, only that it tolerates either order.
+fn changed_paths(output: &[u8]) -> HashSet<PathBuf> {
+    let fields: Vec<&[u8]> = output
+        .split(|&byte| byte == 0)
+        .filter(|field| !field.is_empty())
+        .collect();
+    let mut result = HashSet::new();
+    let mut i = 0;
+    while i < fields.len() {
+        let field = fields[i];
+        result.insert(PathBuf::from(OsStr::from_bytes(&field[3..])));
+        if (field[0] == b'R' || field[0] == b'C')
+            && let Some(old_path) = fields.get(i + 1)
+        {
+            result.insert(PathBuf::from(OsStr::from_bytes(old_path)));
+            i += 1;
+        }
+        i += 1;
+    }
+    result
+}
+
 fn run(mut command: Command) -> Result<Vec<PathBuf>, GitUnavailable> {
     let output = command
         .output()
@@ -352,7 +399,32 @@ fn run(mut command: Command) -> Result<Vec<PathBuf>, GitUnavailable> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
+
+    /// STORY-089, requirement 5: `git status --porcelain=v1 -z` output becomes
+    /// paths relative to the project, a plain entry one path, a rename or copy
+    /// entry both of its NUL-terminated paths.
+    #[test]
+    fn porcelain_entries_become_paths_under_the_project() {
+        let mut output = Vec::new();
+        output.extend_from_slice(b" M src/a.rs\0");
+        output.extend_from_slice(b"?? new.txt\0");
+        output.extend_from_slice(b"R  src/renamed.rs\0src/old.rs\0");
+
+        let changed = changed_paths(&output);
+
+        let expected: HashSet<PathBuf> = [
+            PathBuf::from("src/a.rs"),
+            PathBuf::from("new.txt"),
+            PathBuf::from("src/renamed.rs"),
+            PathBuf::from("src/old.rs"),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(changed, expected, "both paths of the rename are kept");
+    }
 
     #[test]
     fn a_deleted_file_a_duplicate_and_a_nested_repository_are_not_visible() {

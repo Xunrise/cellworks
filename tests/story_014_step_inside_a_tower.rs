@@ -12,8 +12,8 @@ use std::path::PathBuf;
 
 use cellworks::app::CellworksApp;
 use cellworks_navigation::Layer;
-use egui::Key;
 use egui::accesskit::{Role, Toggled};
+use egui::{Key, Modifiers};
 use egui_kittest::Harness;
 use egui_kittest::kittest::NodeT;
 
@@ -28,6 +28,11 @@ struct Shop {
 /// selected.
 fn shop() -> Shop {
     let (tree, mut harness) = shop_city();
+    // The Explorer, open beside the map by default (STORY-089), draws its
+    // own filter text field and toggled rows: neither is the tower this
+    // story steps inside, nor the editor it asserts never opens by itself.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::B);
+    harness.run();
     let discount = tree.root.join("catalog/pricing.rs/discount");
     harness.state_mut().jump(discount.clone());
     harness.run();

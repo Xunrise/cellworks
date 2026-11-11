@@ -18,7 +18,7 @@ mod lanes;
 mod why;
 
 pub use buildings::{DrawnBridge, DrawnBuilding, bridge_card};
-pub use explain::{banner, caption, caption_text, lane_toggles, legend, legend_text, lens_bar};
+pub use explain::{banner, caption, caption_text, lane_toggles, legend, legend_text, lens_help};
 pub use lanes::{DrawnLane, colour_of};
 pub use why::{NO_CONTEXT, NO_STORY, why_panel};
 
@@ -2334,6 +2334,16 @@ fn district_colour_of(map: &ProjectMap, item: &Item) -> Color32 {
         .map_or(DISTRICT_COLOURS[0], |(index, _)| district_colour(index))
 }
 
+/// The colour of the top-level district `path` is or lies under; the first
+/// district's colour when `path` matches none.
+pub fn district_colour_at(map: &ProjectMap, path: &Path) -> Color32 {
+    map.districts
+        .iter()
+        .enumerate()
+        .find(|(_, district)| *path == district.path || path.starts_with(&district.path))
+        .map_or(district_colour(0), |(index, _)| district_colour(index))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
@@ -2720,6 +2730,40 @@ mod tests {
             untouched_tower.light <= REVIEW_RECEDED + 1e-6,
             "it recedes to REVIEW_RECEDED, light was {}",
             untouched_tower.light
+        );
+    }
+
+    /// STORY-089: a subfolder keeps the colour of the top-level district it
+    /// lies under, the same formula `district_colour_of` already uses for an
+    /// item's home.
+    #[test]
+    fn the_colour_at_a_subfolder_is_its_districts() {
+        let files: Vec<PathBuf> = [
+            "catalog/pricing/base.rs",
+            "catalog/pricing/rules/discount.rs",
+            "catalog/item.rs",
+            "orders/order.rs",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+        let strategy = Directories {
+            prefix: default_prefix_rule(),
+        };
+        let map = ProjectMap::of("shop", Path::new("/p/shop"), &files, &strategy);
+        let district = Path::new("/p/shop/catalog");
+        let subfolder = Path::new("/p/shop/catalog/pricing");
+        let other_district = Path::new("/p/shop/orders");
+
+        assert_eq!(
+            district_colour_at(&map, subfolder),
+            district_colour_at(&map, district),
+            "a subfolder keeps its district's colour"
+        );
+        assert_ne!(
+            district_colour_at(&map, district),
+            district_colour_at(&map, other_district),
+            "two different districts keep different colours in this fixture"
         );
     }
 }

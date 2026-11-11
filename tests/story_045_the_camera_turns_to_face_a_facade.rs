@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use cellworks::app::CellworksApp;
 use cellworks_map::ui::DrawnTower;
-use egui::{Event, Pos2, pos2};
+use egui::{Event, Key, Modifiers, Pos2, pos2};
 use egui_kittest::Harness;
 
 use common::{Tree, shop_city, tower};
@@ -32,7 +32,12 @@ struct Shop {
 }
 
 fn shop() -> Shop {
-    let (tree, harness) = shop_city();
+    let (tree, mut harness) = shop_city();
+    // The Explorer, open beside the map by default (STORY-089), is not what
+    // this story's facade-turning is about; hidden, the view centre these
+    // scenarios read is exactly what it was before the Explorer existed.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::B);
+    harness.run();
     Shop { tree, harness }
 }
 

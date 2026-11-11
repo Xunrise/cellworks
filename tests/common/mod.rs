@@ -200,11 +200,33 @@ pub fn open(
 pub const BREADCRUMB: &str = "Universe";
 
 /// The text of every label in the frame, in tree order, except the
-/// breadcrumb.
+/// breadcrumb and the Explorer's own subtree (one "Explorer" accessibility
+/// container, `Role::Group`, holding its header, lens chips, filter and
+/// rows — not elements of the view `labels()` reports on).
 pub fn labels(harness: &Harness<'_, CellworksApp>) -> Vec<String> {
     let root = harness.root();
-    std::iter::once(root)
+    let nodes: Vec<_> = std::iter::once(root)
         .chain(root.children_recursive())
+        .collect();
+    let explorer_subtree: std::collections::HashSet<_> = nodes
+        .iter()
+        .find(|node| {
+            let node = node.accesskit_node();
+            node.role() == Role::Group && node.label().as_deref() == Some("Explorer")
+        })
+        .map(|explorer| {
+            std::iter::once(explorer.accesskit_node().id())
+                .chain(
+                    explorer
+                        .children_recursive()
+                        .map(|node| node.accesskit_node().id()),
+                )
+                .collect()
+        })
+        .unwrap_or_default();
+    nodes
+        .into_iter()
+        .filter(|node| !explorer_subtree.contains(&node.accesskit_node().id()))
         .filter_map(|node| {
             let node = node.accesskit_node();
             match node.role() {

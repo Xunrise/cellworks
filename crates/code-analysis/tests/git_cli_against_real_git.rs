@@ -49,6 +49,41 @@ fn git_lists_tracked_and_untracked_files_but_not_ignored_or_deleted_ones() {
     );
 }
 
+/// STORY-089: `changed` lists a modified tracked file and an untracked file,
+/// but not a committed file left untouched.
+#[test]
+fn changed_lists_modified_and_untracked_files() {
+    let tree = tempfile::tempdir().expect("a temporary directory");
+    let repository = tree.path();
+    if !git(repository, &["init", "-q"]) {
+        println!("git is absent; skipping");
+        return;
+    }
+    git(repository, &["config", "user.email", "test@example.com"]);
+    git(repository, &["config", "user.name", "Test"]);
+    fs::write(repository.join("tracked.rs"), "first\n").expect("write the file");
+    fs::write(repository.join("unmodified.rs"), "").expect("write the file");
+    assert!(git(repository, &["add", "tracked.rs", "unmodified.rs"]));
+    assert!(git(repository, &["commit", "-q", "-m", "initial"]));
+    fs::write(repository.join("tracked.rs"), "second\n").expect("modify the file");
+    fs::write(repository.join("untracked.rs"), "").expect("write the file");
+
+    let changed = GitCli.changed(repository).expect("git answers");
+
+    assert!(
+        changed.contains(&PathBuf::from("tracked.rs")),
+        "{changed:?}"
+    );
+    assert!(
+        changed.contains(&PathBuf::from("untracked.rs")),
+        "{changed:?}"
+    );
+    assert!(
+        !changed.contains(&PathBuf::from("unmodified.rs")),
+        "{changed:?}"
+    );
+}
+
 /// A repository's own `core.fsmonitor` names a program; `GitCli` must not run
 /// it. The control is `git ls-files --cached --others --exclude-standard`,
 /// the command `GitCli` runs minus the hardening, which does run it.

@@ -18,7 +18,7 @@ use std::sync::Arc;
 use cellworks::app::CellworksApp;
 use cellworks_agent_sessions::{FileEvent, Session, SessionState, groups, place};
 use cellworks_code_analysis::GitListing;
-use egui::Key;
+use egui::{Key, Modifiers};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
@@ -312,6 +312,11 @@ fn selecting_a_session_in_the_sidebar_brings_it_into_view() {
     let pricing_fix = session("pricing-fix", "busy", "working", vec![event]);
 
     let mut harness = open_with_sessions(&tree, vec![pricing_fix]);
+    // The Explorer, open beside the map by default (STORY-089), drives the
+    // arrows itself while open; hidden, they pan the camera as this test
+    // means them to.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::B);
+    harness.run();
     // Pan the camera away first, so "discount" does not already start in
     // the middle of the view.
     for key in [Key::ArrowRight, Key::ArrowDown] {

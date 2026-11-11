@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use cellworks::app::CellworksApp;
 use cellworks_code_analysis::{GitListing, GitUnavailable};
-use egui::Rect;
 use egui::accesskit::Role;
+use egui::{Modifiers, Rect};
 use egui_kittest::Harness;
 use egui_kittest::kittest::NodeT;
 
@@ -339,7 +339,12 @@ fn the_whole_project_fits_the_panel_and_every_element_is_labelled() {
     let files: Vec<&str> = files.iter().map(String::as_str).collect();
     let tree = Tree::project("shop", &files);
 
-    let harness = open(&tree, None, Recorded::listing(&[]));
+    let mut harness = open(&tree, None, Recorded::listing(&[]));
+    // This requirement is about the project's own districts, sub-districts,
+    // groups and nodes, not the Explorer beside them (STORY-089); hidden, the
+    // labels this test reads are exactly the map's own.
+    harness.key_press_modifiers(Modifiers::COMMAND, egui::Key::B);
+    harness.run();
 
     let root = harness.root();
     for node in root.children_recursive() {

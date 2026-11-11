@@ -13,16 +13,20 @@
 //! never waits. A project opened from the universe is read the same way, with
 //! `CodeAnalysisEvent` values.
 
+use std::collections::HashSet;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
 use cellworks_agent_sessions::ui::{DrawnSession, SessionsView};
 use cellworks_agent_sessions::{Session, SessionSources};
-use cellworks_code_analysis::{CodeAnalysisEvent, GitCli, GitListing, start_details, start_load};
+use cellworks_code_analysis::{
+    CodeAnalysisEvent, GitCli, GitListing, start_changes, start_details, start_load,
+};
 use cellworks_map::View;
 use cellworks_map::ui::{Drawn, DrawnBridge, DrawnBuilding, DrawnLane, DrawnTower, Outline};
 use cellworks_map::{Lens, ProjectMap, ReviewOverlay, Why, default_prefix_rule, prefix_rule};
+use cellworks_navigation::explorer::Explorer;
 use cellworks_navigation::{Moved, Navigation};
 use cellworks_sources::pull_requests::forge::{Checkout, Forge};
 use cellworks_workspace::ui::LauncherAction;
@@ -58,6 +62,15 @@ const SCROLL_PER_E: f32 = 200.0;
 /// (STORY-019).
 const WHY_WIDTH: f32 = 420.0;
 
+/// The Explorer's own width, and its margin from the left edge of the map
+/// (STORY-089): together, how far a framed element is shifted beside it.
+const EXPLORER_WIDTH: f32 = 320.0;
+const EXPLORER_MARGIN: f32 = 10.0;
+
+/// How long the camera takes to fly to a newly framed element from the
+/// Explorer.
+const EXPLORER_FLIGHT: f64 = 0.6;
+
 /// The Cellworks application: the universe it shows, the scan that fills it
 /// in, the project opened from it, if any, and where the view is.
 pub struct CellworksApp {
@@ -69,8 +82,20 @@ pub struct CellworksApp {
     /// Whether git-ignored files and hidden folders are on the map. Off at
     /// every start, kept for every project opened in this session.
     show_ignored: bool,
-    /// Whether the tree is open beside the map.
-    tree_open: bool,
+    /// The Explorer beside the map: open by default, its folds, its filter
+    /// and the camera's flight to what it frames (STORY-089).
+    explorer: Explorer,
+    /// The read of which of the open project's files have uncommitted
+    /// changes, still in flight; one at a time.
+    changes: Option<Receiver<CodeAnalysisEvent>>,
+    /// The result of the last finished read: the changed files, by their
+    /// absolute paths, the Explorer marks.
+    changed: HashSet<std::path::PathBuf>,
+    /// The project root `changed` (and `changes`) belong to, so a different
+    /// project opened is told apart from the same one read again.
+    changes_for: Option<std::path::PathBuf>,
+    /// When the last read finished, so it is refreshed 5 s later.
+    changes_read_at: Option<std::time::Instant>,
     /// The towers the last frame drew.
     towers: Vec<DrawnTower>,
     /// The buildings the last frame drew.
@@ -152,7 +177,8 @@ struct Keys {
     esc: bool,
     ignored: bool,
     lock: bool,
-    tree: bool,
+    /// E, or Cmd+B: toggles the Explorer.
+    explorer_toggle: bool,
     /// P: toggles the review panel (STORY-022).
     review: bool,
     /// Arrows down less arrows up, and right less left.
@@ -170,8 +196,20 @@ struct Keys {
     cables: bool,
     /// Inside a tower: j less k, a floor down or up.
     lines: isize,
-    /// L: the next lens.
+    /// L: the next lens, while the Explorer is hidden.
     lens: bool,
+    /// Shift+L: the next lens, while the Explorer is open.
+    explorer_lens: bool,
+    /// j/ArrowDown less k/ArrowUp: moves the Explorer's cursor while it is
+    /// open.
+    explorer_step: isize,
+    /// l/ArrowRight: unfolds the Explorer cursor's row.
+    explorer_right: bool,
+    /// h/ArrowLeft: folds the Explorer cursor's row, or moves to its parent
+    /// when it is already folded.
+    explorer_left: bool,
+    /// "/": focuses the Explorer's filter.
+    explorer_filter: bool,
     /// G and A: show or hide the import lanes and the call lanes.
     import_lanes: bool,
     call_lanes: bool,
@@ -215,7 +253,11 @@ impl CellworksApp {
                 navigation: Navigation::default(),
                 git: Arc::new(GitCli),
                 show_ignored: false,
-                tree_open: false,
+                explorer: Explorer::default(),
+                changes: None,
+                changed: HashSet::new(),
+                changes_for: None,
+                changes_read_at: None,
                 towers: Vec::new(),
                 buildings: Vec::new(),
                 bridges: Vec::new(),
@@ -255,7 +297,11 @@ impl CellworksApp {
                 navigation: Navigation::default(),
                 git: Arc::new(GitCli),
                 show_ignored: false,
-                tree_open: false,
+                explorer: Explorer::default(),
+                changes: None,
+                changed: HashSet::new(),
+                changes_for: None,
+                changes_read_at: None,
                 towers: Vec::new(),
                 buildings: Vec::new(),
                 bridges: Vec::new(),
@@ -298,7 +344,11 @@ impl CellworksApp {
             navigation: Navigation::default(),
             git: Arc::new(GitCli),
             show_ignored: false,
-            tree_open: false,
+            explorer: Explorer::default(),
+            changes: None,
+            changed: HashSet::new(),
+            changes_for: None,
+            changes_read_at: None,
             towers: Vec::new(),
             buildings: Vec::new(),
             bridges: Vec::new(),
@@ -526,6 +576,7 @@ impl CellworksApp {
                 ProjectState::Reading | ProjectState::Failed => {}
             }
         }
+        self.apply_pending_changes();
         if let Some(session) = self.review.as_mut()
             && let Some(action) = session.drain(&self.git, self.show_ignored)
         {
@@ -537,14 +588,58 @@ impl CellworksApp {
         }
     }
 
+    /// Keeps the Explorer's changed-files read current: starts one for the
+    /// open project's root when none is in flight and the last result is
+    /// gone or more than 5 s old, and drains whatever the current one has
+    /// sent (STORY-089). A different root than the one the last read was
+    /// for — a different project opened without going through
+    /// `open_reading`, in practice never, but a safe guard regardless —
+    /// clears the stale result first.
+    fn apply_pending_changes(&mut self) {
+        if let Some(opened) = &self.opened
+            && let Some(root) = opened.project().id.local_path()
+        {
+            if self.changes_for.as_deref() != Some(root) {
+                self.changed = HashSet::new();
+                self.changes = None;
+                self.changes_read_at = None;
+                self.changes_for = Some(root.to_owned());
+            }
+            if self.changes.is_none()
+                && self
+                    .changes_read_at
+                    .is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(5))
+            {
+                self.changes = Some(start_changes(root.to_owned(), Arc::clone(&self.git)));
+            }
+        }
+        if let Some(receiver) = self.changes.take() {
+            loop {
+                match receiver.try_recv() {
+                    Ok(CodeAnalysisEvent::ChangesRead { changed, .. }) => {
+                        self.changed = changed;
+                        self.changes_read_at = Some(std::time::Instant::now());
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        self.changes = Some(receiver);
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                }
+            }
+        }
+    }
+
     /// The project that is open, if any.
     pub fn opened(&self) -> Option<&OpenedProject> {
         self.opened.as_ref()
     }
 
-    /// Whether the tree is open beside the map.
-    pub fn tree_open(&self) -> bool {
-        self.tree_open
+    /// Whether the Explorer is open beside the map.
+    pub fn explorer_open(&self) -> bool {
+        self.explorer.is_open()
     }
 
     /// The towers the last frame drew, back to front.
@@ -630,7 +725,8 @@ impl CellworksApp {
     }
 
     /// The space the last frame drew the map in: the window less the
-    /// breadcrumb, the tree and the why panel (STORY-019).
+    /// breadcrumb and the why panel (STORY-019). The Explorer floats over
+    /// this space rather than reducing it (STORY-089).
     pub fn panel(&self) -> Option<egui::Rect> {
         self.panel
     }
@@ -668,7 +764,8 @@ impl CellworksApp {
     /// the folder holding it in its folder view.
     pub fn jump(&mut self, path: std::path::PathBuf) {
         if let Some(map) = mapped(&self.opened) {
-            self.navigation.jump(map, path);
+            self.navigation.jump(map, path.clone());
+            self.explorer.follow(map, &path);
         }
     }
 
@@ -764,9 +861,17 @@ impl CellworksApp {
         }
         note_unknown_prefix(&mut opened);
         self.opened = Some(opened);
-        self.navigation.opened(path);
+        self.navigation.opened(path.clone());
         // Another project's towers: nothing explained carries over.
         self.why = None;
+        // Opening a project resets the Explorer's folds and filter, not
+        // whether it is open or hidden (requirement 1), and starts its
+        // changed-files read over for the new root.
+        self.explorer.reset();
+        self.changed = HashSet::new();
+        self.changes = None;
+        self.changes_read_at = None;
+        self.changes_for = Some(path);
     }
 
     /// Ends the open review, if any (STORY-022): `self.review` is dropped,
@@ -848,11 +953,14 @@ impl eframe::App for CellworksApp {
 /// out; I switches ignored files on and off while a project is open. Pinching
 /// or scrolling zooms the map around the pointer, and Z, or the button beside
 /// the breadcrumb, locks the layer against the zoom or lets it follow again.
-/// E opens and closes the tree, where the up and down arrows move the
-/// selection one row. In the city, Q turns it a quarter (Shift+Q back), F fits
-/// it into view, the arrows or a drag pan, Tab moves to the next tower on the
-/// block, and Enter or a double-click on a tower steps inside it, where j and
-/// k or the arrows move between floors.
+/// E, or Cmd+B, opens and closes the Explorer beside the map (STORY-089);
+/// while it is open, j/k or the arrows move its cursor, l/ArrowRight unfolds
+/// a row, h/ArrowLeft folds it or steps to its parent, Shift+L moves to the
+/// next lens and "/" focuses its filter. In the city, with the Explorer
+/// hidden, Q turns it a quarter (Shift+Q back), F fits it into view, the
+/// arrows or a drag pan, Tab moves to the next tower on the block, L cycles
+/// the lens, and Enter or a double-click on a tower steps inside it, where j
+/// and k or the arrows move between floors.
 pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     if app.opened.is_none() {
         app.towers.clear();
@@ -879,7 +987,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         esc,
         ignored,
         lock,
-        tree,
+        explorer_toggle,
         review,
         rows,
         columns,
@@ -891,6 +999,11 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         held_underground,
         cables,
         lens,
+        explorer_lens,
+        explorer_step,
+        explorer_right,
+        explorer_left,
+        explorer_filter,
         import_lanes,
         call_lanes,
         zoom,
@@ -908,7 +1021,10 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             esc: pressed(egui::Key::Escape) && !closes_pane,
             ignored: !typing && plain && pressed(egui::Key::I),
             lock: !typing && plain && pressed(egui::Key::Z),
-            tree: !typing && plain && pressed(egui::Key::E),
+            explorer_toggle: (!typing && plain && pressed(egui::Key::E))
+                || (!typing
+                    && input.modifiers.matches_logically(egui::Modifiers::COMMAND)
+                    && pressed(egui::Key::B)),
             review: !typing && plain && pressed(egui::Key::P),
             rows: towards(egui::Key::ArrowUp, egui::Key::ArrowDown),
             columns: towards(egui::Key::ArrowLeft, egui::Key::ArrowRight),
@@ -925,6 +1041,20 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             cycle: plain && pressed(egui::Key::Tab),
             underground: !typing && plain && pressed(egui::Key::U),
             lens: !typing && plain && pressed(egui::Key::L),
+            explorer_lens: !typing && input.modifiers.shift_only() && pressed(egui::Key::L),
+            explorer_step: if typing || !plain {
+                0
+            } else {
+                towards(egui::Key::K, egui::Key::J)
+                    + towards(egui::Key::ArrowUp, egui::Key::ArrowDown)
+            },
+            explorer_right: !typing
+                && plain
+                && (pressed(egui::Key::L) || pressed(egui::Key::ArrowRight)),
+            explorer_left: !typing
+                && plain
+                && (pressed(egui::Key::H) || pressed(egui::Key::ArrowLeft)),
+            explorer_filter: !typing && plain && pressed(egui::Key::Slash),
             import_lanes: !typing && plain && pressed(egui::Key::G),
             call_lanes: !typing && plain && pressed(egui::Key::A),
             held_underground: input.modifiers.shift_only(),
@@ -1031,7 +1161,21 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         app.launcher.cycle_pick();
     }
     let now = ui.input(|input| input.time);
-    if lens && let Some(opened) = &mut app.opened {
+    // Whether something read here should (re)start the Explorer's 0.6 s
+    // flight beside the panel (STORY-089 requirement 9): set by whichever of
+    // the branches below actually moved what is framed.
+    let mut explorer_framed = false;
+    if lens
+        && !app.explorer.is_open()
+        && let Some(opened) = &mut app.opened
+    {
+        let next = opened.next_lens();
+        opened.set_lens(next, now);
+    }
+    if explorer_lens
+        && app.explorer.is_open()
+        && let Some(opened) = &mut app.opened
+    {
         let next = opened.next_lens();
         opened.set_lens(next, now);
     }
@@ -1083,7 +1227,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     }
     if !inside
         && !walking
-        && !app.tree_open
+        && !app.explorer.is_open()
         && (rows, columns) != (0, 0)
         && let Some(view) = app.view
     {
@@ -1093,20 +1237,71 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     if ignored {
         app.toggle_ignored();
     }
-    if tree && app.opened.is_some() {
-        app.tree_open = !app.tree_open;
+    if explorer_toggle && app.opened.is_some() {
+        app.explorer.toggle_open();
     }
     if review && app.opened.is_some() {
         toggle_review_panel(app);
     }
-    if app.tree_open
-        && !inside
-        && !walking
-        && rows != 0
+    if app.explorer.is_open() && !inside && !walking {
+        if explorer_step != 0
+            && let Some(map) = mapped(&app.opened)
+        {
+            app.explorer
+                .step(map, &app.changed, &mut app.navigation, explorer_step);
+            explorer_framed = true;
+        }
+        if explorer_right
+            && let Some(map) = mapped(&app.opened)
+            && let Some(path) = app.navigation.selection().map(std::path::Path::to_path_buf)
+            && let Some(row) = app
+                .explorer
+                .rows(map, &app.changed)
+                .into_iter()
+                .find(|row| row.path == path)
+            && row.foldable
+            && !row.unfolded
+        {
+            app.explorer.fold(&row.path);
+        }
+        if explorer_left
+            && let Some(map) = mapped(&app.opened)
+            && let Some(path) = app.navigation.selection().map(std::path::Path::to_path_buf)
+        {
+            let row = app
+                .explorer
+                .rows(map, &app.changed)
+                .into_iter()
+                .find(|row| row.path == path);
+            match row {
+                Some(row) if row.unfolded => app.explorer.fold(&row.path),
+                _ => {
+                    if let Some(parent) = map.find(&path).and_then(|found| found.parent) {
+                        app.navigation.frame(map, parent.to_path_buf());
+                        explorer_framed = true;
+                    }
+                }
+            }
+        }
+    }
+    // Starts the Explorer's flight for whatever the keys above just framed,
+    // before the map is drawn, so this frame's `project()` can already
+    // animate towards it; a row clicked in the Explorer's own panel, drawn
+    // after the map, triggers the same flight again further down.
+    if explorer_framed
+        && app.explorer.is_open()
         && let Some(map) = mapped(&app.opened)
     {
-        app.navigation.move_in_tree(map, rows);
+        fly_explorer(
+            &mut app.explorer,
+            &app.navigation,
+            map,
+            app.panel,
+            app.view,
+            now,
+        );
     }
+    explorer_framed = false;
     if lock {
         app.navigation.toggle_lock();
     }
@@ -1200,16 +1395,14 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 .into_iter()
                 .filter(|lens| opened.offers(*lens))
                 .collect();
-            let (switched, picked, toggled) = egui::Panel::top("breadcrumb")
+            let (switched, toggled) = egui::Panel::top("breadcrumb")
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(crumbs);
                         ui.separator();
-                        let picked = cellworks_map::ui::lens_bar(ui, opened.lens(), &offered);
-                        ui.separator();
                         let toggled = cellworks_map::ui::lane_toggles(ui, opened.lanes());
                         ui.separator();
-                        (ui.button(mode).clicked(), picked, toggled)
+                        (ui.button(mode).clicked(), toggled)
                     })
                     .inner
                 })
@@ -1217,21 +1410,11 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             if switched {
                 app.navigation.toggle_lock();
             }
-            bar = (picked, toggled);
-            if app.tree_open
-                && let Some(map) = app.map()
-            {
-                let row = egui::Panel::left("tree")
-                    .show(ui, |ui| {
-                        cellworks_navigation::ui::tree(ui, map, &app.navigation)
-                    })
-                    .inner;
-                if let Some(path) = row {
-                    app.navigation.select(path);
-                }
-            }
-            // The why panel, in its own right column between the tree and
-            // the city; nothing or a district selected shows no panel.
+            bar = (None, toggled);
+            // The why panel, in its own right column beside the city; nothing
+            // or a district selected shows no panel. The Explorer is drawn
+            // separately, over the map, once the city's own space is known
+            // (further down).
             let why = app.why().cloned();
             if let Some(why) = &why {
                 // Inside the tower, the floor the engineer stands on is
@@ -1277,6 +1460,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                     }
                     Some(PanelAction::PickTower(path)) => {
                         if let Some(map) = mapped(&app.opened) {
+                            app.explorer.follow(map, &path);
                             app.navigation.pick_in_review(map, path);
                         }
                         app.review = Some(session);
@@ -1317,6 +1501,10 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                             app.underground,
                             tint,
                             review_overlay,
+                            &mut app.explorer,
+                            now,
+                            app.panel,
+                            app.view,
                         );
                         let (Some(shown), ProjectState::Mapped(map)) = (&drawn, opened.state())
                         else {
@@ -1367,6 +1555,55 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             let visible = drawn.view.visible;
             app.view = Some(drawn.view);
             app.panel = Some(drawn.panel);
+            // The Explorer, opaque over the left edge of the map, drawn last
+            // so it sits above it; `drawn.panel` is the map's own space, just
+            // computed above, so the overlay never waits a frame behind a
+            // resize (STORY-089).
+            if app.explorer.is_open()
+                && let Some(map) = mapped(&app.opened)
+            {
+                let origin = drawn.panel.min + egui::vec2(EXPLORER_MARGIN, EXPLORER_MARGIN);
+                let height = (drawn.panel.height() - 2.0 * EXPLORER_MARGIN).max(0.0);
+                let focus_filter = explorer_filter;
+                let action = egui::Area::new(ui.id().with("explorer"))
+                    .fixed_pos(origin)
+                    .show(ui.ctx(), |ui| {
+                        ui.set_width(EXPLORER_WIDTH);
+                        ui.set_height(height);
+                        cellworks_navigation::ui::explorer(
+                            ui,
+                            map,
+                            &app.navigation,
+                            &app.changed,
+                            opened.lens(),
+                            &offered,
+                            opened.files(),
+                            &mut app.explorer,
+                            focus_filter,
+                        )
+                    })
+                    .inner;
+                if let Some(lens) = action.lens {
+                    bar.0 = Some(lens);
+                }
+                if let Some(path) = action.clicked {
+                    app.navigation.frame(map, path);
+                    explorer_framed = true;
+                }
+            }
+            if explorer_framed
+                && app.explorer.is_open()
+                && let Some(map) = mapped(&app.opened)
+            {
+                fly_explorer(
+                    &mut app.explorer,
+                    &app.navigation,
+                    map,
+                    app.panel,
+                    app.view,
+                    now,
+                );
+            }
             // Close enough, the camera turns to face a facade; the pivot
             // glides to it over the next frames.
             if let Some(map) = mapped(&app.opened) {
@@ -1423,10 +1660,18 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             } else if let Some(click) = drawn.lane_clicked {
                 match (click.travel, mapped(&app.opened)) {
                     // Travelling along a lane: the view frames its far end.
-                    (Some(far), Some(map)) => app.navigation.jump(map, far),
+                    (Some(far), Some(map)) => {
+                        app.explorer.follow(map, &far);
+                        app.navigation.jump(map, far);
+                    }
                     _ => app.navigation.pick_lane(click.lane),
                 }
             } else if let Some(path) = drawn.clicked {
+                // A selection made on the map unfolds the Explorer to its
+                // row and scrolls it into view (requirement 11).
+                if let Some(map) = mapped(&app.opened) {
+                    app.explorer.follow(map, &path);
+                }
                 app.navigation.select(path);
             } else if drawn.ground_clicked {
                 app.navigation.deselect();
@@ -1501,6 +1746,15 @@ fn zoomed(visible: egui::Rect, fixed: egui::Pos2, factor: f32) -> egui::Rect {
 }
 
 /// Draws the opened project, and reports the map as drawn once there is one.
+///
+/// While the Explorer is open, the area actually drawn is shifted beside its
+/// panel (STORY-089 requirements 9 and 10): mid-flight, wherever
+/// `explorer.flying` says; landed, `beside` of `navigation.framing`'s own
+/// area, using `last_panel`'s width and `last_view`'s scale — the previous
+/// frame's, since this frame's are not known until this very call returns.
+/// `navigation.framing` itself never changes: Esc, F and the acceptance
+/// tests all read the unshifted, instant truth.
+#[allow(clippy::too_many_arguments)]
 fn project(
     ui: &mut egui::Ui,
     opened: &OpenedProject,
@@ -1508,6 +1762,10 @@ fn project(
     underground: bool,
     tint: Option<&[usize]>,
     review: Option<&ReviewOverlay>,
+    explorer: &mut Explorer,
+    now: f64,
+    last_panel: Option<egui::Rect>,
+    last_view: Option<View>,
 ) -> Option<Drawn> {
     for notice in opened.notices() {
         ui.label(notice_text(notice));
@@ -1525,26 +1783,78 @@ fn project(
             ui.label(FAILED);
             None
         }
-        ProjectState::Mapped(map) => Some(cellworks_map::ui::project(
-            ui,
-            &opened
-                .shown(ui.input(|input| input.time))
-                .unwrap_or(std::borrow::Cow::Borrowed(map)),
-            cellworks_map::ui::ViewOptions {
-                framing: navigation.framing(map),
-                selected: navigation.selection(),
-                folder_view: navigation.folder_view(map),
-                pivot: navigation.pivot(map),
-                underground,
-                lanes: opened.lanes(),
-                picked: navigation.picked_lane(),
-                network: opened.network(),
-                cables: navigation.shows_cables(),
-                tint,
-                review,
-            },
-        )),
+        ProjectState::Mapped(map) => {
+            let framing = navigation.framing(map);
+            let area = if explorer.is_open() {
+                let flying = explorer.flying(now, EXPLORER_FLIGHT);
+                if flying.is_some() {
+                    ui.ctx().request_repaint();
+                }
+                flying.unwrap_or_else(|| {
+                    let panel_width = EXPLORER_WIDTH + EXPLORER_MARGIN;
+                    let window_width = last_panel.map(|panel| panel.width()).unwrap_or(0.0);
+                    let scale = last_view.map(|view| view.scale()).unwrap_or(1.0);
+                    cellworks_navigation::explorer::beside(
+                        framing.area,
+                        map.extent,
+                        window_width,
+                        scale,
+                        panel_width,
+                    )
+                })
+            } else {
+                framing.area
+            };
+            Some(cellworks_map::ui::project(
+                ui,
+                &opened
+                    .shown(ui.input(|input| input.time))
+                    .unwrap_or(std::borrow::Cow::Borrowed(map)),
+                cellworks_map::ui::ViewOptions {
+                    framing: cellworks_map::Framing { area, ..framing },
+                    selected: navigation.selection(),
+                    folder_view: navigation.folder_view(map),
+                    pivot: navigation.pivot(map),
+                    underground,
+                    lanes: opened.lanes(),
+                    picked: navigation.picked_lane(),
+                    network: opened.network(),
+                    cables: navigation.shows_cables(),
+                    tint,
+                    review,
+                },
+            ))
+        }
     }
+}
+
+/// Starts the Explorer's camera flight to wherever `navigation` now frames,
+/// shifted beside its panel: called whenever moving the cursor, unfolding to
+/// the parent or clicking a row changes what is framed (STORY-089 requirement
+/// 9). `panel` and `view` are the previous frame's — this frame's are not
+/// known yet at the points this is called from — matching the same fallback
+/// `project` itself uses.
+fn fly_explorer(
+    explorer: &mut Explorer,
+    navigation: &Navigation,
+    map: &ProjectMap,
+    panel: Option<egui::Rect>,
+    view: Option<View>,
+    now: f64,
+) {
+    let logical = navigation.framing(map).area;
+    let panel_width = EXPLORER_WIDTH + EXPLORER_MARGIN;
+    let window_width = panel.map(|panel| panel.width()).unwrap_or(0.0);
+    let scale = view.map(|view| view.scale()).unwrap_or(1.0);
+    let target = cellworks_navigation::explorer::beside(
+        logical,
+        map.extent,
+        window_width,
+        scale,
+        panel_width,
+    );
+    let from = view.map(|view| view.visible).unwrap_or(target);
+    explorer.fly(from, target, now);
 }
 
 /// `store`, with a thread keeping what is handed to it.

@@ -13,7 +13,7 @@ mod common;
 use std::path::PathBuf;
 
 use cellworks::app::CellworksApp;
-use egui::{Event, Key, pos2};
+use egui::{Event, Key, Modifiers, pos2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::NodeT;
 
@@ -55,12 +55,20 @@ impl Shop {
         self.harness.key_press(key);
         self.harness.run();
     }
+
+    /// Hides the Explorer, open beside the map by default (STORY-089): the
+    /// walk between facades this story is about does not concern it.
+    fn hide_explorer(&mut self) {
+        self.harness.key_press_modifiers(Modifiers::COMMAND, Key::B);
+        self.harness.run();
+    }
 }
 
 /// The background: the camera faces the facade of "discount".
 fn shop() -> Shop {
     let (tree, harness) = shop_city();
     let mut shop = Shop { tree, harness };
+    shop.hide_explorer();
     shop.face("discount");
     shop
 }
@@ -119,6 +127,7 @@ fn moving_never_reaches_a_test() {
     let test = "\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn discount_reduces() {\n        let price = 1;\n        assert_eq!(price, 1);\n    }\n}\n";
     let (tree, harness) = shop_city_with(test);
     let mut shop = Shop { tree, harness };
+    shop.hide_explorer();
     shop.face("total");
 
     let mut faced = vec![shop.facing()];

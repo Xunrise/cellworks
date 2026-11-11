@@ -52,7 +52,7 @@ fn open(tree: &Tree, kept: &Path) -> Harness<'static, CellworksApp> {
         if harness.state().opened().map(|o| o.lens()) == Some(Lens::Custom) {
             break;
         }
-        harness.key_press(egui::Key::L);
+        harness.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::L);
         common::await_lens(&mut harness);
         harness.run_steps(120);
     }
@@ -122,7 +122,7 @@ fn the_custom_lens_starts_as_the_folder_city() {
     let kept = tempfile::tempdir().expect("a folder for arrangements");
     let folders = {
         let mut harness = open(&tree, kept.path());
-        harness.key_press(egui::Key::L);
+        harness.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::L);
         common::await_lens(&mut harness);
         harness.run_steps(120);
         common::map(&harness)
@@ -232,6 +232,10 @@ fn moving_across_empty_ground_moves_the_camera_not_the_city() {
     let tree = tree();
     let kept = tempfile::tempdir().expect("a folder for arrangements");
     let mut harness = open(&tree, kept.path());
+    // The drag below starts under the Explorer's panel, open by default; hide
+    // it first so the drag reaches the map, not a row.
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::B);
+    harness.run();
     let before = common::map(&harness);
     let seen = harness.state().view().expect("a view").visible;
 
