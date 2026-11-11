@@ -175,12 +175,6 @@ pub(crate) fn fit(framing: Framing, panel: Rect) -> View {
     view
 }
 
-/// The scale `framing` is drawn at in `panel`: what [`fit`] picks, without
-/// the view.
-pub fn fit_scale(framing: Framing, panel: Rect) -> f32 {
-    fit(framing, panel).scale
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};

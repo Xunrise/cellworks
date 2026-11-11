@@ -11,7 +11,7 @@ use cellworks::app::CellworksApp;
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, pos2, vec2};
 use egui_kittest::Harness;
 
-use common::shop_city;
+use common::{map, shop_city};
 
 /// Right of the Explorer panel, inside the map.
 const POINTER: Pos2 = pos2(800.0, 450.0);
@@ -100,5 +100,52 @@ fn picking_a_section_in_the_explorer_lands_where_it_stays() {
     assert!(
         steps[80..].iter().all(|step| *step < 1e-3),
         "moves once landed: {steps:?}"
+    );
+}
+
+/// The width the Explorer takes from the left of the map, margin included.
+const EXPLORER_SIDE: f32 = 330.0;
+
+/// Steps `frames` frames, returning the view's scale after each.
+fn scales(harness: &mut Harness<'_, CellworksApp>, frames: usize) -> Vec<f32> {
+    (0..frames)
+        .map(|_| {
+            harness.step();
+            harness.state().view().expect("drawn").scale()
+        })
+        .collect()
+}
+
+/// A section picked in the Explorer lands centred in the map beside the panel
+#[test]
+fn a_section_picked_in_the_explorer_lands_centred_beside_the_panel() {
+    let (_tree, mut harness) = shop_city();
+    harness.key_press(Key::ArrowDown);
+    scales(&mut harness, 90);
+
+    let map = map(&harness);
+    let framing = harness.state().navigation().framing(&map);
+    let view = harness.state().view().expect("drawn");
+    let area = framing.area;
+    let corners = [
+        area.left_top(),
+        area.right_top(),
+        area.right_bottom(),
+        area.left_bottom(),
+    ]
+    .map(|corner| view.to_screen(corner, 0.0));
+    let mut seen = egui::Rect::from_points(&corners);
+    seen.min.y -= framing.headroom * view.scale();
+
+    let panel = harness.state().panel().expect("drawn");
+    let beside = egui::Rect::from_min_max(panel.min + vec2(EXPLORER_SIDE, 0.0), panel.max);
+    assert!(
+        (seen.center() - beside.center()).length() < 1.0,
+        "{:?} is not centred in {beside:?}",
+        seen.center()
+    );
+    assert!(
+        beside.contains_rect(seen),
+        "{seen:?} does not fit in {beside:?}"
     );
 }
