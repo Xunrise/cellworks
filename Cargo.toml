@@ -31,6 +31,6 @@ eframe = { workspace = true }
 egui = { workspace = true }
 
 [dev-dependencies]
-egui_kittest = { workspace = true }
+egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
 tempfile = { workspace = true }
 toml = { workspace = true }

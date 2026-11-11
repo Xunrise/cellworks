@@ -113,6 +113,8 @@ impl Universe {
             // A host probe's and the recent list's, not the universe's.
             WorkspaceEvent::HostProbed { .. } => {}
             WorkspaceEvent::RecentRead(..) => {}
+            // The launcher's theme words, not the universe's.
+            WorkspaceEvent::ThemeWordsTurnedOff => {}
         }
     }
 

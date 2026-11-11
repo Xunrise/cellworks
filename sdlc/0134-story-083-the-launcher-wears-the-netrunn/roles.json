@@ -1,0 +1,13 @@
+{
+  "agents": ["implementer", "test-author"],
+  "implementers": [
+    { "step": 1, "count": 1 },
+    { "step": 2, "count": 1 },
+    { "step": 3, "count": 1 },
+    { "step": 4, "count": 1 }
+  ],
+  "why": {
+    "implementer": "Four sequential steps; steps 2 and 3 share ui.rs, so no step splits into independent files.",
+    "test-author": "Five scenarios plus pure helpers (word tables, setting parse, chamfer, rise, breath, reduces_motion) a test can pin."
+  }
+}
