@@ -577,3 +577,48 @@ fn a_failed_continue_shows_the_commands_output() {
         "the output under the banner is cut to at most 200 characters: {text:?}"
     );
 }
+
+/// The sessions panel collapses to a thin strip and expands again, from its
+/// toggle and from the S key; the map gains the space while it is collapsed.
+#[test]
+fn the_sessions_panel_collapses_and_expands() {
+    let env = env();
+    let (tree, _unopened) = shop_city();
+    let pricing_fix = session("pricing-fix", Some("atch-pf"), Vec::new());
+    let mut harness = open_with_pane(&tree, vec![pricing_fix], &env);
+    let open_width = harness.state().panel().expect("the map is drawn").width();
+    assert!(harness.query_by_label("pricing-fix").is_some());
+
+    harness.get_by_label("Collapse sessions").click();
+    harness.run();
+    assert!(
+        harness.query_by_label("pricing-fix").is_none(),
+        "the collapsed panel hides its rows"
+    );
+    let collapsed_width = harness.state().panel().expect("the map is drawn").width();
+    assert!(
+        collapsed_width > open_width + 200.0,
+        "the map gains the space: {open_width} -> {collapsed_width}"
+    );
+
+    harness.get_by_label("Expand sessions").click();
+    harness.run();
+    assert!(harness.query_by_label("pricing-fix").is_some());
+    assert_eq!(
+        harness.state().panel().map(|panel| panel.width()),
+        Some(open_width)
+    );
+
+    harness.key_press(Key::S);
+    harness.run();
+    assert!(
+        harness.query_by_label("pricing-fix").is_none(),
+        "S collapses it"
+    );
+    harness.key_press(Key::S);
+    harness.run();
+    assert!(
+        harness.query_by_label("pricing-fix").is_some(),
+        "S expands it"
+    );
+}

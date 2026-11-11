@@ -88,6 +88,8 @@ pub struct SessionsView {
     /// `pane` - [`SessionPane::has_ended`] needs `&mut self`, so `pane`
     /// caches it here once per frame for `pane_text`'s `&self` to read.
     pane_ended: bool,
+    /// Whether the sidebar is folded to a thin strip (in memory only).
+    collapsed: bool,
 }
 
 impl SessionsView {
@@ -107,6 +109,7 @@ impl SessionsView {
             pane: None,
             want_focus: false,
             pane_ended: false,
+            collapsed: false,
         }
     }
 
@@ -382,6 +385,16 @@ impl SessionsView {
         }
     }
 
+    /// Whether the sidebar is folded to a strip.
+    pub fn collapsed(&self) -> bool {
+        self.collapsed
+    }
+
+    /// Folds the sidebar to a strip, or unfolds it.
+    pub fn toggle_collapsed(&mut self) {
+        self.collapsed = !self.collapsed;
+    }
+
     /// Draws the sidebar: heading, summary (or the listing error), search,
     /// groups. Returns the session clicked, and - when it stands in this
     /// city - the tower centre to recentre the camera on.
@@ -391,7 +404,23 @@ impl SessionsView {
         map: &cellworks_map::ProjectMap,
         common_dir: Option<&std::path::Path>,
     ) -> Option<(String, Option<Pos2>)> {
-        ui.heading("Sessions");
+        if self.collapsed {
+            if collapse_toggle(ui, "\u{203a}", "Expand sessions") {
+                self.collapsed = false;
+            }
+            return None;
+        }
+        ui.horizontal(|ui| {
+            ui.heading("Sessions");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if collapse_toggle(ui, "\u{2039}", "Collapse sessions") {
+                    self.collapsed = true;
+                }
+            });
+        });
+        if self.collapsed {
+            return None;
+        }
 
         if let Some(message) = &self.error {
             ui.colored_label(
@@ -1008,6 +1037,18 @@ fn key_bytes(event: &egui::Event) -> Vec<u8> {
         }
         _ => Vec::new(),
     }
+}
+
+/// A small flat button that folds or unfolds the sidebar; reads `label` to
+/// assistive tools and as a tooltip. True when clicked.
+fn collapse_toggle(ui: &mut egui::Ui, glyph: &str, label: &str) -> bool {
+    let response = ui
+        .add(egui::Button::new(egui::RichText::new(glyph).strong()).frame(false))
+        .on_hover_text(label)
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let enabled = response.enabled();
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    response.clicked()
 }
 
 #[cfg(test)]

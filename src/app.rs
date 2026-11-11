@@ -184,6 +184,8 @@ struct Keys {
     explorer_toggle: bool,
     /// P: toggles the review panel (STORY-022).
     review: bool,
+    /// S: folds or unfolds the sessions panel.
+    sessions_toggle: bool,
     /// Arrows down less arrows up, and right less left.
     rows: isize,
     columns: isize,
@@ -996,6 +998,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         ignored,
         lock,
         explorer_toggle,
+        sessions_toggle,
         review,
         rows,
         columns,
@@ -1047,6 +1050,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                         && input.modifiers.matches_logically(egui::Modifiers::COMMAND)
                         && pressed(egui::Key::B)),
                 review: !typing && plain && pressed(egui::Key::P),
+                sessions_toggle: !typing && plain && pressed(egui::Key::S),
                 rows: towards(egui::Key::ArrowUp, egui::Key::ArrowDown),
                 columns: towards(egui::Key::ArrowLeft, egui::Key::ArrowRight),
                 turn: if typing {
@@ -1282,6 +1286,9 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     }
     if explorer_toggle && app.opened.is_some() {
         app.explorer.toggle_open();
+    }
+    if sessions_toggle {
+        app.sessions.toggle_collapsed();
     }
     if review && app.opened.is_some() {
         toggle_review_panel(app);
@@ -1522,7 +1529,11 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 && let Some(map) = mapped(&app.opened)
             {
                 if let Some((_, centre)) = egui::Panel::left("sessions")
-                    .exact_size(300.0)
+                    .exact_size(if app.sessions.collapsed() {
+                        28.0
+                    } else {
+                        300.0
+                    })
                     .show(ui, |ui| {
                         app.sessions.sidebar(ui, map, common_dir.as_deref())
                     })
