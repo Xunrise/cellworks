@@ -14,8 +14,8 @@ mod common;
 
 use cellworks::app::CellworksApp;
 use cellworks_navigation::Layer;
-use egui::Key;
 use egui::accesskit::Role;
+use egui::{Key, Modifiers};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 
@@ -26,7 +26,10 @@ struct Shop {
     harness: Harness<'static, CellworksApp>,
 }
 
-/// The background: "shop" is open on the Project layer.
+/// The background: "shop" is open on the Project layer. The Explorer, open
+/// beside the map by default (STORY-089), is hidden: a folder or node name
+/// this story selects by its label would otherwise also match the
+/// Explorer's own row of the same name.
 fn shop() -> Shop {
     let tree = Tree::project(
         "shop",
@@ -38,7 +41,9 @@ fn shop() -> Shop {
             "orders/order.rs",
         ],
     );
-    let harness = open(&tree, None, Recorded::listing(&[]));
+    let mut harness = open(&tree, None, Recorded::listing(&[]));
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::B);
+    harness.run();
     Shop { tree, harness }
 }
 

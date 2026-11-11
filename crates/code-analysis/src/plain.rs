@@ -7,14 +7,14 @@
 //! folder of the city looks empty because its code is in a language
 //! Cellworks does not parse.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use cellworks_map::{Declaration, Floor, Item, ItemKind, NodeKind, Token};
 
+use crate::items::{self, column};
 use crate::kinds::kind_of;
-use crate::rust::column;
 
 /// Files larger than this are left bare: data or generated text, not
 /// something to read line by line.
@@ -124,20 +124,15 @@ fn items(root: &Path, file: &Path) -> Option<Vec<Item>> {
 /// with its name, a slash in it written as a division slash; a name met
 /// before gets the line it starts on, `@12`.
 fn part_paths(file: &Path, parts: &[Part]) -> Vec<PathBuf> {
-    let mut seen = HashSet::new();
-    parts
-        .iter()
-        .map(|part| {
-            let name = part.name.replace('/', "\u{2215}");
-            let name = if seen.insert(name.clone()) {
-                name
-            } else {
-                let line = part.rows.first().map_or(0, |(row, _)| row + 1);
-                format!("{name}@{line}")
-            };
-            file.join(name)
-        })
-        .collect()
+    items::unique_paths(
+        file,
+        parts.iter().map(|part| {
+            (
+                part.name.clone(),
+                part.rows.first().map_or(0, |(row, _)| *row),
+            )
+        }),
+    )
 }
 
 /// `lines` cut before every line `start` names, each part named so: the

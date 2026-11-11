@@ -142,7 +142,8 @@ impl Shop {
             if self.harness.state().opened().map(|o| o.lens()) == Some(lens) {
                 break;
             }
-            self.harness.key_press(egui::Key::L);
+            self.harness
+                .key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::L);
             common::await_lens(&mut self.harness);
             // Traffic on the lanes keeps asking for frames: two seconds of
             // them, enough for every tower to land.
@@ -288,7 +289,8 @@ fn switching_lens_moves_every_tower_to_its_new_place() {
     let discount = shop.discount();
     let before = shop.map().item(&discount).expect("discount").area;
 
-    shop.harness.key_press(egui::Key::L);
+    shop.harness
+        .key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::L);
     shop.harness.step();
     common::await_lens(&mut shop.harness);
     // From the moment of the switch: frames pass while the new map is

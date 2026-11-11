@@ -62,7 +62,7 @@ pub(crate) fn merge(
     }
 
     let mut projects: Vec<Project> = by_folder.into_values().collect();
-    projects.sort_by(|one, other| one.id.path().cmp(other.id.path()));
+    projects.sort_by(|one, other| one.id.cmp(&other.id));
 
     (projects, events)
 }
@@ -75,7 +75,10 @@ pub(crate) fn attach_district_prefixes(projects: &mut [Project], prefixes: &[(Pa
             continue;
         };
         for project in projects.iter_mut() {
-            if FolderIdentity::of(project.id.path()).is_ok_and(|other| other == folder) {
+            let Some(path) = project.id.local_path() else {
+                continue;
+            };
+            if FolderIdentity::of(path).is_ok_and(|other| other == folder) {
                 project.district_prefix = Some(prefix.clone());
             }
         }
@@ -92,7 +95,10 @@ pub(crate) fn attach_contexts(
             continue;
         };
         for project in projects.iter_mut() {
-            if FolderIdentity::of(project.id.path()).is_ok_and(|other| other == folder) {
+            let Some(path) = project.id.local_path() else {
+                continue;
+            };
+            if FolderIdentity::of(path).is_ok_and(|other| other == folder) {
                 project.contexts = folders.clone();
             }
         }

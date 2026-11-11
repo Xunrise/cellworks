@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use cellworks::app::CellworksApp;
 use cellworks_code_analysis::{GitListing, GitUnavailable};
-use egui::Rect;
 use egui::accesskit::Role;
+use egui::{Modifiers, Rect};
 use egui_kittest::Harness;
 use egui_kittest::kittest::NodeT;
 
@@ -245,7 +245,35 @@ fn a_double_click_opens_one_project_and_esc_goes_back() {
     harness.key_press(egui::Key::Escape);
     harness.run();
 
-    assert_eq!(labels(&harness), ["alpha", "beta"]);
+    // STORY-078 surrounds the same project list with a header, a locations
+    // column and an inspector, so a label is asked for rather than the whole
+    // of what is drawn.
+    let shown = labels(&harness);
+    for name in ["alpha", "beta"] {
+        assert!(shown.contains(&name.to_owned()), "{shown:?}");
+    }
+    assert!(
+        !shown.iter().any(|label| label == "catalog"),
+        "the project closed on Esc is no longer shown: {shown:?}"
+    );
+}
+
+/// Requirement 1: the click that selects a project leaves its row where it
+/// was, so the second click of the double-click lands on it and opens it.
+/// The folder's path is wide enough to wrap once anything narrows the list
+/// (STORY-078's inspector appearing on selection did), moving the row below.
+#[test]
+fn a_double_click_opens_a_project_under_a_long_folder_path() {
+    let path =
+        PathBuf::from("/private/var/folders/jw/8nnwftsn3b9_3jpgxvmhq_3m0000gn/T/.tmppqmQOC/shop");
+    let mut harness = harness(app(
+        vec![cellworks_workspace::Project::at(path)],
+        Recorded::listing(&[]),
+    ));
+
+    double_click(&mut harness, "shop");
+
+    assert!(harness.state().opened().is_some(), "{:?}", labels(&harness));
 }
 
 /// Requirements 3 and 4: while git has not answered, frames keep running and
@@ -311,7 +339,12 @@ fn the_whole_project_fits_the_panel_and_every_element_is_labelled() {
     let files: Vec<&str> = files.iter().map(String::as_str).collect();
     let tree = Tree::project("shop", &files);
 
-    let harness = open(&tree, None, Recorded::listing(&[]));
+    let mut harness = open(&tree, None, Recorded::listing(&[]));
+    // This requirement is about the project's own districts, sub-districts,
+    // groups and nodes, not the Explorer beside them (STORY-089); hidden, the
+    // labels this test reads are exactly the map's own.
+    harness.key_press_modifiers(Modifiers::COMMAND, egui::Key::B);
+    harness.run();
 
     let root = harness.root();
     for node in root.children_recursive() {

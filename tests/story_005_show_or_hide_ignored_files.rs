@@ -12,7 +12,7 @@ mod common;
 use cellworks::app::CellworksApp;
 use cellworks_map::ProjectMap;
 use cellworks_navigation::Layer;
-use egui::Key;
+use egui::{Key, Modifiers};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
@@ -117,6 +117,12 @@ fn hiding_them_again_clears_them() {
 fn hiding_them_again_while_one_is_framed_frames_the_project() {
     let tree = Tree::repository("shop", &["src/catalog/item.rs", "generated/build.rs"]);
     let mut harness = open(&tree, None, Recorded::listing(&["src/catalog/item.rs"]));
+    // "generated" names both a district on the map and an Explorer row
+    // (STORY-089); the Explorer, open beside the map by default, is not
+    // what this story's own switch is about, so it is hidden before
+    // selecting by label.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::B);
+    harness.run();
     switch(&mut harness);
     for name in ["generated", "build.rs"] {
         harness.get_by_label(name).click_accesskit();

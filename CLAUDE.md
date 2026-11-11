@@ -8,7 +8,7 @@ A native desktop map that makes an engineer's projects, code, AI agent sessions,
   ([ADR-0002](docs/adr/0002-cargo-workspace-crate-per-bounded-context.md))
 - eframe/egui 0.36 with the wgpu backend ([ADR-0001](docs/adr/0001-egui-as-ui-framework.md))
 - tree-sitter for code analysis ([ADR-0004](docs/adr/0004-tree-sitter-for-code-analysis.md))
-- git, kubectl, nvim and curl as child processes ([ADR-0003](docs/adr/0003-external-tools-as-child-processes.md))
+- git, kubectl, nvim, curl and ssh as child processes ([ADR-0003](docs/adr/0003-external-tools-as-child-processes.md))
 - No async runtime: background work on `std::thread`, results over `std::sync::mpsc`
 - macOS first; the release workflow also builds Linux
 
@@ -50,8 +50,10 @@ the Warhammer 40k words are display theme only. Full model: `docs/domain/`.
 
 Detail in `docs/arc42/03-context.md`.
 
-- Claude Code — sessions observed through transcripts in `~/.claude/projects`; how sessions are driven is still open
+- Claude Code — sessions started as background sessions with `claude --bg` and followed through their transcripts in
+  `~/.claude/projects` and `claude agents --json` ([ADR-0010](docs/adr/0010-claude-code-background-sessions.md))
 - git — status, numstat, branches, worktrees, via the CLI
+- ssh — reachability probe for a remote host (`ssh ... true`)
 - Neovim — embedded with `nvim --embed`
 - Atlassian remote MCP — Jira sync over HTTPS, Cellworks as its own OAuth client
 - Kubernetes — read-only `kubectl get`

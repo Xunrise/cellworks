@@ -11,7 +11,7 @@ mod common;
 use cellworks::app::CellworksApp;
 use cellworks_navigation::Layer;
 use egui::accesskit::Role;
-use egui::{Event, Key, Pos2, pos2};
+use egui::{Event, Key, Modifiers, Pos2, pos2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 
@@ -42,6 +42,11 @@ fn shop() -> Shop {
         ],
     );
     let mut harness = open(&tree, None, Recorded::listing(&[]));
+    // The Explorer, open beside the map by default (STORY-089), would both
+    // shift the framing this story reads exact positions from and match
+    // "catalog" a second time as its own row; hidden, neither applies.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::B);
+    harness.run();
     harness.key_press(Key::Z);
     harness.run();
     assert!(!harness.state().navigation().is_locked());

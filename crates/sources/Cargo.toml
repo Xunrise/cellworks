@@ -7,3 +7,6 @@ publish = false
 [dependencies]
 cellworks-map = { path = "../map" }
 cellworks-workspace = { path = "../workspace" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

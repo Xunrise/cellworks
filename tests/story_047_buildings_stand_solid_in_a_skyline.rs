@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use cellworks::app::CellworksApp;
 use cellworks_map::city;
 use cellworks_map::ui::DrawnTower;
-use egui::{Event, Pos2, pos2};
+use egui::{Event, Key, Modifiers, Pos2, pos2};
 use egui_kittest::Harness;
 
 use common::{Tree, map, shop_city, tower};
@@ -26,7 +26,12 @@ struct Shop {
 }
 
 fn shop() -> Shop {
-    let (tree, harness) = shop_city();
+    let (tree, mut harness) = shop_city();
+    // The Explorer, open beside the map by default (STORY-089), is not what
+    // this story's skyline is about, and facing a facade while it is open
+    // keeps asking for frames well past the harness's step budget.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::B);
+    harness.run();
     Shop { tree, harness }
 }
 

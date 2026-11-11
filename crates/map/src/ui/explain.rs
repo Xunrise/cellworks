@@ -12,25 +12,15 @@ use crate::{Lanes, Lens};
 const BANNER: f64 = 1.0;
 const FADE: f64 = 1.0;
 
-/// The lens bar: one button per lens in `offered`, `current` marked, each
-/// explained when pointed at. Returns the lens picked, if one was.
-pub fn lens_bar(ui: &mut egui::Ui, current: Lens, offered: &[Lens]) -> Option<Lens> {
-    let mut picked = None;
-    for lens in offered {
-        let help = format!(
-            "{}\nBlock: {}.\nDistrict: {}.\nL cycles the lenses.",
-            lens.blurb(),
-            lens.block(),
-            lens.district()
-        );
-        if switch(ui, lens.name(), *lens == current)
-            .on_hover_text(help)
-            .clicked()
-        {
-            picked = Some(*lens);
-        }
-    }
-    picked
+/// What a lens chip explains when hovered: its blurb, what a block and a
+/// district are in it.
+pub fn lens_help(lens: Lens) -> String {
+    format!(
+        "{}\nBlock: {}.\nDistrict: {}.",
+        lens.blurb(),
+        lens.block(),
+        lens.district()
+    )
 }
 
 /// The lane toggles beside the lens bar. Returns which was switched.

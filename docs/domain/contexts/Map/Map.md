@@ -28,3 +28,7 @@ Source refs are line numbers of [the prototype findings](../../../discovery/2026
   (STORY-003).
 - In the directories strategy, a named prefix rule finds a project's district level; it is chosen per project in the
   settings file, `one-wrapper-folder` by default (STORY-003).
+- While a review is open, a tower the pull request does not touch recedes so the towers it marks stand out: a written
+  floor is one of its lines the pull request added or changed, a removal strike marks the floor a removed line stood
+  on, and an impacted tower is one the pull request did not itself change but that calls a tower it did, tests
+  included; a changed tower is never also marked impacted (STORY-022).

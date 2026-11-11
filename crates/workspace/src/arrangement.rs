@@ -89,7 +89,7 @@ impl ArrangementStore {
     /// letter or a digit written as `_`, and a hash of the path, so
     /// `my-shop` and `my_shop` keep arrangements of their own.
     fn file(&self, project: &ProjectId) -> PathBuf {
-        let path = project.path().to_string_lossy();
+        let path = project.to_string();
         let name: String = path
             .chars()
             .map(|c| if c.is_alphanumeric() { c } else { '_' })

@@ -72,7 +72,7 @@ fn every_lens_frame_by_frame() {
             harness.step();
         }
         let started = Instant::now();
-        harness.key_press(egui::Key::L);
+        harness.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::L);
         harness.step();
         let pressed = started.elapsed().as_secs_f64() * 1000.0;
         common::await_lens(&mut harness);

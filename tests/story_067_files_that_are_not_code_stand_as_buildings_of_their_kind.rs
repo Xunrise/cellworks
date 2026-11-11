@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use cellworks::app::CellworksApp;
 use cellworks_map::ui::DrawnBuilding;
 use cellworks_map::{Form, ItemKind, city};
-use egui::Event;
+use egui::{Event, Key, Modifiers};
 use egui_kittest::Harness;
 
 use common::{Recorded, Tree, labels, map, open, tower};
@@ -88,7 +88,13 @@ const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff]
 /// The background: the project "shop", holding `files`, is open as a city.
 fn shop(files: &[(&str, &str)]) -> (Tree, Harness<'static, CellworksApp>) {
     let tree = Tree::sources("shop", files);
-    let harness = open(&tree, None, Recorded::listing(&[]));
+    let mut harness = open(&tree, None, Recorded::listing(&[]));
+    // The Explorer, open beside the map by default (STORY-089), is not what
+    // this story's buildings are about, and zooming in to face one keeps
+    // asking for frames well past the harness's step budget while it is
+    // open.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::B);
+    harness.run();
     (tree, harness)
 }
 

@@ -58,6 +58,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
   participant T as Claude transcript
+  participant C as claude CLI
   participant Ag as agent-sessions
   participant Map as map
   participant WS as workspace
@@ -66,9 +67,38 @@ sequenceDiagram
   Ag->>Map: mark a construction site for a created file
   Ag->>WS: request a rescan of the touched file
   WS->>Map: updated part of the graph
-  T-->>Ag: permission prompt
+  Ag->>C: claude agents --json
+  C-->>Ag: state blocked, waiting for approval
   Ag->>Map: show the approval alert on the session
 ```
 
 - Every session on the machine is discovered from its transcript, whether Cellworks started it or not.
 - Unknown transcript events are ignored.
+- Waiting for approval is a state in `claude agents --json`, never a transcript event
+  ([ADR-0010](../adr/0010-claude-code-background-sessions.md)).
+- A session belongs to a project's city by the paths it touches, not by its working directory.
+
+## 6.4 Starting and steering a session
+
+```mermaid
+sequenceDiagram
+  participant E as Engineer
+  participant Ag as agent-sessions
+  participant C as claude CLI
+  participant T as Claude transcript
+  E->>Ag: give a session a task
+  Ag->>C: claude --bg -n name "task" (clean environment)
+  C-->>Ag: short id
+  loop while the session runs
+    Ag->>C: claude agents --json
+    C-->>Ag: status and state (busy, idle; working, done, blocked)
+    T-->>Ag: file reads and writes, pull request URL
+  end
+  E->>Ag: answer an approval or add to the task
+  Ag->>C: claude attach id, in an embedded pseudo-terminal
+  E->>Ag: detach
+  Ag->>C: end the attach; the session keeps running
+```
+
+- Background sessions are hosted by Claude Code ([ADR-0010](../adr/0010-claude-code-background-sessions.md)) and survive restarts of Cellworks.
+- A follow-up to a session that has stopped goes through `claude --resume <sessionId> --bg -n <name> "<prompt>"`.

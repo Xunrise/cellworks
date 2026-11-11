@@ -12,6 +12,7 @@ use egui::{Pos2, Rect};
 
 use crate::Lens;
 use crate::contexts::BoundedContexts;
+use crate::history::LineHistory;
 
 /// One project laid out as a map. Built only by [`ProjectMap::of`].
 ///
@@ -31,6 +32,10 @@ pub struct ProjectMap {
     /// Pairs of files changed in the same commits; empty where git has no
     /// history to tell.
     pub co_changes: Vec<CoChange>,
+    /// Which commit last wrote each line of each file, joined to the pull
+    /// request and the stories it named; empty for a folder that is not a
+    /// git repository.
+    pub history: LineHistory,
     /// The lens the districts were made by.
     pub lens: Lens,
     /// For every file, the index of the district its items stand in under

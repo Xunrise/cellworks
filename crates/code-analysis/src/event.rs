@@ -1,5 +1,6 @@
 //! What the CodeAnalysis context tells the rest of the application.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use cellworks_map::ProjectMap;
@@ -27,4 +28,22 @@ pub enum CodeAnalysisEvent {
     /// git could not say which files it ignores, so the project was read with
     /// the hidden-folder rule alone and ignored files may be on the map.
     GitExcludesUnavailable { project: PathBuf, reason: String },
+    /// A project's branch, file count, last commit time and folder
+    /// modification time were read, for the launcher's inspector and its
+    /// sorts. `None` for a field this story leaves unknown: a plain folder
+    /// has no branch, no file count and no commit time — never zero. Times
+    /// are seconds since the Unix epoch.
+    DetailsRead {
+        project: PathBuf,
+        branch: Option<String>,
+        files: Option<usize>,
+        committed: Option<i64>,
+        changed: Option<i64>,
+    },
+    /// The open project's uncommitted changes were read: absolute paths under
+    /// the project root with a modified or untracked working-tree file.
+    ChangesRead {
+        project: PathBuf,
+        changed: HashSet<PathBuf>,
+    },
 }

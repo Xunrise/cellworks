@@ -127,7 +127,7 @@ fn switch_to(harness: &mut Harness<'static, CellworksApp>, lens: Lens) {
         if harness.state().opened().map(|o| o.lens()) == Some(lens) {
             return;
         }
-        harness.key_press(egui::Key::L);
+        harness.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::L);
         common::await_lens(harness);
         harness.run_steps(150);
     }
@@ -187,7 +187,7 @@ fn a_switch_of_lens_is_announced() {
         })
     };
 
-    harness.key_press(egui::Key::L);
+    harness.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::L);
     harness.run_steps(10);
     assert!(banner(&harness), "the name and what it arranges by, large");
 

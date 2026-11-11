@@ -15,17 +15,19 @@ use egui::{Color32, Pos2, Rect, RichText, Sense, Shape, Stroke, StrokeKind, Vec2
 mod buildings;
 mod explain;
 mod lanes;
+mod why;
 
 pub use buildings::{DrawnBridge, DrawnBuilding, bridge_card};
-pub use explain::{banner, caption, caption_text, lane_toggles, legend, legend_text, lens_bar};
+pub use explain::{banner, caption, caption_text, lane_toggles, legend, legend_text, lens_help};
 pub use lanes::{DrawnLane, colour_of};
+pub use why::{NO_CONTEXT, NO_STORY, why_panel};
 
 use crate::Framing;
 use crate::city::{self, iso, iso_bounds};
 use crate::graph::{Declares, DistrictKind, Group, Item, ItemKind, Node, NodeKind, ProjectMap};
 use crate::layout::TITLE;
 use crate::view::{Pivot, View, fit, turn_at};
-use crate::{Bridge, Form, LaneId, LaneKind, Lanes, Lens, Trim};
+use crate::{Bridge, Form, LaneId, LaneKind, Lanes, Lens, ReviewOverlay, TowerReview, Trim};
 
 /// One frame of the map as drawn.
 pub struct Drawn {
@@ -130,6 +132,8 @@ pub struct DrawnTower {
     pub light: f32,
     /// Whether it hangs in the cellar.
     pub cellar: bool,
+    /// What a review marks of it, while one is open (STORY-022).
+    pub review: Option<TowerReview>,
 }
 
 /// One line on screen: from the point of its first character to the point of
@@ -171,6 +175,47 @@ const CROWN_HUES: [Color32; 5] = [
     Color32::from_rgb(0xff, 0x5c, 0xa8),
 ];
 const CROWN_FILL: Color32 = Color32::from_rgb(0x0b, 0x2a, 0x2e);
+
+/// The colours the floors of the selected tower are tinted by, one per pull
+/// request in the order the why panel lists them; a group beyond the palette
+/// starts again at its first colour (STORY-019).
+const PR_HUES: [Color32; 6] = [
+    Color32::from_rgb(0x5e, 0xf6, 0xff),
+    Color32::from_rgb(0xff, 0xb3, 0x5c),
+    Color32::from_rgb(0xb2, 0x6b, 0xff),
+    Color32::from_rgb(0x7a, 0xe5, 0x82),
+    Color32::from_rgb(0xff, 0x5c, 0xa8),
+    Color32::from_rgb(0x4a, 0xa8, 0xff),
+];
+
+/// How much of its light a tower keeps while another one is explained: the
+/// city steps back so the colours of the explained tower's floors read
+/// (STORY-019).
+const UNEXPLAINED: f32 = 0.4;
+
+/// How much of its light a tower keeps while a review is open and the pull
+/// request does not touch it: the city steps back so the towers it writes,
+/// removes from or impacts stand out (STORY-022).
+const REVIEW_RECEDED: f32 = 0.18;
+
+/// The colour a floor a pull request writes is drawn in (STORY-022).
+const WRITTEN: Color32 = Color32::from_rgb(0x5c, 0xff, 0xb0);
+
+/// The colour of the strike a removed line is drawn in, and of its debris at
+/// the tower's foot (STORY-022).
+const REMOVED: Color32 = Color32::from_rgb(0xff, 0x4d, 0x6d);
+
+/// The colour of the outline around a tower impacted by a pull request's
+/// changes (STORY-022).
+const IMPACTED: Color32 = Color32::from_rgb(0xff, 0x9f, 0x1c);
+
+/// At most this many debris pieces are drawn at a tower's foot, however many
+/// lines a pull request removed from it (STORY-022).
+const DEBRIS_CAP: usize = 24;
+
+/// The period, in seconds, of the pulse around a changed or impacted tower
+/// (STORY-022).
+const PULSE_PERIOD: f32 = 3.0;
 
 /// The paving of a forecourt, and the colour of a mast's head.
 const PAVING: Color32 = Color32::from_rgb(0x14, 0x1a, 0x22);
@@ -439,6 +484,13 @@ struct Painter<'a> {
     /// The billboard of each image on a block of its own: the node, its
     /// ground and how high it is raised.
     billboards: Vec<(&'a Path, Rect, f32)>,
+    /// The palette index of each floor of the selected tower, while one is
+    /// explained; every other tower is dimmed then (STORY-019).
+    tint: Option<&'a [usize]>,
+    /// The pull request's reach over the map, while a review is open: an
+    /// untouched tower recedes, a changed or impacted one stands out
+    /// (STORY-022).
+    review: Option<&'a ReviewOverlay>,
 }
 
 /// A name to put on the map: the ground it names, how it is written, the
@@ -484,6 +536,18 @@ pub struct ViewOptions<'a> {
     pub network: Option<&'a crate::Network>,
     /// Whether a cable runs from each mast to the building it calls.
     pub cables: bool,
+    /// The selected tower's floors tinted by the pull request that last
+    /// wrote each: one index into the palette per floor, in source order, as
+    /// [`crate::Why::floors`] gives them. Every other tower is dimmed while
+    /// it is set; `None` leaves the city as it was (STORY-019).
+    pub tint: Option<&'a [usize]>,
+    /// The pull request's reach over the map, while a review is open: an
+    /// untouched tower recedes to [`REVIEW_RECEDED`]; a changed tower's
+    /// written floors are coloured [`WRITTEN`], its removed lines struck in
+    /// [`REMOVED`]; an impacted tower is outlined in [`IMPACTED`]; a changed
+    /// or impacted tower pulses. `None` leaves the city as it was
+    /// (STORY-022).
+    pub review: Option<&'a ReviewOverlay>,
 }
 
 /// A click on a lane: the lane, and with Cmd held the tower at its far end
@@ -508,6 +572,8 @@ pub fn project(ui: &mut egui::Ui, map: &ProjectMap, options: ViewOptions<'_>) ->
         picked,
         network,
         cables,
+        tint,
+        review,
     } = options;
     let panel = ui.available_rect_before_wrap();
     let view = fit(framing, panel);
@@ -545,6 +611,8 @@ pub fn project(ui: &mut egui::Ui, map: &ProjectMap, options: ViewOptions<'_>) ->
         cables_drawn: Vec::new(),
         bridge_hovered: None,
         billboards: Vec::new(),
+        tint,
+        review,
     };
     orbits(ui, map, &view);
     let mut outlines = Vec::new();
@@ -658,13 +726,20 @@ pub fn project(ui: &mut egui::Ui, map: &ProjectMap, options: ViewOptions<'_>) ->
     let mut shapes = Vec::new();
     lanes::draw(&mut frame, LaneKind::Imports, &view, time, &mut shapes);
     ui.painter().extend(shapes);
-    let (towers, buildings, bridges, hovered) = painter.towers(ui, pointer);
+    let (towers, buildings, bridges, hovered) = painter.towers(ui, pointer, time);
     let mut shapes = Vec::new();
     lanes::draw(&mut frame, LaneKind::Calls, &view, time, &mut shapes);
     ui.painter().extend(shapes);
     lanes::card(ui, &frame, picked, pointer);
     if shown.imports || shown.calls {
         // Traffic keeps moving.
+        ui.ctx().request_repaint();
+    }
+    if towers.iter().any(|tower| {
+        tower.review.as_ref().is_some_and(|review| review.pulsing)
+            && panel.intersects(tower.outline)
+    }) {
+        // A pulsing tower is in view: keep it pulsing.
         ui.ctx().request_repaint();
     }
     let mut entered = None;
@@ -1117,6 +1192,7 @@ impl<'a> Painter<'a> {
         &mut self,
         ui: &egui::Ui,
         pointer: Option<Pos2>,
+        time: f32,
     ) -> (
         Vec<DrawnTower>,
         Vec<DrawnBuilding>,
@@ -1180,6 +1256,9 @@ impl<'a> Painter<'a> {
                 glass: false,
                 light: 1.0,
                 cellar: city::in_cellar(item),
+                review: self
+                    .review
+                    .and_then(|overlay| overlay.towers.get(&item.path).cloned()),
             })
             .collect();
         let hovered = pointer.and_then(|at| pick(&drawn, at, self.underground));
@@ -1295,6 +1374,16 @@ impl<'a> Painter<'a> {
             if tower.glass {
                 lit *= GLASS;
             }
+            // While one tower is explained, the rest of the city steps back
+            // so the colours of its floors read.
+            if self.tint.is_some() && Some(item.path.as_path()) != self.selected {
+                lit *= UNEXPLAINED;
+            }
+            // While a review is open, a tower it does not touch recedes so
+            // the towers it writes, removes from or impacts stand out.
+            if self.review.is_some() && tower.review.is_none() {
+                lit *= REVIEW_RECEDED;
+            }
             if let Some((pivot, turn)) = self.facing {
                 lit *= 1.0 + (fog(item, pivot) - 1.0) * turn;
             }
@@ -1306,6 +1395,46 @@ impl<'a> Painter<'a> {
                 _ => 1.0,
             };
             tower.light = lit;
+            if let Some(review) = tower.review.clone() {
+                if !review.removed.is_empty() {
+                    for &before in &review.removed {
+                        let span = self.removal_span(item, before);
+                        shapes.push(Shape::line_segment(
+                            [span.start, span.end],
+                            Stroke::new(FAR_STROKE.max(2.0), REMOVED),
+                        ));
+                    }
+                    let count = review.removed.len().min(DEBRIS_CAP);
+                    let width = city::width(item);
+                    for piece in 0..count {
+                        let along = width * (piece as f32 + 0.5) / count as f32;
+                        let at = self.view.to_screen(city::front(item, along), item.base);
+                        let debris = Rect::from_center_size(at, vec2(3.0, 3.0));
+                        shapes.push(Shape::rect_filled(debris, 0.0, REMOVED));
+                    }
+                }
+                if review.impacted {
+                    brackets(&mut shapes, tower.outline.expand(3.0), IMPACTED);
+                }
+                if review.pulsing {
+                    let phase = time * (2.0 * std::f32::consts::PI / PULSE_PERIOD);
+                    let pulse = phase.sin() * 0.5 + 0.5;
+                    let colour = if !review.written.is_empty() {
+                        WRITTEN
+                    } else if !review.removed.is_empty() {
+                        REMOVED
+                    } else {
+                        IMPACTED
+                    };
+                    let glow = colour.gamma_multiply(0.35 + 0.5 * pulse);
+                    shapes.push(Shape::rect_stroke(
+                        tower.outline.expand(6.0),
+                        0.0,
+                        Stroke::new(2.0, glow),
+                        StrokeKind::Outside,
+                    ));
+                }
+            }
             let (base, trim, is_base) = (standing.base, standing.trim, standing.is_base);
             let spire = item.declaration.declares == Declares::EntryPoint;
             let form = standing.form();
@@ -1423,6 +1552,11 @@ impl<'a> Painter<'a> {
                 shapes.push(Shape::convex_polygon(front, face, Stroke::NONE));
                 continue;
             }
+            // Explained, a tower wears the colour of the pull request that
+            // last wrote each floor instead of its district's.
+            let tinted = self
+                .tint
+                .filter(|_| Some(item.path.as_path()) == self.selected);
             for (index, floor) in item.floors.iter().enumerate() {
                 let z = city::floor_z(item, index);
                 let bright = if floor.calls.is_empty() {
@@ -1430,9 +1564,21 @@ impl<'a> Painter<'a> {
                 } else {
                     CALLING_LINE
                 };
-                let fill = glow(tower.colour, bright * lit);
+                let written = tower
+                    .review
+                    .as_ref()
+                    .is_some_and(|review| review.written.contains(&floor.number));
+                let colour = if written {
+                    WRITTEN
+                } else {
+                    match tinted.and_then(|tint| tint.get(index)) {
+                        Some(group) => PR_HUES[group % PR_HUES.len()],
+                        None => tower.colour,
+                    }
+                };
+                let fill = glow(colour, bright * lit);
                 if let Some(font) = letters {
-                    shapes.push(self.written(ui, item, index, font, tower.colour, lit));
+                    shapes.push(self.written(ui, item, index, font, colour, lit));
                     continue;
                 }
                 if scale >= DASHES_FROM {
@@ -1566,6 +1712,27 @@ impl<'a> Painter<'a> {
         Span {
             start: front[0] + (front[1] - front[0]) / 2.0,
             end: front[3] + (front[2] - front[3]) / 2.0,
+        }
+    }
+
+    /// The span across `item`'s wall where a removed line sat before it was
+    /// taken out: at the floor `before`, or the first floor at or after it;
+    /// `item`'s last floor when `before` is past them all; its middle when it
+    /// stands no floor at all (STORY-022).
+    fn removal_span(&self, item: &Item, before: usize) -> Span {
+        if item.floors.is_empty() {
+            return self.middle(item);
+        }
+        let index = item
+            .floors
+            .iter()
+            .position(|floor| floor.number >= before)
+            .unwrap_or(item.floors.len() - 1);
+        let z = city::floor_z(item, index);
+        let width = city::width(item);
+        Span {
+            start: self.view.to_screen(city::front(item, 0.0), z),
+            end: self.view.to_screen(city::front(item, width), z),
         }
     }
 
@@ -1985,10 +2152,12 @@ pub fn minimap(ui: &mut egui::Ui, map: &ProjectMap, view: &View, panel: Rect) ->
 }
 
 /// Rows inside a tower: their height, and where the line number ends, the
-/// line starts and the calls start, from the panel's left edge.
+/// line starts, the pull request that last wrote it is marked and the calls
+/// start, from the panel's left edge.
 const ROW: f32 = 17.0;
 const NUMBER_END: f32 = 70.0;
 const TEXT_START: f32 = 86.0;
+const MARK_START: f32 = 620.0;
 const CALLS_START: f32 = 760.0;
 
 /// Draws the tower at `item` from inside, face on, over the city dimmed
@@ -2073,6 +2242,19 @@ pub fn inside(
             painter.rect_filled(tick, 0.0, colour.gamma_multiply(0.35));
         }
         painter.galley(text_at, text, INK);
+        // What built this floor: the pull request that last wrote it and the
+        // stories its commit names. Nothing for an uncommitted floor or a
+        // commit without a pull request.
+        let mark = crate::why::floor_commit(map, item, index).and_then(why::floor_mark);
+        if let Some(mark) = &mark {
+            painter.text(
+                pos2(left + MARK_START, middle),
+                egui::Align2::LEFT_CENTER,
+                mark,
+                egui::FontId::monospace(11.0),
+                DIM,
+            );
+        }
         let calls: Vec<&str> = line
             .calls
             .iter()
@@ -2090,6 +2272,9 @@ pub fn inside(
 
         let response = ui.interact(row, ui.id().with(("floor", index)), Sense::click());
         let mut name = format!("{:>5}  {}", line.number, line.text);
+        if let Some(mark) = &mark {
+            name.push_str(&format!("    {mark}"));
+        }
         if !calls.is_empty() {
             name.push_str(&format!("    calls {}", calls.join(", ")));
         }
@@ -2147,6 +2332,16 @@ fn district_colour_of(map: &ProjectMap, item: &Item) -> Color32 {
         .filter(|(_, district)| path.starts_with(&district.path))
         .max_by_key(|(_, district)| district.path.as_os_str().len())
         .map_or(DISTRICT_COLOURS[0], |(index, _)| district_colour(index))
+}
+
+/// The colour of the top-level district `path` is or lies under; the first
+/// district's colour when `path` matches none.
+pub fn district_colour_at(map: &ProjectMap, path: &Path) -> Color32 {
+    map.districts
+        .iter()
+        .enumerate()
+        .find(|(_, district)| *path == district.path || path.starts_with(&district.path))
+        .map_or(district_colour(0), |(index, _)| district_colour(index))
 }
 
 #[cfg(test)]
@@ -2220,6 +2415,8 @@ mod tests {
                     picked: None,
                     network: None,
                     cables: false,
+                    tint: None,
+                    review: None,
                 },
             )
             .towers;
@@ -2308,6 +2505,8 @@ mod tests {
                     picked: None,
                     network: None,
                     cables: false,
+                    tint: None,
+                    review: None,
                 },
             )
             .towers;
@@ -2394,6 +2593,8 @@ mod tests {
                         picked: None,
                         network: Some(&network),
                         cables: true,
+                        tint: None,
+                        review: None,
                     },
                 )
                 .buildings;
@@ -2419,5 +2620,150 @@ mod tests {
         assert!(!far.forecourt, "{far:?}");
         assert!(far.masts.is_empty(), "{far:?}");
         assert!(far.crowns.is_empty(), "{far:?}");
+    }
+
+    #[test]
+    fn a_review_overlay_dims_untouched_towers_and_marks_written_floors() {
+        use std::collections::BTreeMap;
+
+        use crate::graph::{Floor, Item, ItemKind};
+
+        let floor = |number: usize| Floor {
+            number,
+            text: format!("line {number}"),
+            indent: 0,
+            width: 7,
+            tokens: Vec::new(),
+            calls: Vec::new(),
+            imports: Vec::new(),
+        };
+        let item = |file: &str, name: &str, lines: usize| Item {
+            name: name.to_owned(),
+            path: Path::new("/p/shop").join(file).join(name),
+            kind: ItemKind::Function,
+            tests: false,
+            floors: (1..=lines).map(floor).collect(),
+            area: Rect::NOTHING,
+            base: 0.0,
+            declaration: Default::default(),
+        };
+        let files = ["catalog/a.rs", "orders/b.rs"].map(PathBuf::from);
+        let written_item = item("catalog/a.rs", "written", 2);
+        let written_path = written_item.path.clone();
+        let untouched_item = item("orders/b.rs", "untouched", 2);
+        let untouched_path = untouched_item.path.clone();
+        let items = BTreeMap::from([
+            (files[0].clone(), vec![written_item]),
+            (files[1].clone(), vec![untouched_item]),
+        ]);
+        let strategy = Directories {
+            prefix: default_prefix_rule(),
+        };
+        let map = ProjectMap::of_code(
+            "shop",
+            Path::new("/p/shop"),
+            &files,
+            &strategy,
+            items,
+            &Default::default(),
+        );
+        let mut written = BTreeMap::new();
+        written.insert(written_path.clone(), vec![2]);
+        let overlay = ReviewOverlay::new(&written, &BTreeMap::new(), &map);
+        let framing = Framing {
+            area: map.extent,
+            fill: 1.0,
+            closest: 1.0,
+            headroom: 0.0,
+        };
+
+        let ctx = egui::Context::default();
+        let mut towers = Vec::new();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            towers = project(
+                ui,
+                &map,
+                ViewOptions {
+                    framing,
+                    selected: None,
+                    folder_view: None,
+                    pivot: None,
+                    underground: false,
+                    lanes: Lanes::default(),
+                    picked: None,
+                    network: None,
+                    cables: false,
+                    tint: None,
+                    review: Some(&overlay),
+                },
+            )
+            .towers;
+        });
+        output.textures_delta.clear();
+
+        let written_tower = towers
+            .iter()
+            .find(|t| t.path == written_path)
+            .expect("drawn");
+        let info = written_tower
+            .review
+            .as_ref()
+            .expect("marked written by the overlay");
+        assert_eq!(info.written, vec![2]);
+        assert!(info.pulsing, "a changed tower pulses");
+
+        let untouched_tower = towers
+            .iter()
+            .find(|t| t.path == untouched_path)
+            .expect("drawn");
+        assert!(
+            untouched_tower.review.is_none(),
+            "the overlay marks nothing of it"
+        );
+        assert!(
+            untouched_tower.light < written_tower.light,
+            "the untouched tower recedes: {} vs {}",
+            untouched_tower.light,
+            written_tower.light
+        );
+        assert!(
+            untouched_tower.light <= REVIEW_RECEDED + 1e-6,
+            "it recedes to REVIEW_RECEDED, light was {}",
+            untouched_tower.light
+        );
+    }
+
+    /// STORY-089: a subfolder keeps the colour of the top-level district it
+    /// lies under, the same formula `district_colour_of` already uses for an
+    /// item's home.
+    #[test]
+    fn the_colour_at_a_subfolder_is_its_districts() {
+        let files: Vec<PathBuf> = [
+            "catalog/pricing/base.rs",
+            "catalog/pricing/rules/discount.rs",
+            "catalog/item.rs",
+            "orders/order.rs",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+        let strategy = Directories {
+            prefix: default_prefix_rule(),
+        };
+        let map = ProjectMap::of("shop", Path::new("/p/shop"), &files, &strategy);
+        let district = Path::new("/p/shop/catalog");
+        let subfolder = Path::new("/p/shop/catalog/pricing");
+        let other_district = Path::new("/p/shop/orders");
+
+        assert_eq!(
+            district_colour_at(&map, subfolder),
+            district_colour_at(&map, district),
+            "a subfolder keeps its district's colour"
+        );
+        assert_ne!(
+            district_colour_at(&map, district),
+            district_colour_at(&map, other_district),
+            "two different districts keep different colours in this fixture"
+        );
     }
 }

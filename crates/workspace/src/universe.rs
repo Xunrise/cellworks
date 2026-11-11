@@ -32,6 +32,7 @@ pub enum NoticeKind {
     ProjectsFolderUnreadable,
     AddedFolderSkipped,
     SettingsUnreadable,
+    HostSkipped,
 }
 
 /// Something the scan could not do, shown beside the universe rather than
@@ -104,8 +105,16 @@ impl Universe {
             WorkspaceEvent::SettingsUnreadable { path, reason } => {
                 self.note(NoticeKind::SettingsUnreadable, path, reason);
             }
+            WorkspaceEvent::HostSkipped { name, reason } => {
+                self.note(NoticeKind::HostSkipped, PathBuf::from(name), reason);
+            }
             // An opened project's, not the universe's.
             WorkspaceEvent::ArrangementRead { .. } => {}
+            // A host probe's and the recent list's, not the universe's.
+            WorkspaceEvent::HostProbed { .. } => {}
+            WorkspaceEvent::RecentRead(..) => {}
+            // The launcher's theme words, not the universe's.
+            WorkspaceEvent::ThemeWordsTurnedOff => {}
         }
     }
 
@@ -115,16 +124,20 @@ impl Universe {
     /// sender that has gone away before reporting is the scan thread having
     /// died, and is the one thing that stops the view showing "Scanning" for
     /// ever; after a report, the sender dropping is just the scan being over.
-    pub fn drain(&mut self, events: &Receiver<WorkspaceEvent>) {
+    pub fn drain(&mut self, events: &Receiver<WorkspaceEvent>) -> Vec<WorkspaceEvent> {
+        let mut applied = Vec::new();
         loop {
             match events.try_recv() {
-                Ok(event) => self.apply(event),
-                Err(TryRecvError::Empty) => return,
+                Ok(event) => {
+                    self.apply(event.clone());
+                    applied.push(event);
+                }
+                Err(TryRecvError::Empty) => return applied,
                 Err(TryRecvError::Disconnected) => {
                     if self.scan == ScanState::Scanning {
                         self.scan = ScanState::Failed;
                     }
-                    return;
+                    return applied;
                 }
             }
         }

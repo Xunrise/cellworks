@@ -5,7 +5,7 @@
 //! shell is involved, so a project folder named like an option never reaches
 //! git's argument vector.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -15,10 +15,22 @@ use std::process::Command;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GitUnavailable(pub String);
 
+/// One commit as `git log` tells it, before it is joined to a pull request
+/// or a story.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoggedCommit {
+    pub sha: String,
+    /// Commit time, seconds since the Unix epoch (`%ct`).
+    pub time: i64,
+    /// The whole raw message, subject and body.
+    pub message: String,
+}
+
 /// What git says about a repository.
 ///
-/// The binary passes [`GitCli`]; every test passes a recorded listing, so no
-/// test runs real git.
+/// The binary passes [`GitCli`]; every test of the app passes a recorded
+/// listing. Only `tests/git_cli_against_real_git.rs` runs real git, against
+/// repositories it creates.
 pub trait GitListing {
     /// Paths relative to the repository root that git does not ignore and
     /// that exist in the worktree.
@@ -29,6 +41,43 @@ pub trait GitListing {
     /// knows files knows no history.
     fn history(&self, _repository: &Path) -> Result<Vec<Vec<PathBuf>>, GitUnavailable> {
         Ok(Vec::new())
+    }
+
+    /// The repository's current branch name. The default returns `Err`: a
+    /// listing that only knows files doesn't know a branch.
+    fn branch(&self, _repository: &Path) -> Result<String, GitUnavailable> {
+        Err(GitUnavailable(String::new()))
+    }
+
+    /// The time of the repository's newest commit, seconds since the Unix
+    /// epoch. The default returns `Err`: a listing that only knows files
+    /// knows no history.
+    fn last_commit(&self, _repository: &Path) -> Result<i64, GitUnavailable> {
+        Err(GitUnavailable(String::new()))
+    }
+
+    /// The project's commits, oldest first, each with its id, commit time and
+    /// whole message. Empty by default.
+    fn log(&self, _repository: &Path) -> Result<Vec<LoggedCommit>, GitUnavailable> {
+        Ok(Vec::new())
+    }
+
+    /// The commit id that last wrote each line of each of `files`, relative to
+    /// the repository root, in file order; a file blame cannot explain (binary,
+    /// untracked, gone) is left out, the rest still answered. Empty by default.
+    fn blame(
+        &self,
+        _repository: &Path,
+        _files: &[PathBuf],
+    ) -> BTreeMap<PathBuf, Vec<Option<String>>> {
+        BTreeMap::new()
+    }
+
+    /// Paths of files with uncommitted changes — modified or untracked —
+    /// relative to the repository. Empty by default: a listing that only
+    /// knows files knows no working-tree status.
+    fn changed(&self, _repository: &Path) -> Result<HashSet<PathBuf>, GitUnavailable> {
+        Ok(HashSet::new())
     }
 }
 
@@ -47,6 +96,15 @@ const LISTED: &[&str] = &[
 /// Files still in the index but gone from the worktree.
 const DELETED: &[&str] = &["ls-files", "-z", "--deleted"];
 
+/// The name of the branch currently checked out.
+const BRANCH: &[&str] = &["rev-parse", "--abbrev-ref", "HEAD"];
+
+/// The commit time of the newest commit, in seconds since the Unix epoch.
+const LAST_COMMIT: &[&str] = &["log", "-1", "--format=%ct"];
+
+/// Modified, staged and untracked files, excluding submodule state.
+const STATUS: &[&str] = &["status", "--porcelain=v1", "-z", "--ignore-submodules=all"];
+
 /// The files of the last 500 commits, each commit opened by a line holding
 /// only the record separator.
 /// Paths come unquoted, as `ls-files -z` lists them, so `café.rs` pairs up.
@@ -59,6 +117,15 @@ const HISTORY: &[&str] = &[
     "--name-only",
     "--format=%x1e",
 ];
+
+/// `git log`'s format for `GitCli::log`: the commit id, a unit separator,
+/// the commit time, a unit separator, the whole raw message, a record
+/// separator. git appends one more newline after each commit's formatted
+/// output, including the last.
+const LOG: &[&str] = &["log", "--reverse", "--format=%H%x1f%ct%x1f%B%x1e"];
+
+/// How many `git blame` child processes run at once.
+const BLAME_WORKERS: usize = 8;
 
 impl GitListing for GitCli {
     fn visible_files(&self, repository: &Path) -> Result<Vec<PathBuf>, GitUnavailable> {
@@ -77,6 +144,84 @@ impl GitListing for GitCli {
             return Err(GitUnavailable(message.trim().chars().take(200).collect()));
         }
         Ok(commits(&output.stdout))
+    }
+
+    fn branch(&self, repository: &Path) -> Result<String, GitUnavailable> {
+        let output = command(repository, BRANCH)
+            .output()
+            .map_err(|error| GitUnavailable(format!("git could not be started: {error}")))?;
+        if !output.status.success() {
+            let message = String::from_utf8_lossy(&output.stderr);
+            return Err(GitUnavailable(message.trim().chars().take(200).collect()));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    fn last_commit(&self, repository: &Path) -> Result<i64, GitUnavailable> {
+        let output = command(repository, LAST_COMMIT)
+            .output()
+            .map_err(|error| GitUnavailable(format!("git could not be started: {error}")))?;
+        if !output.status.success() {
+            let message = String::from_utf8_lossy(&output.stderr);
+            return Err(GitUnavailable(message.trim().chars().take(200).collect()));
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .map_err(|_| GitUnavailable("no commit time".to_owned()))
+    }
+
+    fn changed(&self, repository: &Path) -> Result<HashSet<PathBuf>, GitUnavailable> {
+        let output = command(repository, STATUS)
+            .output()
+            .map_err(|error| GitUnavailable(format!("git could not be started: {error}")))?;
+        if !output.status.success() {
+            let message = String::from_utf8_lossy(&output.stderr);
+            return Err(GitUnavailable(message.trim().chars().take(200).collect()));
+        }
+        Ok(changed_paths(&output.stdout))
+    }
+
+    fn log(&self, repository: &Path) -> Result<Vec<LoggedCommit>, GitUnavailable> {
+        let mut command = command(repository, LOG);
+        let output = command
+            .output()
+            .map_err(|error| GitUnavailable(format!("git could not be started: {error}")))?;
+        if !output.status.success() {
+            let message = String::from_utf8_lossy(&output.stderr);
+            return Err(GitUnavailable(message.trim().chars().take(200).collect()));
+        }
+        Ok(parse_log(&output.stdout))
+    }
+
+    fn blame(
+        &self,
+        repository: &Path,
+        files: &[PathBuf],
+    ) -> BTreeMap<PathBuf, Vec<Option<String>>> {
+        if files.is_empty() {
+            return BTreeMap::new();
+        }
+        let workers = BLAME_WORKERS.min(files.len());
+        let chunk_size = files.len().div_ceil(workers);
+        std::thread::scope(|scope| {
+            files
+                .chunks(chunk_size)
+                .map(|chunk| {
+                    scope.spawn(move || {
+                        chunk
+                            .iter()
+                            .filter_map(|file| {
+                                blame_one(repository, file).map(|lines| (file.clone(), lines))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .flat_map(|handle| handle.join().unwrap_or_default())
+                .collect()
+        })
     }
 }
 
@@ -114,14 +259,125 @@ fn visible(listed: Vec<PathBuf>, deleted: Vec<PathBuf>) -> Vec<PathBuf> {
 }
 
 /// The child process for one call: fixed arguments, the repository as the
-/// working directory, and no index lock taken from a session working there.
+/// working directory, no index lock taken from a session working there, and
+/// no system git config consulted.
+///
+/// A repository's config can name commands for git to run, so the two that
+/// matter here are switched off: `core.fsmonitor` (run on index refresh) by
+/// `-c`, and the pager by `--no-pager`. `GIT_CONFIG_NOSYSTEM=1` keeps
+/// `/etc/gitconfig` out; the engineer's global config is kept on purpose, so
+/// their `core.excludesFile` and `safe.directory` still apply. The
+/// repository's own `.git/config` is still read for every other key.
+///
+/// Which projects git runs in is decided by the caller (`request_details` in
+/// `src/app.rs`), not here.
 fn command(repository: &Path, arguments: &[&str]) -> Command {
     let mut command = Command::new("git");
     command
+        .args(["--no-pager", "-c", "core.fsmonitor=false"])
         .args(arguments)
         .current_dir(repository)
-        .env("GIT_OPTIONAL_LOCKS", "0");
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_CONFIG_NOSYSTEM", "1");
     command
+}
+
+/// The commit id of each line of `file`, relative to `repository`, from
+/// `git blame --porcelain`; `None` when the blame itself fails (binary,
+/// untracked, gone).
+fn blame_one(repository: &Path, file: &Path) -> Option<Vec<Option<String>>> {
+    let mut command = command(repository, &["blame", "--porcelain", "--"]);
+    command.arg(file);
+    let output = command.output().ok()?;
+    output.status.success().then(|| parse_blame(&output.stdout))
+}
+
+/// `git log --reverse --format=%H%x1f%ct%x1f%B%x1e` output, oldest first:
+/// each commit's id, a unit separator, its commit time, a unit separator,
+/// its whole raw message, a record separator; git appends one more newline
+/// after each commit's formatted output, including the last, so each
+/// record but the first starts with that newline.
+fn parse_log(output: &[u8]) -> Vec<LoggedCommit> {
+    String::from_utf8_lossy(output)
+        .split('\x1e')
+        .map(|entry| entry.trim_start_matches('\n'))
+        .filter(|entry| !entry.is_empty())
+        .filter_map(|entry| {
+            let mut fields = entry.splitn(3, '\x1f');
+            let sha = fields.next()?.to_owned();
+            let time = fields.next()?.parse().ok()?;
+            let message = fields
+                .next()
+                .unwrap_or("")
+                .trim_end_matches('\n')
+                .to_owned();
+            Some(LoggedCommit { sha, time, message })
+        })
+        .collect()
+}
+
+/// `git blame --porcelain` output: one commit id per final line, in file
+/// order; the all-zero id (an uncommitted line) is `None`. A commit's
+/// detail block (author, committer, summary, filename) appears only the
+/// first time that commit is mentioned in the whole output; every line
+/// still gets its own `<sha> <orig-line> <final-line> [<count>]` header, so
+/// a later line of a commit already seen has no detail block, just the
+/// header and the tab-prefixed content line straight after.
+fn parse_blame(output: &[u8]) -> Vec<Option<String>> {
+    let lines: Vec<&[u8]> = output.split(|&byte| byte == b'\n').collect();
+    let mut result = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        if line.is_empty() {
+            i += 1;
+            continue;
+        }
+        let header = String::from_utf8_lossy(line);
+        let Some(sha) = header.split_whitespace().next() else {
+            i += 1;
+            continue;
+        };
+        let sha = sha.to_owned();
+        result.push((!sha.bytes().all(|byte| byte == b'0')).then(|| sha.clone()));
+        i += 1;
+        if seen.insert(sha) {
+            while i < lines.len() && !lines[i].starts_with(b"\t") {
+                i += 1;
+            }
+        }
+        if i < lines.len() {
+            i += 1; // the content line
+        }
+    }
+    result
+}
+
+/// `git status --porcelain=v1 -z` output: the path of every entry with
+/// uncommitted changes, relative to the repository. A rename or copy entry
+/// carries two NUL-terminated paths, both kept — which one is old and which
+/// is new does not matter just to mark a path changed, and the design does
+/// not promise which comes first, only that it tolerates either order.
+fn changed_paths(output: &[u8]) -> HashSet<PathBuf> {
+    let fields: Vec<&[u8]> = output
+        .split(|&byte| byte == 0)
+        .filter(|field| !field.is_empty())
+        .collect();
+    let mut result = HashSet::new();
+    let mut i = 0;
+    while i < fields.len() {
+        let field = fields[i];
+        result.insert(PathBuf::from(OsStr::from_bytes(&field[3..])));
+        if (field[0] == b'R' || field[0] == b'C')
+            && let Some(old_path) = fields.get(i + 1)
+        {
+            result.insert(PathBuf::from(OsStr::from_bytes(old_path)));
+            i += 1;
+        }
+        i += 1;
+    }
+    result
 }
 
 fn run(mut command: Command) -> Result<Vec<PathBuf>, GitUnavailable> {
@@ -143,7 +399,32 @@ fn run(mut command: Command) -> Result<Vec<PathBuf>, GitUnavailable> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
+
+    /// STORY-089, requirement 5: `git status --porcelain=v1 -z` output becomes
+    /// paths relative to the project, a plain entry one path, a rename or copy
+    /// entry both of its NUL-terminated paths.
+    #[test]
+    fn porcelain_entries_become_paths_under_the_project() {
+        let mut output = Vec::new();
+        output.extend_from_slice(b" M src/a.rs\0");
+        output.extend_from_slice(b"?? new.txt\0");
+        output.extend_from_slice(b"R  src/renamed.rs\0src/old.rs\0");
+
+        let changed = changed_paths(&output);
+
+        let expected: HashSet<PathBuf> = [
+            PathBuf::from("src/a.rs"),
+            PathBuf::from("new.txt"),
+            PathBuf::from("src/renamed.rs"),
+            PathBuf::from("src/old.rs"),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(changed, expected, "both paths of the rename are kept");
+    }
 
     #[test]
     fn a_deleted_file_a_duplicate_and_a_nested_repository_are_not_visible() {
@@ -170,6 +451,77 @@ mod tests {
         );
     }
 
+    /// STORY-078, requirement 9: the branch is asked the same way the file
+    /// listing is: the repository as the working directory, never as an
+    /// argument, so a project folder named like an option never reaches
+    /// git's argument vector here either.
+    #[test]
+    fn the_branch_is_asked_in_the_repository_folder() {
+        let repository = Path::new("/projects/--upload-pack=evil");
+
+        let command = command(repository, BRANCH);
+
+        assert_eq!(command.get_program(), "git");
+        assert_eq!(
+            command.get_args().skip(3).collect::<Vec<_>>(),
+            BRANCH.iter().map(OsStr::new).collect::<Vec<_>>()
+        );
+        assert_eq!(command.get_current_dir(), Some(repository));
+    }
+
+    #[test]
+    fn the_log_lists_commits_oldest_first_with_their_whole_message() {
+        let output: &[u8] = b"aaaaaaa1\x1f1000\x1fchore: a (#1)\n\x1e\nbbbbbbb2\x1f2000\x1fsecond change (#5) (#19)\n\nRefs: STORY-7, STORY-003\n\x1e\n";
+
+        let commits = parse_log(output);
+
+        assert_eq!(
+            commits,
+            vec![
+                LoggedCommit {
+                    sha: "aaaaaaa1".to_owned(),
+                    time: 1000,
+                    message: "chore: a (#1)".to_owned(),
+                },
+                LoggedCommit {
+                    sha: "bbbbbbb2".to_owned(),
+                    time: 2000,
+                    message: "second change (#5) (#19)\n\nRefs: STORY-7, STORY-003".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn blame_gives_one_commit_per_line_in_order() {
+        let output = "c1 1 1 1\n\
+author A\nauthor-mail <a@x>\nauthor-time 1000\nauthor-tz +0000\n\
+committer A\ncommitter-mail <a@x>\ncommitter-time 1000\ncommitter-tz +0000\n\
+summary first\nfilename file.txt\n\tline one\n\
+c2 2 2 1\n\
+author B\nauthor-mail <b@x>\nauthor-time 2000\nauthor-tz +0000\n\
+committer B\ncommitter-mail <b@x>\ncommitter-time 2000\ncommitter-tz +0000\n\
+summary second\nprevious c0 file.txt\nfilename file.txt\n\tline two\n\
+c1 1 3 1\n\tline three\n\
+0000000000000000000000000000000000000000 4 4 1\n\
+author Not Committed Yet\nauthor-mail <not.committed.yet>\nauthor-time 1700000000\nauthor-tz +0000\n\
+committer Not Committed Yet\ncommitter-mail <not.committed.yet>\ncommitter-time 1700000000\ncommitter-tz +0000\n\
+summary Uncommitted changes\nfilename file.txt\n\tline four\n";
+
+        let lines = parse_blame(output.as_bytes());
+
+        assert_eq!(
+            lines,
+            vec![
+                Some("c1".to_owned()),
+                Some("c2".to_owned()),
+                Some("c1".to_owned()),
+                None,
+            ],
+            "line 3 repeats commit c1 without its detail block (already seen); line 4 is the all-zero uncommitted id"
+        );
+    }
+
     #[test]
     fn the_repository_is_the_working_directory_and_never_an_argument() {
         let repository = Path::new("/projects/--upload-pack=evil");
@@ -178,8 +530,14 @@ mod tests {
 
         assert_eq!(command.get_program(), "git");
         assert_eq!(
-            command.get_args().collect::<Vec<_>>(),
+            command.get_args().skip(3).collect::<Vec<_>>(),
             LISTED.iter().map(OsStr::new).collect::<Vec<_>>()
+        );
+        assert!(
+            command
+                .get_args()
+                .all(|argument| !argument.to_string_lossy().contains("/projects")),
+            "the repository path is in no argument"
         );
         assert_eq!(command.get_current_dir(), Some(repository));
         assert!(
@@ -187,5 +545,18 @@ mod tests {
                 .get_envs()
                 .any(|(key, value)| key == "GIT_OPTIONAL_LOCKS" && value == Some(OsStr::new("0")))
         );
+    }
+
+    #[test]
+    fn git_is_stopped_from_running_commands_a_repository_names() {
+        let command = command(Path::new("/projects/any"), LISTED);
+
+        assert_eq!(
+            command.get_args().take(3).collect::<Vec<_>>(),
+            ["--no-pager", "-c", "core.fsmonitor=false"].map(OsStr::new)
+        );
+        let envs: Vec<_> = command.get_envs().collect();
+        assert!(envs.contains(&(OsStr::new("GIT_CONFIG_NOSYSTEM"), Some(OsStr::new("1")))));
+        assert!(envs.iter().all(|(key, _)| *key != "GIT_CONFIG_GLOBAL"));
     }
 }

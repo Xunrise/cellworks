@@ -1,9 +1,15 @@
 //! STORY-002, see every project in the universe: what the engineer sees.
 //!
 //! The five scenarios of issue #4 come first, one test each, named after the
-//! scenario: a real folder tree on disk, a scan, and what the universe view
+//! scenario: a real folder tree on disk, a scan, and what the launcher view
 //! then labels. The tests after them pin the view's requirements in
 //! `spec.md`, each naming its requirement in its doc comment.
+//!
+//! STORY-078 replaced the flat `ui::universe` with `ui::launcher`, which draws
+//! a header, a locations column and an inspector around the same project
+//! list, so a test here asks whether a label is *among* what was drawn rather
+//! than the whole of it — the chrome around the list is this story's, not
+//! STORY-002's, to pin.
 //!
 //! The harness pattern is the one `tests/empty_window.rs` established for
 //! STORY-001, with the assertion inverted: it needs neither a GPU adapter nor
@@ -13,7 +19,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
-use cellworks_workspace::{Project, Sources, Universe, WorkspaceEvent, scan, ui};
+use cellworks_workspace::{Launcher, Project, Sources, Universe, WorkspaceEvent, scan, ui};
 use egui::accesskit::Role;
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
@@ -57,10 +63,10 @@ fn labels_in(harness: &Harness<'_>) -> Vec<String> {
         .collect()
 }
 
-/// One frame of the universe view, and what it labelled.
-fn labels(universe: &Universe) -> Vec<String> {
+/// One frame of the launcher view, and what it labelled.
+fn labels(universe: &Universe, launcher: &mut Launcher) -> Vec<String> {
     let mut harness = Harness::new_ui(|ui| {
-        ui::universe(ui, universe, None);
+        ui::launcher(ui, universe, launcher);
     });
     harness.run();
     labels_in(&harness)
@@ -103,14 +109,18 @@ fn add_folders(root: &Path, folders: &[&Path]) {
     .expect("write the settings file");
 }
 
-/// What the universe view labels once Cellworks has scanned `root`.
+/// What the launcher view labels once Cellworks has scanned `root`: the scan's
+/// events, applied to a `Universe` and to a `Launcher` alike, the way the
+/// binary forwards every drained event to both.
 fn universe_of(root: &Path) -> Vec<String> {
     let sources = sources_in(root);
     let mut universe = Universe::scanning(&sources);
+    let mut launcher = Launcher::new(None);
     for event in scan(&sources) {
-        universe.apply(event);
+        universe.apply(event.clone());
+        launcher.apply(event);
     }
-    labels(&universe)
+    labels(&universe, &mut launcher)
 }
 
 fn a_tree() -> tempfile::TempDir {
@@ -124,7 +134,10 @@ fn git_repositories_in_the_projects_folder_appear_as_projects() {
     repository(tree.path(), "Projects/alpha");
     repository(tree.path(), "Projects/beta");
 
-    assert_eq!(universe_of(tree.path()), vec!["alpha", "beta"]);
+    let shown = universe_of(tree.path());
+
+    assert!(shown.contains(&"alpha".to_owned()), "{shown:?}");
+    assert!(shown.contains(&"beta".to_owned()), "{shown:?}");
 }
 
 /// Scenario: A folder that is not a git repository is not discovered
@@ -136,8 +149,11 @@ fn a_folder_that_is_not_a_git_repository_is_not_discovered() {
 
     let labels = universe_of(tree.path());
 
-    assert!(!labels.contains(&"notes".to_owned()), "{labels:?}");
-    assert_eq!(labels, vec!["alpha"]);
+    assert!(
+        !labels.contains(&"notes".to_owned()),
+        "a plain folder under the projects folder is not a project: {labels:?}"
+    );
+    assert!(labels.contains(&"alpha".to_owned()), "{labels:?}");
 }
 
 /// Scenario: An added folder appears as a project
@@ -148,7 +164,7 @@ fn an_added_folder_appears_as_a_project() {
     fs::create_dir_all(&gamma).expect("create a folder outside the projects folder");
     add_folders(tree.path(), &[&gamma]);
 
-    assert_eq!(universe_of(tree.path()), vec!["gamma"]);
+    assert!(universe_of(tree.path()).contains(&"gamma".to_owned()));
 }
 
 /// Scenario: The same folder in a different letter case is one project
@@ -180,12 +196,22 @@ fn no_projects_at_all() {
 
     let labels = universe_of(tree.path());
 
-    assert_eq!(labels.len(), 1, "{labels:?}");
+    // `empty_state()` names the fixed `sources()` fixture's paths, not this
+    // test's own temporary tree, so the message is matched by its wording
+    // here and by its two real paths below, rather than by the wrong fixed
+    // text `empty_state()` would give.
     assert!(
-        labels[0].starts_with("No projects yet.")
-            && labels[0].contains(&sources.projects_folder.display().to_string())
-            && labels[0].contains(&sources.settings_file.display().to_string()),
-        "the universe says how to add a project: {labels:?}"
+        labels
+            .iter()
+            .any(|label| label.starts_with("No projects yet.")),
+        "the launcher says how to add a project: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|label| {
+            label.contains(&sources.projects_folder.display().to_string())
+                && label.contains(&sources.settings_file.display().to_string())
+        }),
+        "naming both the projects folder and the settings file: {labels:?}"
     );
 }
 
@@ -194,16 +220,19 @@ fn no_projects_at_all() {
 #[test]
 fn a_universe_taller_than_the_window_scrolls() {
     let mut universe = Universe::scanning(&sources());
-    universe.apply(WorkspaceEvent::ProjectsDiscovered(
+    let mut launcher = Launcher::new(None);
+    let discovered = WorkspaceEvent::ProjectsDiscovered(
         (0..200)
             .map(|n| a_project(&format!("project-{n:03}")))
             .collect(),
-    ));
+    );
+    universe.apply(discovered.clone());
+    launcher.apply(discovered);
 
     let mut harness = Harness::builder()
         .with_size(egui::vec2(400.0, 300.0))
         .build_ui(|ui| {
-            ui::universe(ui, &universe, None);
+            ui::launcher(ui, &universe, &mut launcher);
         });
     harness.run();
 
@@ -228,24 +257,29 @@ fn a_universe_taller_than_the_window_scrolls() {
 #[test]
 fn the_universe_says_it_is_scanning_before_the_first_result_arrives() {
     let mut universe = Universe::scanning(&sources());
+    let mut launcher = Launcher::new(None);
 
-    let while_scanning = labels(&universe);
-    universe.apply(WorkspaceEvent::ProjectsDiscovered(Vec::new()));
-    let once_reported = labels(&universe);
+    let while_scanning = labels(&universe, &mut launcher);
+    let discovered = WorkspaceEvent::ProjectsDiscovered(Vec::new());
+    universe.apply(discovered.clone());
+    launcher.apply(discovered);
+    let once_reported = labels(&universe, &mut launcher);
 
-    assert_eq!(
-        while_scanning,
-        vec![SCANNING.to_owned()],
-        "before the scan reports, the universe says only that it is scanning"
+    assert!(
+        while_scanning.contains(&SCANNING.to_owned()),
+        "before the scan reports, the launcher says it is scanning: {while_scanning:?}"
     );
     assert!(
         !while_scanning.contains(&empty_state()),
-        "the empty state must not flash on the way"
+        "the empty state must not flash on the way: {while_scanning:?}"
     );
-    assert_eq!(
-        once_reported,
-        vec![empty_state()],
-        "and it appears only once the scan has reported nothing"
+    assert!(
+        once_reported.contains(&empty_state()),
+        "and it appears once the scan has reported nothing: {once_reported:?}"
+    );
+    assert!(
+        !once_reported.contains(&SCANNING.to_owned()),
+        "and scanning is no longer said: {once_reported:?}"
     );
 }
 
@@ -254,14 +288,30 @@ fn the_universe_says_it_is_scanning_before_the_first_result_arrives() {
 #[test]
 fn every_project_the_scan_reported_has_one_labelled_entry() {
     let mut universe = Universe::scanning(&sources());
+    let mut launcher = Launcher::new(None);
 
-    universe.apply(WorkspaceEvent::ProjectsDiscovered(vec![
+    let discovered = WorkspaceEvent::ProjectsDiscovered(vec![
         a_project("alpha"),
         a_project("mike"),
         a_project("zulu"),
-    ]));
+    ]);
+    universe.apply(discovered.clone());
+    launcher.apply(discovered);
 
-    assert_eq!(labels(&universe), vec!["alpha", "mike", "zulu"]);
+    let shown = labels(&universe, &mut launcher);
+    let positions: Vec<usize> = ["alpha", "mike", "zulu"]
+        .iter()
+        .map(|name| {
+            shown
+                .iter()
+                .position(|label| label == name)
+                .unwrap_or_else(|| panic!("{name} is labelled: {shown:?}"))
+        })
+        .collect();
+    assert!(
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "reported in the scan's own order: {shown:?}"
+    );
 }
 
 /// Requirement 20: a universe with nothing in it tells the engineer how to add
@@ -269,10 +319,13 @@ fn every_project_the_scan_reported_has_one_labelled_entry() {
 #[test]
 fn an_empty_universe_tells_the_engineer_how_to_add_a_project() {
     let mut universe = Universe::scanning(&sources());
+    let mut launcher = Launcher::new(None);
 
-    universe.apply(WorkspaceEvent::ProjectsDiscovered(Vec::new()));
+    let discovered = WorkspaceEvent::ProjectsDiscovered(Vec::new());
+    universe.apply(discovered.clone());
+    launcher.apply(discovered);
 
-    assert_eq!(labels(&universe), vec![empty_state()]);
+    assert!(labels(&universe, &mut launcher).contains(&empty_state()));
 }
 
 /// Requirement 21: a reported failure is visible beside the folder or file it
@@ -280,14 +333,19 @@ fn an_empty_universe_tells_the_engineer_how_to_add_a_project() {
 #[test]
 fn a_reported_failure_is_visible_beside_the_projects_that_were_found() {
     let mut universe = Universe::scanning(&sources());
-    universe.apply(WorkspaceEvent::ProjectsDiscovered(vec![a_project("alpha")]));
+    let mut launcher = Launcher::new(None);
+    let discovered = WorkspaceEvent::ProjectsDiscovered(vec![a_project("alpha")]);
+    universe.apply(discovered.clone());
+    launcher.apply(discovered);
 
-    universe.apply(WorkspaceEvent::SettingsUnreadable {
+    let unreadable = WorkspaceEvent::SettingsUnreadable {
         path: sources().settings_file,
         reason: "expected a value".to_owned(),
-    });
+    };
+    universe.apply(unreadable.clone());
+    launcher.apply(unreadable);
 
-    let labels = labels(&universe);
+    let labels = labels(&universe, &mut launcher);
     assert!(
         labels.contains(&"alpha".to_owned()),
         "the projects that were found are still listed: {labels:?}"
@@ -307,19 +365,20 @@ fn a_reported_failure_is_visible_beside_the_projects_that_were_found() {
 fn frames_keep_running_while_the_scan_has_not_reported() {
     let (sender, receiver) = mpsc::channel::<WorkspaceEvent>();
     let mut universe = Universe::scanning(&sources());
+    let mut launcher = Launcher::new(None);
 
     {
         let mut harness = Harness::new_ui(|ui| {
             universe.drain(&receiver);
-            ui::universe(ui, &universe, None);
+            ui::launcher(ui, &universe, &mut launcher);
         });
         harness.run();
         harness.run();
 
-        assert_eq!(
-            labels_in(&harness),
-            vec![SCANNING.to_owned()],
-            "the sender is still alive and silent, so the view waits without blocking"
+        assert!(
+            labels_in(&harness).contains(&SCANNING.to_owned()),
+            "the sender is still alive and silent, so the view waits without blocking: {:?}",
+            labels_in(&harness)
         );
     }
 

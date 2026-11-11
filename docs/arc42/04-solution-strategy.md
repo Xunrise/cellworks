@@ -33,8 +33,9 @@ Extensibility) and the constraints in [chapter 2](02-constraints.md).
 | Performance | Scans and loaders run off the UI thread and hand finished graphs to the Map; level of detail and viewport culling are mandatory; layout is incremental and must not inflate on interaction; derived state is cached between frames. |
 | Extensibility | The generic graph and the crate-per-context structure: new project types and district strategies plug in without touching navigation or rendering. |
 
-## 4.4 Open
+## 4.4 Driving Claude Code sessions
 
-> TODO: depends on the decision about how Claude Code sessions are driven. Candidates: the CLI in a pseudo-terminal
-> owned by a detachable session host (the prototype), the Agent SDK or headless stream-json, or an external
-> multiplexer (tmux, herdr) with Cellworks only observing. To be decided by a spike story.
+Sessions are Claude Code background sessions ([ADR-0010](../adr/0010-claude-code-background-sessions.md)). Cellworks starts them with `claude --bg`, follows them through
+their transcripts and `claude agents --json`, and types into them or answers their approvals through `claude attach` in
+an embedded pseudo-terminal. Claude Code hosts the sessions, so they survive restarts of Cellworks and can be attached
+from any terminal.

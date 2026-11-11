@@ -10,35 +10,41 @@ flowchart LR
   CW[Cellworks]
   FS[(Project folders)]
   Git[git]
+  GH[GitHub<br/>via gh]
   CC[Claude Code]
   TR[(Claude transcripts<br/>~/.claude/projects)]
   NV[Neovim]
   AT[Atlassian remote MCP]
   K8s[Kubernetes API<br/>via kubectl]
   TF[(Terraform files)]
+  SSH[ssh]
 
   User -->|keyboard, mouse| CW
   CW -->|read, watch| FS
-  CW -->|status, numstat, branches, worktrees| Git
+  CW -->|status, numstat, branches, worktrees, diff, fetch pull-request heads| Git
+  CW -->|read-only pr list| GH
   CW -->|create, steer, observe| CC
   CW -->|tail| TR
   CW -->|embed, msgpack-rpc| NV
   CW -->|OAuth + JSON-RPC over HTTPS| AT
   CW -->|read-only get| K8s
   CW -->|read| TF
+  CW -->|reachability probe| SSH
 ```
 
 | Neighbour | What Cellworks does with it |
 |---|---|
 | Engineer | Navigates the map, edits files, creates and steers Claude Code sessions. |
 | Project folders | Scans code, domain docs, Knex migrations, proto files and DTOs; watches for changes to rescan. |
-| git | Reads the files a repository shows (`ls-files`), status, numstat, branches and worktrees; switches branches and adds worktrees on request. |
+| git | Reads the files a repository shows (`ls-files`), status, numstat, diff, branches and worktrees; fetches pull-request heads; switches branches and adds worktrees on request, and adds and removes temporary detached worktrees. |
+| GitHub | Lists a project's pull requests and the issue text of their stories through the read-only `gh` CLI. |
 | Claude Code | Creates and steers sessions that survive restarts of Cellworks. |
 | Claude transcripts | Discovers every session on the machine and follows what it reads and writes. |
 | Neovim | Embedded editor. |
 | Atlassian remote MCP | Syncs Jira projects. |
 | Kubernetes API | Reads live workloads, read-only. |
 | Terraform files | Reads infrastructure blocks per environment. |
+| ssh | Probes once per launch whether each configured remote host is reachable. |
 
 Out of scope: writing to clusters, any network server run by Cellworks.
 
@@ -49,21 +55,39 @@ tools; there is no SLA.
 
 ### Claude Code and transcripts
 
-- **Protocol:** transcripts are JSON lines under `~/.claude/projects/**/*.jsonl`, tailed read-only. How Cellworks
-  creates and steers sessions is open; the prototype ran the `claude` CLI in a pseudo-terminal owned by a detachable
-  session host.
-
-  > TODO: depends on the decision about how sessions are driven (to be tested; see chapter 4).
-- **Data:** session input and output; transcript events (tool calls with file paths, permission prompts).
-- **Auth:** the user's own Claude Code login; Cellworks never handles its credentials.
-- **Quirks:** the transcript format is not a published contract and can change with Claude Code releases; parse
-  tolerantly and ignore unknown events.
+- **Protocol:** the `claude` CLI as a child process ([ADR-0010](../adr/0010-claude-code-background-sessions.md)). `claude --bg -n <name> "<task>"` starts a background
+  session and prints its short id; `claude agents --json` lists every interactive and background session with its id,
+  session id, working directory, name, status (busy, idle) and state (working, done, waiting, blocked); `claude attach <id>`
+  opens a session in a pseudo-terminal; `claude stop <id>` stops it, and `claude --resume <sessionId> --bg "<prompt>"`
+  continues a stopped one. Transcripts are JSON lines under `~/.claude/projects/**/*.jsonl`, tailed read-only.
+- **Data:** file reads and writes from the `Read`, `Edit`, `Write`, `MultiEdit` and `NotebookEdit` tool calls in the
+  transcript and in the subagent transcripts `<sessionId>/subagents/*.jsonl`; reads from the existing file paths named in
+  `Bash`, `Grep` and `Glob` calls; pull request URLs from the result of a `gh pr create` call; session state from `claude agents --json`.
+- **Auth:** the user's own Claude Code login; Cellworks never handles its credentials. `claude` runs with a clean
+  environment, because a child that inherits a host's Claude environment fails to authenticate.
+- **Quirks:** neither the transcript format nor `claude agents --json` is a published contract; both can change with
+  Claude Code releases, so parse tolerantly and ignore unknown events and fields. Waiting for approval shows only in
+  `claude agents --json`. Reads through Bash are seen only as file paths named in the command. Sessions often touch files outside
+  their working directory. `--resume` on a session that is still running starts a copy under a new id and prints "backgrounded · <id> · <name>".
+  `claude attach` accepts only background sessions; interactive sessions have no attach id.
 
 ### git
 
 - **Protocol:** the `git` CLI, run per project.
-- **Data:** the files a repository shows and does not ignore (`ls-files`), status, numstat, branch and worktree lists.
-- **Auth:** none beyond the user's git setup; Cellworks does not push or fetch.
+- **Data:** the files a repository shows and does not ignore (`ls-files`), status, numstat, diffs, branch and worktree
+  lists.
+- **Auth:** none beyond the user's git setup; Cellworks never pushes. It fetches pull-request heads
+  (`git fetch origin pull/<n>/head`), which writes objects and `FETCH_HEAD` but creates no branch and moves no ref the
+  user owns, and it adds and removes temporary detached worktrees.
+
+### GitHub (via gh)
+
+- **Protocol:** the `gh` CLI over HTTPS, read-only (`gh pr list`, `gh issue list`).
+- **Data:** pull requests with number, state, title, branch, head and base commits and author; for story text, the
+  issue title and the As a / I want / So that lines of its body.
+- **Auth:** the user's own `gh auth login`; Cellworks never handles its credentials.
+- **Quirks:** the forge refuses diffs above 20,000 lines, so diffs come from git; the API is rate limited; a repository
+  whose `origin` is not on GitHub has no pull requests.
 
 ### Neovim
 
@@ -95,3 +119,10 @@ tools; there is no SLA.
 - **Protocol:** files read from an infrastructure repository (`otc:<folder>` projects).
 - **Data:** resource blocks grouped per environment.
 - **Auth:** none; no `terraform` command is run.
+
+### ssh
+
+- **Protocol:** the `ssh` CLI, `ssh -o BatchMode=yes -o ConnectTimeout=5 -- <host> true`, run in the background once per launch for each configured host.
+- **Data:** the exit status only; nothing is read from the host.
+- **Auth:** the user's own ssh config and keys; Cellworks never prompts for or handles credentials.
+- **Quirks:** an unreachable or password-only host reads as offline; a missing `ssh` binary marks all hosts offline.

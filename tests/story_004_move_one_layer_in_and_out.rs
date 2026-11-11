@@ -72,11 +72,18 @@ impl Universe {
         self.harness.state().navigation().layer()
     }
 
-    /// The project "shop" is open and its map drawn.
+    /// The project "shop" is open and its map drawn. The Explorer, open
+    /// beside the map by default (STORY-089), is hidden: this story's own
+    /// folder and node labels would otherwise also match an Explorer row of
+    /// the same name, and its shifted framing is not what these scenarios
+    /// are about.
     fn open_shop(&mut self) {
         self.select("shop");
         self.press(Key::Enter);
         await_read(&mut self.harness);
+        self.harness
+            .key_press_modifiers(egui::Modifiers::COMMAND, Key::B);
+        self.harness.run();
     }
 
     /// Opens "shop" and frames each of `names` in turn with Enter.
@@ -89,8 +96,16 @@ impl Universe {
     }
 
     fn rect_of(&self, name: &str) -> Rect {
+        // STORY-082's preview pane also names the selected project, so at the
+        // universe layer a project's name can match twice (its row and the
+        // pane); the row — what this helper means — is the later of the two,
+        // the pane being drawn first. Every other name this is called with
+        // (a folder, a node) is never also a selected project's name at the
+        // universe layer, so it stays the only match either way.
         self.harness
-            .get_by_label(name)
+            .get_all_by_label(name)
+            .last()
+            .expect("a label is laid out")
             .accesskit_node()
             .bounding_box()
             .expect("a label is laid out")
@@ -177,10 +192,15 @@ impl Universe {
     }
 
     /// Every project of the universe is listed in the window.
+    ///
+    /// STORY-078 surrounds the same project list with a header, a locations
+    /// column and an inspector, so a label is asked for rather than the whole
+    /// of what is drawn.
     fn assert_all_projects_shown(&self) {
-        let mut shown = labels(&self.harness);
-        shown.sort();
-        assert_eq!(shown, ["billing", "shop"]);
+        let shown = labels(&self.harness);
+        for name in ["billing", "shop"] {
+            assert!(shown.contains(&name.to_owned()), "{shown:?}");
+        }
         assert!(in_window(self.rect_of("shop")) && in_window(self.rect_of("billing")));
     }
 }

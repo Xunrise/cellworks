@@ -13,11 +13,15 @@
 mod arrangement;
 mod discovery;
 mod event;
+mod hosts;
+mod launcher;
 mod project;
+mod recent;
 mod registry;
 mod settings;
 pub mod ui;
 mod universe;
+mod words;
 
 #[cfg(test)]
 mod test_tree;
@@ -27,7 +31,10 @@ use std::sync::mpsc;
 
 pub use arrangement::{Arrangement, ArrangementKeeper, ArrangementStore};
 pub use event::WorkspaceEvent;
+pub use hosts::{HostProbe, SshProbe, start_probes};
+pub use launcher::{HostState, Launcher, Location, Pick, ProjectDetails, ProjectKind, Sort};
 pub use project::{Project, ProjectId};
+pub use recent::{RecentKeeper, RecentStore};
 pub use universe::{Notice, NoticeKind, ScanState, Universe};
 
 use settings::Platform;
@@ -83,6 +90,7 @@ fn non_empty(variable: &str) -> Option<std::ffi::OsString> {
 pub fn scan(sources: &Sources) -> Vec<WorkspaceEvent> {
     let discovered = discovery::discover(&sources.projects_folder);
     let added = settings::read(&sources.settings_file);
+    let theme_words_off = added.theme_words_off;
     let (mut projects, unidentified) = registry::merge(&discovered.folders, &added.folders);
     registry::attach_district_prefixes(&mut projects, &added.district_prefixes);
     registry::attach_contexts(&mut projects, &added.contexts);
@@ -90,6 +98,22 @@ pub fn scan(sources: &Sources) -> Vec<WorkspaceEvent> {
     let mut events = discovered.events;
     events.extend(added.events);
     events.extend(unidentified);
+
+    let recent = RecentStore::beside(&sources.settings_file).load();
+    if !recent.is_empty() {
+        events.push(WorkspaceEvent::RecentRead(recent));
+    }
+
+    for (host, paths) in added.remote {
+        for path in paths {
+            projects.push(Project::remote(host.clone(), path));
+        }
+    }
+
+    if theme_words_off {
+        events.push(WorkspaceEvent::ThemeWordsTurnedOff);
+    }
+
     events.push(WorkspaceEvent::ProjectsDiscovered(projects));
     events
 }
@@ -169,7 +193,10 @@ mod tests {
         let projects = projects_of(&scan(&tree.sources()));
 
         assert_eq!(projects.len(), 1, "{projects:?}");
-        assert_eq!(projects[0].id.path(), canonical(&alpha));
+        assert_eq!(
+            projects[0].id.local_path(),
+            Some(canonical(&alpha).as_path())
+        );
     }
 
     #[test]
@@ -244,6 +271,92 @@ mod tests {
             fs::read(&settings).expect("the settings file is still readable"),
             before,
             "this story never writes the settings file"
+        );
+    }
+
+    /// STORY-078, requirements 2 and 3: a remote project from the `[hosts]`
+    /// table is appended after the projects found on this Mac, and reading it
+    /// never writes the settings file back — it stays the engineer's,
+    /// hand-edited.
+    #[test]
+    fn remote_projects_follow_the_local_ones_and_the_settings_file_is_untouched() {
+        let tree = TestTree::new();
+        tree.repository("Projects/alpha");
+        let settings = tree.file(
+            "settings.toml",
+            "[hosts.\"az.wsl\"]\nprojects = [\"~/work/api\"]\n",
+        );
+        let before = fs::read(&settings).expect("the settings file is readable");
+
+        let projects = projects_of(&scan(&tree.sources()));
+
+        assert_eq!(
+            projects
+                .iter()
+                .map(|project| project.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "api"],
+            "the remote project follows the local one: {projects:?}"
+        );
+        assert_eq!(projects[1].id.local_path(), None, "{:?}", projects[1].id);
+        assert_eq!(
+            projects[1].id.host(),
+            Some("az.wsl"),
+            "{:?}",
+            projects[1].id
+        );
+        assert_eq!(
+            fs::read(&settings).expect("the settings file is still readable"),
+            before,
+            "this story never writes the settings file"
+        );
+    }
+
+    /// STORY-083, requirement 6: `scan` reports `ThemeWordsTurnedOff` exactly
+    /// once when the settings file switches theme words off — and, per
+    /// `projects_of`'s own assertion above, never at the cost of reporting
+    /// `ProjectsDiscovered` more or less than once.
+    #[test]
+    fn scan_reports_theme_words_turned_off_when_the_setting_is_off() {
+        let tree = TestTree::new();
+        tree.file("settings.toml", "[launcher]\ntheme_words = false\n");
+
+        let events = scan(&tree.sources());
+
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, WorkspaceEvent::ThemeWordsTurnedOff))
+                .count(),
+            1,
+            "exactly one ThemeWordsTurnedOff when the setting is off: {events:?}"
+        );
+        // Still reports exactly once, unaffected by the new event.
+        projects_of(&events);
+    }
+
+    /// STORY-083, requirement 6: a settings file without the key, and no
+    /// settings file at all, both leave theme words on — `scan` never reports
+    /// `ThemeWordsTurnedOff` for either.
+    #[test]
+    fn scan_never_reports_theme_words_turned_off_without_the_setting() {
+        let without_key = TestTree::new();
+        without_key.file("settings.toml", "added_folders = []\n");
+        let events = scan(&without_key.sources());
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, WorkspaceEvent::ThemeWordsTurnedOff)),
+            "a settings file without [launcher]: {events:?}"
+        );
+
+        let without_file = TestTree::new();
+        let events = scan(&without_file.sources());
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, WorkspaceEvent::ThemeWordsTurnedOff)),
+            "no settings file at all: {events:?}"
         );
     }
 

@@ -51,7 +51,12 @@ fn fleet() -> Fleet {
             ("services/routing/tests/routes.rs", TESTS),
         ],
     );
-    let harness = open(&tree, Some("none"), Recorded::listing(&[]));
+    let mut harness = open(&tree, Some("none"), Recorded::listing(&[]));
+    // The Explorer, open beside the map by default (STORY-089), sits over
+    // the left part of the map; hidden, a folder outline positioned there
+    // is not covered by its panel when this story clicks it.
+    harness.key_press_modifiers(Modifiers::COMMAND, egui::Key::B);
+    harness.run();
     assert_eq!(
         harness.state().opened().map(|o| o.lens()),
         Some(Lens::Folders)

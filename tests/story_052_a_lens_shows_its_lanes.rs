@@ -68,7 +68,9 @@ impl Shop {
             if self.harness.state().opened().map(|o| o.lens()) == Some(lens) {
                 return;
             }
-            self.press(egui::Key::L);
+            self.harness
+                .key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::L);
+            self.harness.run_steps(120);
         }
         assert_eq!(self.harness.state().opened().map(|o| o.lens()), Some(lens));
     }

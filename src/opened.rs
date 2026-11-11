@@ -78,6 +78,9 @@ pub struct OpenedProject {
     /// The lanes and building features of the map as it is now, worked out
     /// off the frame loop, and the turns they were worked out for.
     preparing: Option<(Receiver<Network>, u8)>,
+    /// Whether a drain since this was last asked brought something a tower
+    /// is explained from: a map, or the domain knowledge (STORY-019).
+    learned: bool,
 }
 
 impl OpenedProject {
@@ -102,7 +105,15 @@ impl OpenedProject {
             network: None,
             relensing: None,
             preparing: None,
+            learned: false,
         }
+    }
+
+    /// Whether something a tower is explained from — a map, or the domain
+    /// knowledge — has arrived since this was last asked; asking clears it,
+    /// so the caller works the explanation out once (STORY-019).
+    pub fn take_learned(&mut self) -> bool {
+        std::mem::take(&mut self.learned)
     }
 
     /// The project that is open.
@@ -159,6 +170,7 @@ impl OpenedProject {
                     self.relensing = None;
                     self.preparing = None;
                     self.folders = Some(map);
+                    self.learned = true;
                 }
             }
             CodeAnalysisEvent::ProjectFolderSkipped { path, reason, .. } => {
@@ -167,6 +179,9 @@ impl OpenedProject {
             CodeAnalysisEvent::GitExcludesUnavailable { reason, .. } => {
                 self.note(OpenedNotice::GitExcludesUnavailable { reason });
             }
+            // The launcher's own read, and the Explorer's changed-files read
+            // (`CellworksApp` keeps that one itself): never this one's.
+            CodeAnalysisEvent::DetailsRead { .. } | CodeAnalysisEvent::ChangesRead { .. } => {}
         }
     }
 
@@ -199,6 +214,12 @@ impl OpenedProject {
     /// The custom arrangement, once there is a map.
     pub fn arrangement(&self) -> Option<Arrangement> {
         self.folders.as_ref().map(|_| self.arrangement.clone())
+    }
+
+    /// How many files the project holds, by the un-lensed folders map — the
+    /// same in every lens (STORY-089).
+    pub fn files(&self) -> usize {
+        self.folders.as_ref().map_or(0, count_nodes)
     }
 
     /// Moves the district or block at `path` by `by`, as seen on the map: in
@@ -435,6 +456,12 @@ impl OpenedProject {
             if let Some(folders) = &mut self.folders {
                 folders.contexts = self.contexts.clone();
             }
+            // The map on screen explains its towers from the same knowledge,
+            // whichever of the two reads finished first (STORY-019).
+            if let ProjectState::Mapped(map) = &mut self.state {
+                map.contexts = self.contexts.clone();
+            }
+            self.learned = true;
         }
         loop {
             match self.events.try_recv() {
@@ -451,6 +478,28 @@ impl OpenedProject {
         }
         self.prepare_network();
     }
+}
+
+/// The number of files `map` holds, across every district, sub-district and
+/// group, however deep (STORY-089's "`<N>` files").
+fn count_nodes(map: &ProjectMap) -> usize {
+    fn in_groups(groups: &[cellworks_map::Group]) -> usize {
+        groups
+            .iter()
+            .map(|group| group.nodes.len() + in_groups(&group.groups))
+            .sum()
+    }
+    map.districts
+        .iter()
+        .map(|district| {
+            district.nodes.len()
+                + district
+                    .sub_districts
+                    .iter()
+                    .map(|sub| sub.nodes.len() + in_groups(&sub.groups))
+                    .sum::<usize>()
+        })
+        .sum()
 }
 
 #[cfg(test)]
@@ -489,6 +538,22 @@ mod tests {
             path: PathBuf::from("/p/shop/closed"),
             reason: "denied".to_owned(),
         }
+    }
+
+    #[test]
+    fn files_counts_every_node_of_the_unlensed_map_in_every_lens() {
+        let (mut project, _sender) = opened();
+        assert_eq!(project.files(), 0, "nothing read yet");
+
+        project.apply(mapped(&["catalog/a.rs", "catalog/sub/b.rs", "orders/c.rs"]));
+        assert_eq!(project.files(), 3);
+
+        project.set_lens(Lens::Custom, 0.0);
+        assert_eq!(
+            project.files(),
+            3,
+            "the count is the same in every lens: it reads the un-lensed folders map"
+        );
     }
 
     #[test]

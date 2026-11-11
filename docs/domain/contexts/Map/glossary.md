@@ -30,6 +30,7 @@ Terms specific to this context. Shared terms and cross-context collisions are in
 | Ghost | The building of a generated file, a lockfile or a snapshot: a dashed, dim outline with nothing inside. | architecture prototype 2026-10-13; STORY-067 |  |
 | Group | A map level: a folder in code, an epic in Jira, a namespace or Terraform group in infrastructure, a database in data. | prototype-findings L45 | theme: factory |
 | Highway | The import lanes between two districts, running side by side, one lane per pair of files. | lenses prototype 2026-10-12; EPIC-010; STORY-052 |  |
+| Impacted tower | A tower with a floor that resolves a call to a tower the review changed; never one of the changed towers itself. | STORY-022 |  |
 | Import cycle | Files that import each other in a loop; in the imports lens they share one block, marked. | lenses prototype 2026-10-12; EPIC-010; STORY-054 |  |
 | Item | A map level inside a node: a function in code, a sub-task, a column, a field. | prototype-findings L47 | theme: crate |
 | Lane kind | What a lane stands for: imports, calls, context links, cell references, Jira links, infrastructure wiring, foreign keys, field types, service usage. | prototype-findings L49 |  |
@@ -43,6 +44,9 @@ Terms specific to this context. Shared terms and cross-context collisions are in
 | Outskirts | The district at the edge where code the lens connects to nothing stands. | lenses prototype 2026-10-12; EPIC-010; STORY-015 |  |
 | Plant | The building of a Terraform file: its largest block the body, a chimney on its roof for each further block, and pipes running out along the ground. | architecture prototype 2026-10-13; STORY-067 |  |
 | Plaza | The free ground at the centre of a district, the district's cellar below it. It is placed first and the district's ground reaches as far on every side of it. | living-city discovery 2026-10-10; STORY-047; STORY-068 |  |
+| Pull request share | The floors of a tower last written by one pull request, as a share of all its floors. | STORY-019 freeze 2026-10-19 |  |
+| Removal strike | Where a review marks that lines were removed, at the floor they sat before removal, not a line number that no longer exists. | STORY-022 |  |
+| Review overlay | What a review marks on a mapped head: which towers it wrote, removed lines from, or merely calls. | STORY-022 |  |
 | Skybridge | A bridge from a type's building to the building of each type one of its fields holds on the same block, at the height of that field, below the other's roof, from wall to wall; buildings in front of part of it hide that part. No skybridge spans two blocks; pointing at one says which type holds which, through which field. | architecture prototype 2026-10-13; STORY-065 |  |
 | Skyline | How buildings, blocks, folders and districts stand towards each other: one shorter than the one it stands beside stands in front of it, a taller one behind it. | facade-camera prototype 2026-10-11; STORY-047; STORY-064; STORY-068 |  |
 | Skyscraper | The building of an item with parts, a type with its methods: the item is its base and each part a tier stepping back above it, the largest lowest. | architecture prototype 2026-10-13; STORY-064 |  |
@@ -57,3 +61,4 @@ Terms specific to this context. Shared terms and cross-context collisions are in
 | Universe | All projects together on one map. | prototype-findings L41 | The Universe layer in Navigation is the same thing seen as a layer |
 | Vault | The building of secrets: a sealed dark box with a light on its front whose lines are never shown, at any distance; an example of the secrets is the same vault in dashed glass. | architecture prototype 2026-10-13; STORY-067 |  |
 | View options | What is drawn and how it is laid out. | prototype-findings L57, L83-89 |  |
+| Written floor | A floor a pull request added, drawn in the review's own colour. | STORY-022 |  |
