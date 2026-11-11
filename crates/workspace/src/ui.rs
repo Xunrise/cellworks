@@ -977,14 +977,14 @@ fn search_row(ui: &mut egui::Ui, rect: egui::Rect, launcher: &mut Launcher) {
     };
 
     let font = egui::FontId::new(15.0, mono.clone());
-    let row_height = ui.fonts_mut(|fonts| fonts.row_height(&font));
+    // The field covers the whole visible well up to the right-hand cap, so a
+    // click anywhere in it focuses; the margin keeps the text after the
+    // prompt, and the text is centred vertically.
     let field = egui::Rect::from_min_max(
-        egui::pos2(text_left, rect.center().y - row_height / 2.0),
-        egui::pos2(
-            right - right_width - 12.0,
-            rect.center().y + row_height / 2.0,
-        ),
+        rect.min,
+        egui::pos2(right - right_width - 12.0, rect.max.y),
     );
+    let text_margin = (text_left - rect.left()).clamp(0.0, 100.0) as i8;
     let mut text = launcher.search_text().to_owned();
     ui.visuals_mut().text_cursor.stroke.color = YELLOW;
     let response = ui.put(
@@ -1000,7 +1000,12 @@ fn search_row(ui: &mut egui::Ui, rect: egui::Rect, launcher: &mut Launcher) {
             .lock_focus(true)
             .id(search_id)
             .frame(egui::Frame::NONE)
-            .margin(egui::Margin::ZERO)
+            .margin(egui::Margin {
+                left: text_margin,
+                ..egui::Margin::ZERO
+            })
+            .vertical_align(egui::Align::Center)
+            .min_size(field.size())
             .desired_width(field.width())
             .font(font)
             .text_color(INK)
