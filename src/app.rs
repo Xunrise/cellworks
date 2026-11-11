@@ -1490,6 +1490,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             }
             app.sessions.pane(ui);
             let sessions_view = &mut app.sessions;
+            let mut unshift = egui::Vec2::ZERO;
             let (drawn, minimap, floor, (sessions_drawn, session_clicked, pane_opened)) =
                 egui::CentralPanel::default()
                     .frame(egui::Frame::central_panel(ui.style()).inner_margin(0.0))
@@ -1503,8 +1504,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                             review_overlay,
                             &mut app.explorer,
                             now,
-                            app.panel,
-                            app.view,
+                            &mut unshift,
                         );
                         let (Some(shown), ProjectState::Mapped(map)) = (&drawn, opened.state())
                         else {
@@ -1552,7 +1552,8 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             if let Some(floor) = floor {
                 app.navigation.pick_floor(floor);
             }
-            let visible = drawn.view.visible;
+            // Input acts on the logical camera: undo the Explorer's shift.
+            let visible = drawn.view.visible.translate(unshift);
             app.view = Some(drawn.view);
             app.panel = Some(drawn.panel);
             // The Explorer, opaque over the left edge of the map, drawn last
@@ -1764,8 +1765,7 @@ fn project(
     review: Option<&ReviewOverlay>,
     explorer: &mut Explorer,
     now: f64,
-    last_panel: Option<egui::Rect>,
-    last_view: Option<View>,
+    unshift: &mut egui::Vec2,
 ) -> Option<Drawn> {
     for notice in opened.notices() {
         ui.label(notice_text(notice));
@@ -1791,20 +1791,12 @@ fn project(
                     ui.ctx().request_repaint();
                 }
                 flying.unwrap_or_else(|| {
-                    let panel_width = EXPLORER_WIDTH + EXPLORER_MARGIN;
-                    let window_width = last_panel.map(|panel| panel.width()).unwrap_or(0.0);
-                    let scale = last_view.map(|view| view.scale()).unwrap_or(1.0);
-                    cellworks_navigation::explorer::beside(
-                        framing.area,
-                        map.extent,
-                        window_width,
-                        scale,
-                        panel_width,
-                    )
+                    shifted_beside(&framing, map.extent, ui.available_rect_before_wrap())
                 })
             } else {
                 framing.area
             };
+            *unshift = framing.area.center() - area.center();
             Some(cellworks_map::ui::project(
                 ui,
                 &opened
@@ -1828,6 +1820,22 @@ fn project(
     }
 }
 
+/// `framing`'s area shifted beside the Explorer's panel, at the scale it is
+/// drawn at in `panel` this very frame.
+fn shifted_beside(
+    framing: &cellworks_map::Framing,
+    whole: egui::Rect,
+    panel: egui::Rect,
+) -> egui::Rect {
+    cellworks_navigation::explorer::beside(
+        framing.area,
+        whole,
+        panel.width(),
+        cellworks_map::fit_scale(*framing, panel),
+        EXPLORER_WIDTH + EXPLORER_MARGIN,
+    )
+}
+
 /// Starts the Explorer's camera flight to wherever `navigation` now frames,
 /// shifted beside its panel: called whenever moving the cursor, unfolding to
 /// the parent or clicking a row changes what is framed (STORY-089 requirement
@@ -1842,17 +1850,11 @@ fn fly_explorer(
     view: Option<View>,
     now: f64,
 ) {
-    let logical = navigation.framing(map).area;
-    let panel_width = EXPLORER_WIDTH + EXPLORER_MARGIN;
-    let window_width = panel.map(|panel| panel.width()).unwrap_or(0.0);
-    let scale = view.map(|view| view.scale()).unwrap_or(1.0);
-    let target = cellworks_navigation::explorer::beside(
-        logical,
-        map.extent,
-        window_width,
-        scale,
-        panel_width,
-    );
+    let framing = navigation.framing(map);
+    let target = match panel {
+        Some(panel) => shifted_beside(&framing, map.extent, panel),
+        None => framing.area,
+    };
     let from = view.map(|view| view.visible).unwrap_or(target);
     explorer.fly(from, target, now);
 }
