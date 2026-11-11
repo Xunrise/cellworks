@@ -1424,8 +1424,17 @@ fn project_row(
     label: &str,
 ) -> Option<RowClick> {
     let is_selected = selected == Some(&project.id);
-    let (rect, entry) = ui.allocate_exact_size(
+    let (rect, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), ROW_HEIGHT),
+        egui::Sense::hover(),
+    );
+    // Keyed by the project, not by position: the preview pane appearing on
+    // the first selection shifts every automatic id, and a press on the next
+    // frame would land on a stale one. The label tells the "recent" copy of
+    // a project from its row in the group.
+    let entry = ui.interact(
+        rect,
+        egui::Id::new(("launcher-row", label, &project.id)),
         egui::Sense::click(),
     );
     labelled(&entry, egui::WidgetType::Label, label);

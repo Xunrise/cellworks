@@ -332,3 +332,27 @@ fn a_hovered_row_shows_the_pointing_hand() {
     );
 }
 
+
+/// The first selection makes the preview pane appear; a double-click whose
+/// second press lands on the very next frame still opens the project.
+#[test]
+fn a_double_click_opens_even_when_the_first_click_changes_the_layout() {
+    let fixture = Fixture::new();
+    fixture.settings(true);
+    let mut harness = launcher_harness(&fixture);
+    let row = harness.get_by_label("cellworks").rect();
+    let pos = row.center();
+    pointer_move(&mut harness, pos);
+    pointer_button(&mut harness, pos, true);
+    pointer_button(&mut harness, pos, false);
+    pointer_button(&mut harness, pos, true);
+    pointer_button(&mut harness, pos, false);
+    harness.run();
+    assert!(
+        harness
+            .state()
+            .opened()
+            .is_some_and(|opened| opened.project().name == "cellworks"),
+        "the project opens"
+    );
+}
