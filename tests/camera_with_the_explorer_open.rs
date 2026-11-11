@@ -149,3 +149,21 @@ fn a_section_picked_in_the_explorer_lands_centred_beside_the_panel() {
         "{seen:?} does not fit in {beside:?}"
     );
 }
+
+/// Picking the next sibling in the Explorer never zooms out past either end
+#[test]
+fn picking_a_sibling_in_the_explorer_never_zooms_out_on_the_way() {
+    let (_tree, mut harness) = shop_city();
+    harness.key_press(Key::ArrowDown);
+    scales(&mut harness, 90);
+    let start = harness.state().view().expect("drawn").scale();
+
+    harness.key_press(Key::ArrowDown);
+    let flight = scales(&mut harness, 90);
+    let end = *flight.last().expect("frames");
+    let floor = start.min(end) - 1e-3;
+    assert!(
+        flight.iter().all(|scale| *scale >= floor),
+        "zoomed out below {floor} between {start} and {end}: {flight:?}"
+    );
+}

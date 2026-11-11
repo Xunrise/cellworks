@@ -175,6 +175,12 @@ pub(crate) fn fit(framing: Framing, panel: Rect) -> View {
     view
 }
 
+/// The part of the ground in view when `framing` is drawn in `panel`: the
+/// [`View::visible`] [`fit`] picks, without the view.
+pub fn fit_visible(framing: Framing, panel: Rect) -> Rect {
+    fit(framing, panel).visible
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
