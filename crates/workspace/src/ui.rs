@@ -977,14 +977,14 @@ fn search_row(ui: &mut egui::Ui, rect: egui::Rect, launcher: &mut Launcher) {
     };
 
     let font = egui::FontId::new(15.0, mono.clone());
-    let row_height = ui.fonts_mut(|fonts| fonts.row_height(&font));
+    // The field covers the whole visible well up to the right-hand cap, so a
+    // click anywhere in it focuses; the margin keeps the text after the
+    // prompt, and the text is centred vertically.
     let field = egui::Rect::from_min_max(
-        egui::pos2(text_left, rect.center().y - row_height / 2.0),
-        egui::pos2(
-            right - right_width - 12.0,
-            rect.center().y + row_height / 2.0,
-        ),
+        rect.min,
+        egui::pos2(right - right_width - 12.0, rect.max.y),
     );
+    let text_margin = (text_left - rect.left()).clamp(0.0, 100.0) as i8;
     let mut text = launcher.search_text().to_owned();
     ui.visuals_mut().text_cursor.stroke.color = YELLOW;
     let response = ui.put(
@@ -1000,7 +1000,12 @@ fn search_row(ui: &mut egui::Ui, rect: egui::Rect, launcher: &mut Launcher) {
             .lock_focus(true)
             .id(search_id)
             .frame(egui::Frame::NONE)
-            .margin(egui::Margin::ZERO)
+            .margin(egui::Margin {
+                left: text_margin,
+                ..egui::Margin::ZERO
+            })
+            .vertical_align(egui::Align::Center)
+            .min_size(field.size())
             .desired_width(field.width())
             .font(font)
             .text_color(INK)
@@ -1103,10 +1108,19 @@ fn chip_row(ui: &mut egui::Ui, rect: egui::Rect, launcher: &mut Launcher) {
         }
         let chip_rect =
             egui::Rect::from_min_size(egui::pos2(x, top), egui::vec2(width, CHIP_HEIGHT));
-        let (fill, stroke) = if is_picked {
-            (YELLOW_SOFT, egui::Stroke::new(1.0, YELLOW))
-        } else {
-            (egui::Color32::TRANSPARENT, egui::Stroke::new(1.0, LINE))
+        let chip_id = id.with(index);
+        let response = ui.interact(chip_rect, chip_id, egui::Sense::click());
+        let hovered = response.hovered();
+        if hovered {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let (fill, stroke) = match (is_picked, hovered) {
+            (true, _) => (YELLOW_SOFT, egui::Stroke::new(1.0, YELLOW)),
+            (false, true) => (
+                YELLOW_SOFT.gamma_multiply(0.5),
+                egui::Stroke::new(1.0, LINE_BRIGHT),
+            ),
+            (false, false) => (egui::Color32::TRANSPARENT, egui::Stroke::new(1.0, LINE)),
         };
         ui.painter().add(egui::Shape::convex_polygon(
             chamfer(chip_rect, CONTROL_CUT, Corners::TopLeftBottomRight).to_vec(),
@@ -1116,8 +1130,6 @@ fn chip_row(ui: &mut egui::Ui, rect: egui::Rect, launcher: &mut Launcher) {
 
         // The whole chip is the click target; its node reads the location's
         // name, so a test or a screen reader finds the chip by it.
-        let chip_id = id.with(index);
-        let response = ui.interact(chip_rect, chip_id, egui::Sense::click());
         labelled(&response, egui::WidgetType::Label, &chip.label);
         if response.clicked() {
             clicked = Some(chip.pick.clone());
@@ -1154,13 +1166,22 @@ fn chip_row(ui: &mut egui::Ui, rect: egui::Rect, launcher: &mut Launcher) {
         egui::pos2(x, top),
         egui::vec2(2.0 * CHIP_PADDING + sort.size().x, CHIP_HEIGHT),
     );
-    ui.painter().add(egui::Shape::convex_polygon(
-        chamfer(chip_rect, CONTROL_CUT, Corners::TopLeftBottomRight).to_vec(),
-        egui::Color32::TRANSPARENT,
-        egui::Stroke::new(1.0, LINE),
-    ));
     let sort_id = id.with("sort");
     let response = ui.interact(chip_rect, sort_id, egui::Sense::click());
+    let (fill, stroke) = if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        (
+            YELLOW_SOFT.gamma_multiply(0.5),
+            egui::Stroke::new(1.0, LINE_BRIGHT),
+        )
+    } else {
+        (egui::Color32::TRANSPARENT, egui::Stroke::new(1.0, LINE))
+    };
+    ui.painter().add(egui::Shape::convex_polygon(
+        chamfer(chip_rect, CONTROL_CUT, Corners::TopLeftBottomRight).to_vec(),
+        fill,
+        stroke,
+    ));
     labelled(&response, egui::WidgetType::Label, sort_text);
     let sort_clicked = response.clicked();
     let pos = left_centred(chip_rect, chip_rect.left() + CHIP_PADDING, &sort);
@@ -1403,8 +1424,17 @@ fn project_row(
     label: &str,
 ) -> Option<RowClick> {
     let is_selected = selected == Some(&project.id);
-    let (rect, entry) = ui.allocate_exact_size(
+    let (rect, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), ROW_HEIGHT),
+        egui::Sense::hover(),
+    );
+    // Keyed by the project, not by position: the preview pane appearing on
+    // the first selection shifts every automatic id, and a press on the next
+    // frame would land on a stale one. The label tells the "recent" copy of
+    // a project from its row in the group.
+    let entry = ui.interact(
+        rect,
+        egui::Id::new(("launcher-row", label, &project.id)),
         egui::Sense::click(),
     );
     labelled(&entry, egui::WidgetType::Label, label);
@@ -1426,7 +1456,10 @@ fn project_row(
         );
     } else if entry.hovered() {
         ui.painter()
-            .rect_filled(rect, 0.0, YELLOW_SOFT.gamma_multiply(0.35));
+            .rect_filled(rect, 0.0, YELLOW_SOFT.gamma_multiply(0.7));
+    }
+    if entry.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
     let offline = project.id.host().is_some_and(|host| {
@@ -1801,9 +1834,15 @@ fn cta_button(
                 egui::Stroke::new(1.0, YELLOW.gamma_multiply(0.45 * factor * fade * fade)),
             ));
         }
+        let fill = if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            YELLOW.lerp_to_gamma(egui::Color32::WHITE, 0.25)
+        } else {
+            YELLOW
+        };
         ui.painter().add(egui::Shape::convex_polygon(
             points.to_vec(),
-            YELLOW,
+            fill,
             egui::Stroke::NONE,
         ));
     } else {

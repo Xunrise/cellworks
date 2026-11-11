@@ -249,3 +249,110 @@ fn the_list_scrolls_with_the_arrow_keys() {
         bounds.y1
     );
 }
+
+fn launcher_harness(fixture: &Fixture) -> Harness<'static, CellworksApp> {
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_step_dt(1.0 / 60.0)
+        .build_ui_state(
+            |ui, app: &mut CellworksApp| cellworks::draw(ui, app),
+            app(fixture),
+        );
+    harness.run();
+    harness
+}
+
+fn pointer_move(harness: &mut Harness<'_, CellworksApp>, pos: egui::Pos2) {
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::PointerMoved(pos));
+    harness.step();
+}
+
+fn pointer_button(harness: &mut Harness<'_, CellworksApp>, pos: egui::Pos2, pressed: bool) {
+    harness.input_mut().events.push(egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.step();
+}
+
+fn pointer_click(harness: &mut Harness<'_, CellworksApp>, pos: egui::Pos2) {
+    pointer_move(harness, pos);
+    pointer_button(harness, pos, true);
+    pointer_button(harness, pos, false);
+}
+
+fn search_focused(harness: &Harness<'_, CellworksApp>) -> bool {
+    harness
+        .ctx
+        .memory(|memory| memory.has_focus(egui::Id::new("cellworks-launcher-search")))
+}
+
+/// A click anywhere inside the visible search box focuses the field: its top
+/// inner edge and the ":" prompt included, not only the one text line.
+#[test]
+fn a_click_anywhere_in_the_search_box_focuses_the_field() {
+    let fixture = Fixture::new();
+    fixture.settings(true);
+    let mut harness = launcher_harness(&fixture);
+    let field = harness.get_by_role(Role::TextInput).rect();
+    let centre_y = field.center().y;
+
+    let top_edge = egui::pos2(field.center().x, centre_y - 24.0);
+    pointer_click(&mut harness, top_edge);
+    harness.run();
+    assert!(search_focused(&harness), "the top inner edge focuses");
+
+    harness.key_press(Key::Escape);
+    harness.run();
+    assert!(!search_focused(&harness));
+
+    let prompt = egui::pos2(field.left() + 20.0, centre_y);
+    pointer_click(&mut harness, prompt);
+    harness.run();
+    assert!(search_focused(&harness), "the prompt focuses");
+}
+
+/// Hovering a project row shows the pointing hand.
+#[test]
+fn a_hovered_row_shows_the_pointing_hand() {
+    let fixture = Fixture::new();
+    fixture.settings(true);
+    let mut harness = launcher_harness(&fixture);
+    let row = harness.get_by_label("cellworks").rect();
+    pointer_move(&mut harness, row.center());
+    harness.run();
+    assert_eq!(
+        harness.output().platform_output.cursor_icon,
+        egui::CursorIcon::PointingHand
+    );
+}
+
+
+/// The first selection makes the preview pane appear; a double-click whose
+/// second press lands on the very next frame still opens the project.
+#[test]
+fn a_double_click_opens_even_when_the_first_click_changes_the_layout() {
+    let fixture = Fixture::new();
+    fixture.settings(true);
+    let mut harness = launcher_harness(&fixture);
+    let row = harness.get_by_label("cellworks").rect();
+    let pos = row.center();
+    pointer_move(&mut harness, pos);
+    pointer_button(&mut harness, pos, true);
+    pointer_button(&mut harness, pos, false);
+    pointer_button(&mut harness, pos, true);
+    pointer_button(&mut harness, pos, false);
+    harness.run();
+    assert!(
+        harness
+            .state()
+            .opened()
+            .is_some_and(|opened| opened.project().name == "cellworks"),
+        "the project opens"
+    );
+}
