@@ -513,3 +513,52 @@ fn enter_on_a_remote_project_opens_nothing() {
         "Enter on a remote selection opens nothing"
     );
 }
+
+/// A recent row is a working entry: a double-click on it opens the project,
+/// and the project opened this way is kept in the recent file.
+#[test]
+fn a_recent_row_opens_its_project_on_double_click() {
+    let fixture = Fixture::new();
+    let cellworks = fixture.path().join("Projects/cellworks");
+    fixture.recent(&[&cellworks.display().to_string()]);
+    let mut harness = harness_over(app(&fixture, &[]));
+
+    let row = harness.get_by_label("recent: cellworks");
+    row.click();
+    row.click();
+    harness.run();
+
+    assert!(
+        harness
+            .state()
+            .opened()
+            .is_some_and(|opened| opened.project().name == "cellworks"),
+        "double-clicking the recent row opens the project"
+    );
+}
+
+/// Opening a project records it: the recent file names it afterwards.
+#[test]
+fn opening_a_project_records_it_in_the_recent_file() {
+    let fixture = Fixture::new();
+    let mut harness = harness_over(app(&fixture, &[]));
+
+    let row = harness.get_by_label("cellworks");
+    row.click();
+    row.click();
+    harness.run();
+
+    let cellworks = fixture.path().join("Projects/cellworks");
+    let started = std::time::Instant::now();
+    loop {
+        let kept = fs::read_to_string(fixture.path().join("recent")).unwrap_or_default();
+        if kept.lines().next() == Some(&cellworks.display().to_string()) {
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the recent file names the opened project: {kept:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}

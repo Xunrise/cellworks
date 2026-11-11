@@ -980,10 +980,8 @@ fn search_row(ui: &mut egui::Ui, rect: egui::Rect, launcher: &mut Launcher) {
     // The field covers the whole visible well up to the right-hand cap, so a
     // click anywhere in it focuses; the margin keeps the text after the
     // prompt, and the text is centred vertically.
-    let field = egui::Rect::from_min_max(
-        rect.min,
-        egui::pos2(right - right_width - 12.0, rect.max.y),
-    );
+    let field =
+        egui::Rect::from_min_max(rect.min, egui::pos2(right - right_width - 12.0, rect.max.y));
     let text_margin = (text_left - rect.left()).clamp(0.0, 100.0) as i8;
     let mut text = launcher.search_text().to_owned();
     ui.visuals_mut().text_cursor.stroke.color = YELLOW;
@@ -1248,12 +1246,13 @@ fn list(ui: &mut egui::Ui, universe: &Universe, launcher: &mut Launcher) -> Opti
         group_heading_label(ui, words.recent_heading, None);
         for project in &recent {
             // A recent row reads "recent: <name>", so it is told apart from
-            // the same project's row in its group. It looks like a project
-            // row but stays what STORY-078 made it, a line to read: it never
-            // shows the selection and a click on it does nothing, so the
-            // project's row in its group stays the one selected row.
+            // the same project's row in its group. It never shows the
+            // selection (the project's row in its group stays the one
+            // selected row), but it acts like that row: a click selects the
+            // project, a double-click opens it.
             let label = format!("recent: {}", project.name);
-            let _ = project_row(ui, launcher, project, None, &label);
+            let click = project_row(ui, launcher, project, None, &label);
+            take(click, project, launcher);
         }
     }
 
