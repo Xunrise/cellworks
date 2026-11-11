@@ -317,3 +317,18 @@ fn a_click_anywhere_in_the_search_box_focuses_the_field() {
     assert!(search_focused(&harness), "the prompt focuses");
 }
 
+/// Hovering a project row shows the pointing hand.
+#[test]
+fn a_hovered_row_shows_the_pointing_hand() {
+    let fixture = Fixture::new();
+    fixture.settings(true);
+    let mut harness = launcher_harness(&fixture);
+    let row = harness.get_by_label("cellworks").rect();
+    pointer_move(&mut harness, row.center());
+    harness.run();
+    assert_eq!(
+        harness.output().platform_output.cursor_icon,
+        egui::CursorIcon::PointingHand
+    );
+}
+
