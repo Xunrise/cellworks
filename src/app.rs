@@ -85,6 +85,9 @@ pub struct CellworksApp {
     /// The Explorer beside the map: open by default, its folds, its filter
     /// and the camera's flight to what it frames (STORY-089).
     explorer: Explorer,
+    /// Whether the last scroll came from a trackpad (in points, which pans)
+    /// rather than a wheel (in lines or pages, which zooms).
+    trackpad: bool,
     /// The read of which of the open project's files have uncommitted
     /// changes, still in flight; one at a time.
     changes: Option<Receiver<CodeAnalysisEvent>>,
@@ -214,6 +217,8 @@ struct Keys {
     import_lanes: bool,
     call_lanes: bool,
     zoom: f32,
+    /// Trackpad scroll this frame, in screen points: pans the map.
+    scroll: egui::Vec2,
     pointer: Option<egui::Pos2>,
     /// `[` / `]`: step to the previous / next session in this city.
     session_prev: bool,
@@ -254,6 +259,7 @@ impl CellworksApp {
                 git: Arc::new(GitCli),
                 show_ignored: false,
                 explorer: Explorer::default(),
+                trackpad: false,
                 changes: None,
                 changed: HashSet::new(),
                 changes_for: None,
@@ -298,6 +304,7 @@ impl CellworksApp {
                 git: Arc::new(GitCli),
                 show_ignored: false,
                 explorer: Explorer::default(),
+                trackpad: false,
                 changes: None,
                 changed: HashSet::new(),
                 changes_for: None,
@@ -345,6 +352,7 @@ impl CellworksApp {
             git: Arc::new(GitCli),
             show_ignored: false,
             explorer: Explorer::default(),
+            trackpad: false,
             changes: None,
             changed: HashSet::new(),
             changes_for: None,
@@ -1007,69 +1015,104 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         import_lanes,
         call_lanes,
         zoom,
+        scroll,
         pointer,
         session_prev,
         session_next,
-    } = ui.input(|input| {
-        let closes_pane =
-            !terminal && app.sessions.pane_open() && input.key_pressed(egui::Key::Escape);
-        let plain = input.modifiers.is_none();
-        let pressed = |key| !terminal && input.key_pressed(key);
-        let towards = |less, more| isize::from(pressed(more)) - isize::from(pressed(less));
-        Keys {
-            enter: pressed(egui::Key::Enter),
-            esc: pressed(egui::Key::Escape) && !closes_pane,
-            ignored: !typing && plain && pressed(egui::Key::I),
-            lock: !typing && plain && pressed(egui::Key::Z),
-            explorer_toggle: (!typing && plain && pressed(egui::Key::E))
-                || (!typing
-                    && input.modifiers.matches_logically(egui::Modifiers::COMMAND)
-                    && pressed(egui::Key::B)),
-            review: !typing && plain && pressed(egui::Key::P),
-            rows: towards(egui::Key::ArrowUp, egui::Key::ArrowDown),
-            columns: towards(egui::Key::ArrowLeft, egui::Key::ArrowRight),
-            turn: if typing {
-                0
-            } else {
-                match (pressed(egui::Key::Q), input.modifiers.shift_only()) {
-                    (false, _) => 0,
-                    (true, false) => 1,
-                    (true, true) => 3,
-                }
-            },
-            fit: !typing && plain && pressed(egui::Key::F),
-            cycle: plain && pressed(egui::Key::Tab),
-            underground: !typing && plain && pressed(egui::Key::U),
-            lens: !typing && plain && pressed(egui::Key::L),
-            explorer_lens: !typing && input.modifiers.shift_only() && pressed(egui::Key::L),
-            explorer_step: if typing || !plain {
-                0
-            } else {
-                towards(egui::Key::K, egui::Key::J)
-                    + towards(egui::Key::ArrowUp, egui::Key::ArrowDown)
-            },
-            explorer_right: !typing
-                && plain
-                && (pressed(egui::Key::L) || pressed(egui::Key::ArrowRight)),
-            explorer_left: !typing
-                && plain
-                && (pressed(egui::Key::H) || pressed(egui::Key::ArrowLeft)),
-            explorer_filter: !typing && plain && pressed(egui::Key::Slash),
-            import_lanes: !typing && plain && pressed(egui::Key::G),
-            call_lanes: !typing && plain && pressed(egui::Key::A),
-            held_underground: input.modifiers.shift_only(),
-            cables: !typing && plain && pressed(egui::Key::M),
-            lines: if typing || !plain {
-                0
-            } else {
-                towards(egui::Key::K, egui::Key::J)
-            },
-            zoom: input.zoom_delta() * (input.smooth_scroll_delta.y / SCROLL_PER_E).exp(),
-            pointer: input.pointer.hover_pos(),
-            session_prev: !typing && plain && pressed(egui::Key::OpenBracket),
-            session_next: !typing && plain && pressed(egui::Key::CloseBracket),
+    } = {
+        // A wheel notches in lines or pages and zooms; a trackpad sends points
+        // and pans. Each scroll goes to one of them, never both.
+        if let Some(unit) = ui.input(|input| {
+            input.events.iter().rev().find_map(|event| match event {
+                egui::Event::MouseWheel { unit, .. } => Some(*unit),
+                _ => None,
+            })
+        }) {
+            app.trackpad = unit == egui::MouseWheelUnit::Point;
         }
-    });
+        let trackpad = app.trackpad;
+        ui.input(|input| {
+            let closes_pane =
+                !terminal && app.sessions.pane_open() && input.key_pressed(egui::Key::Escape);
+            let plain = input.modifiers.is_none();
+            let pressed = |key| !terminal && input.key_pressed(key);
+            let towards = |less, more| isize::from(pressed(more)) - isize::from(pressed(less));
+            Keys {
+                enter: pressed(egui::Key::Enter),
+                esc: pressed(egui::Key::Escape) && !closes_pane,
+                ignored: !typing && plain && pressed(egui::Key::I),
+                lock: !typing && plain && pressed(egui::Key::Z),
+                explorer_toggle: (!typing && plain && pressed(egui::Key::E))
+                    || (!typing
+                        && input.modifiers.matches_logically(egui::Modifiers::COMMAND)
+                        && pressed(egui::Key::B)),
+                review: !typing && plain && pressed(egui::Key::P),
+                rows: towards(egui::Key::ArrowUp, egui::Key::ArrowDown),
+                columns: towards(egui::Key::ArrowLeft, egui::Key::ArrowRight),
+                turn: if typing {
+                    0
+                } else {
+                    match (pressed(egui::Key::Q), input.modifiers.shift_only()) {
+                        (false, _) => 0,
+                        (true, false) => 1,
+                        (true, true) => 3,
+                    }
+                },
+                fit: !typing && plain && pressed(egui::Key::F),
+                cycle: plain && pressed(egui::Key::Tab),
+                underground: !typing && plain && pressed(egui::Key::U),
+                lens: !typing && plain && pressed(egui::Key::L),
+                explorer_lens: !typing && input.modifiers.shift_only() && pressed(egui::Key::L),
+                explorer_step: if typing || !plain {
+                    0
+                } else {
+                    towards(egui::Key::K, egui::Key::J)
+                        + towards(egui::Key::ArrowUp, egui::Key::ArrowDown)
+                },
+                explorer_right: !typing
+                    && plain
+                    && (pressed(egui::Key::L) || pressed(egui::Key::ArrowRight)),
+                explorer_left: !typing
+                    && plain
+                    && (pressed(egui::Key::H) || pressed(egui::Key::ArrowLeft)),
+                explorer_filter: !typing && plain && pressed(egui::Key::Slash),
+                import_lanes: !typing && plain && pressed(egui::Key::G),
+                call_lanes: !typing && plain && pressed(egui::Key::A),
+                held_underground: input.modifiers.shift_only(),
+                cables: !typing && plain && pressed(egui::Key::M),
+                lines: if typing || !plain {
+                    0
+                } else {
+                    towards(egui::Key::K, egui::Key::J)
+                },
+                zoom: input.zoom_delta()
+                    * if trackpad {
+                        1.0
+                    } else {
+                        (input.smooth_scroll_delta.y / SCROLL_PER_E).exp()
+                    },
+                scroll: if trackpad && !input.modifiers.command {
+                    input
+                        .events
+                        .iter()
+                        .map(|event| match event {
+                            egui::Event::MouseWheel {
+                                unit: egui::MouseWheelUnit::Point,
+                                delta,
+                                ..
+                            } => *delta,
+                            _ => egui::Vec2::ZERO,
+                        })
+                        .fold(egui::Vec2::ZERO, |sum, delta| sum + delta)
+                } else {
+                    egui::Vec2::ZERO
+                },
+                pointer: input.pointer.hover_pos(),
+                session_prev: !typing && plain && pressed(egui::Key::OpenBracket),
+                session_next: !typing && plain && pressed(egui::Key::CloseBracket),
+            }
+        })
+    };
     // Esc with a pane open but its terminal unfocused ends the attach and
     // does nothing else that frame.
     if !terminal && app.sessions.pane_open() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -1628,6 +1671,11 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             }
             if drawn.dragged != egui::Vec2::ZERO {
                 app.navigation.pan(visible, -drawn.dragged);
+            }
+            if scroll != egui::Vec2::ZERO {
+                app.navigation
+                    .pan(visible, -drawn.view.ground_delta(scroll));
+                ui.ctx().request_repaint();
             }
             if let (Some((path, by)), Some(opened)) = (&drawn.moved, &mut app.opened) {
                 opened.move_by(path, *by);
