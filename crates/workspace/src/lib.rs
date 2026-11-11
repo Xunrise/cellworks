@@ -22,7 +22,7 @@ mod registry;
 mod settings;
 pub mod ui;
 
-pub use marks::{mark, marked};
+pub use marks::{mark, marked, marked_all};
 pub mod theme;
 mod universe;
 mod words;

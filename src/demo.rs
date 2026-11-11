@@ -25,6 +25,58 @@ pub fn mark(ctx: &egui::Context, id: &str, rect: egui::Rect) {
     cellworks_workspace::mark(ctx, id, rect);
 }
 
+/// The gap between a floating overlay and its neighbours.
+const GAP: f32 = 12.0;
+
+/// What the side panels, the Explorer, the right column and the dock leave
+/// of the map this frame; `None` while a case shows its own chrome.
+pub fn free_rect(ctx: &egui::Context) -> Option<egui::Rect> {
+    cellworks_workspace::marked(ctx, "map.free")
+}
+
+/// The rects the floating map overlays hold: lens caption, lane legend,
+/// minimap, history bar and the Factory strip.
+pub fn overlay_rects(ctx: &egui::Context) -> Vec<egui::Rect> {
+    let mut rects = cellworks_workspace::marked_all(ctx, "slot.");
+    rects.extend(cellworks_workspace::marked(ctx, "pipeline"));
+    rects
+}
+
+/// Moves `rect` up (or down) past every rect in `taken` it overlaps.
+fn clear_of(mut rect: egui::Rect, taken: &[egui::Rect], up: bool) -> egui::Rect {
+    // ponytail: a few passes settle the handful of overlays the map has.
+    for _ in 0..taken.len() + 1 {
+        let Some(hit) = taken.iter().find(|t| t.intersects(rect)) else {
+            break;
+        };
+        let dy = if up {
+            hit.top() - GAP - rect.bottom()
+        } else {
+            hit.bottom() + GAP - rect.top()
+        };
+        rect = rect.translate(egui::vec2(0.0, dy));
+    }
+    rect
+}
+
+/// Where a `size` overlay centred on the top (or bottom) edge of `free` goes,
+/// clear of the overlays named in `others`.
+fn slot(ctx: &egui::Context, free: egui::Rect, size: egui::Vec2, top: bool, others: &[&str]) -> egui::Rect {
+    let x = (free.center().x - size.x / 2.0)
+        .min(free.right() - GAP - size.x)
+        .max(free.left() + GAP);
+    let y = if top {
+        free.top() + GAP
+    } else {
+        free.bottom() - GAP - size.y
+    };
+    let taken: Vec<egui::Rect> = others
+        .iter()
+        .filter_map(|id| cellworks_workspace::marked(ctx, id))
+        .collect();
+    clear_of(egui::Rect::from_min_size(egui::pos2(x, y), size), &taken, !top)
+}
+
 pub fn is_demo() -> bool {
     std::env::var_os("CELLWORKS_DEMO").is_some()
 }
@@ -134,6 +186,8 @@ pub struct Tour {
     /// The Factory strip: the stage running, `None` while it is hidden.
     pipeline: Option<usize>,
     pipeline_done: bool,
+    /// The engineer dragged the strip: it stays where they put it.
+    pipeline_moved: bool,
     /// When the deploy packet left the Depot, in egui time.
     deploy_at: Option<f64>,
     history: Option<History>,
@@ -238,20 +292,31 @@ pub fn overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
     history_tick(ui, app);
 }
 
-/// Top-centre strip: BUILD, CHECKS, DELIVER, REVIEW, DEPLOY.
-fn pipeline_strip(ui: &egui::Ui, tour: &Tour) {
+/// Top-centre strip: BUILD, CHECKS, DELIVER, REVIEW, DEPLOY. It takes the
+/// top of the free map, below the lens caption when both do not fit side by
+/// side, and the engineer can drag it anywhere on the free map.
+fn pipeline_strip(ui: &egui::Ui, tour: &mut Tour) {
     let Some(running) = tour.pipeline else {
         return;
     };
     let ctx = ui.ctx();
     let pulse = ((ctx.input(|i| i.time) * 4.0).sin() * 0.5 + 0.5) as f32;
-    let strip = egui::Area::new(egui::Id::new("demo-pipeline"))
+    let free = free_rect(ctx).unwrap_or(ctx.content_rect());
+    let size = cellworks_workspace::marked(ctx, "pipeline")
+        .map_or(egui::vec2(640.0, 34.0), |r| r.size());
+    let mut area = egui::Area::new(egui::Id::new("demo-pipeline"))
         .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_TOP, [160.0, 186.0])
-        .show(ctx, |ui| {
+        .movable(true)
+        .constrain_to(free);
+    if !tour.pipeline_moved {
+        area = area.current_pos(slot(ctx, free, size, true, &["slot.caption"]).min);
+    }
+    let strip = area.show(ctx, |ui| {
             use cellworks_workspace::theme;
             theme::frame().show(ui, |ui| {
-                ui.horizontal(|ui| {
+                // Narrower than the strip, the free map wraps it.
+                ui.set_max_width(free.width() - 2.0 * GAP - 24.0);
+                ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 10.0;
                     theme::eyebrow_label(ui, "The Factory", theme::YELLOW);
                     theme::rule(ui);
@@ -277,6 +342,13 @@ fn pipeline_strip(ui: &egui::Ui, tour: &Tour) {
                 });
             });
         });
+    // A click without movement leaves it in its slot.
+    if strip.response.dragged() && strip.response.drag_delta() != egui::Vec2::ZERO {
+        tour.pipeline_moved = true;
+    }
+    if strip.response.hovered() {
+        ctx.set_cursor_icon(egui::CursorIcon::Grab);
+    }
     mark(ctx, "pipeline", strip.response.rect);
     if !tour.pipeline_done {
         ctx.request_repaint_after(Duration::from_millis(60));
@@ -297,15 +369,23 @@ fn history_bar(ui: &egui::Ui, tour: &mut Tour) -> bool {
         return false;
     };
     let mut close = false;
-    egui::Window::new("History")
+    let ctx = ui.ctx();
+    // Bottom centre of the free map, right above the dock; lifted over the
+    // lane legend or the minimap when the map is too narrow to pass them.
+    let free = free_rect(ctx).unwrap_or(ctx.content_rect());
+    let width = (free.width() - 2.0 * GAP - 24.0).clamp(240.0, 560.0);
+    let size = cellworks_workspace::marked(ctx, "slot.history")
+        .map_or(egui::vec2(width + 24.0, 96.0), |r| egui::vec2(width + 24.0, r.height()));
+    let at = slot(ctx, free, size, false, &["slot.minimap", "slot.legend"]);
+    let shown = egui::Window::new("History")
         .title_bar(false)
         .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_BOTTOM, [-120.0, -16.0])
+        .fixed_pos(at.min)
         .resizable(false)
         .collapsible(false)
-        .show(ui.ctx(), |ui| {
+        .show(ctx, |ui| {
             let last = h.commits.len().saturating_sub(1);
-            ui.set_width(560.0);
+            ui.set_width(width);
             use cellworks_workspace::theme;
             ui.horizontal(|ui| {
                 theme::eyebrow_label(ui, "History", theme::YELLOW);
@@ -321,7 +401,7 @@ fn history_bar(ui: &egui::Ui, tour: &mut Tour) -> bool {
                     }
                 });
             });
-            ui.spacing_mut().slider_width = 540.0;
+            ui.spacing_mut().slider_width = width - 20.0;
             ui.visuals_mut().widgets.inactive.bg_fill = theme::LINE_BRIGHT;
             ui.visuals_mut().widgets.inactive.fg_stroke.color = theme::YELLOW;
             let slider = ui.add(egui::Slider::new(&mut h.idx, 0..=last).show_value(false));
@@ -356,6 +436,9 @@ fn history_bar(ui: &egui::Ui, tour: &mut Tour) -> bool {
                 });
             }
         });
+    if let Some(shown) = shown {
+        mark(ctx, "slot.history", shown.response.rect);
+    }
     close
 }
 

@@ -2008,6 +2008,7 @@ pub fn minimap(ui: &mut egui::Ui, map: &ProjectMap, view: &View, panel: Rect) ->
         return None;
     }
     let at = Rect::from_min_size(panel.max - MINIMAP - Vec2::splat(MINIMAP_MARGIN), MINIMAP);
+    cellworks_workspace::mark(ui.ctx(), "slot.minimap", at);
     let inner = at.shrink(6.0);
     let k = (inner.width() / seen.width()).min(inner.height() / seen.height());
     let offset = inner.center().to_vec2() - seen.center().to_vec2() * k;
@@ -2148,6 +2149,7 @@ pub fn inside(
         .saturating_sub(rows / 2)
         .min(item.floors.len().saturating_sub(rows));
     let mut clicked = None;
+    let mut storied = false;
     for (index, line) in item.floors.iter().enumerate().skip(first).take(rows) {
         let y = top + (index - first) as f32 * ROW;
         let row = Rect::from_min_size(pos2(left - 6.0, y), vec2(panel.max.x - left - 20.0, ROW));
@@ -2183,7 +2185,13 @@ pub fn inside(
         // What built this floor: the pull request that last wrote it and the
         // stories its commit names. Nothing for an uncommitted floor or a
         // commit without a pull request.
-        let mark = crate::why::floor_commit(map, item, index).and_then(why::floor_mark);
+        let commit = crate::why::floor_commit(map, item, index);
+        let mark = commit.and_then(why::floor_mark);
+        // The first floor a story built, for the tutorial to point at.
+        if !storied && commit.is_some_and(|c| !c.stories.is_empty()) {
+            storied = true;
+            cellworks_workspace::mark(ui.ctx(), "floor.story", row);
+        }
         if let Some(mark) = &mark {
             painter.text(
                 pos2(left + MARK_START, middle),

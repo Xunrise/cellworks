@@ -3,7 +3,7 @@
 //! a banner naming it for a moment after a switch, and a legend of the lanes
 //! shown. All of it is labels, so the accessibility tree reads it too.
 
-use egui::{Align, Align2, Color32, Frame, Margin, Rect, Stroke, vec2};
+use egui::{Align, Align2, Color32, Frame, Margin, Rect, Stroke, pos2, vec2};
 
 use super::{DIM, LINE_STRONG, PANEL};
 use crate::{Lanes, Lens};
@@ -102,7 +102,7 @@ pub fn caption_text(lens: Lens) -> String {
 
 /// What the current lens shows, at the top left of `panel`.
 pub fn caption(ui: &egui::Ui, panel: Rect, lens: Lens) {
-    egui::Area::new(ui.id().with("lens caption"))
+    let shown = egui::Area::new(ui.id().with("lens caption"))
         .fixed_pos(panel.min + vec2(12.0, 12.0))
         .interactable(false)
         .show(ui.ctx(), |ui| {
@@ -110,6 +110,7 @@ pub fn caption(ui: &egui::Ui, panel: Rect, lens: Lens) {
                 ui.label(titled(ui.ctx(), &caption_text(lens)));
             });
         });
+    cellworks_workspace::mark(ui.ctx(), "slot.caption", shown.response.rect);
 }
 
 /// The banner naming `lens`, `age` seconds after the switch to it: full for a
@@ -175,13 +176,27 @@ pub fn legend(ui: &egui::Ui, panel: Rect, shown: Lanes) {
     if !shown.imports && !shown.calls {
         return;
     }
-    egui::Area::new(ui.id().with("lane legend"))
+    // The minimap holds the bottom right corner: the legend wraps short of
+    // it, or stands above it when the map is too narrow for both.
+    let margin = super::MINIMAP_MARGIN;
+    let room = panel.width() - super::MINIMAP.x - 4.0 * margin;
+    let (width, bottom) = if room >= 240.0 {
+        (room, panel.bottom() - margin)
+    } else {
+        (
+            panel.width() - 2.0 * margin,
+            panel.bottom() - super::MINIMAP.y - 2.0 * margin,
+        )
+    };
+    let drawn = egui::Area::new(ui.id().with("lane legend"))
         .pivot(Align2::LEFT_BOTTOM)
-        .fixed_pos(panel.left_bottom() + vec2(12.0, -12.0))
+        .fixed_pos(pos2(panel.left() + margin, bottom))
         .interactable(false)
         .show(ui.ctx(), |ui| {
+            ui.set_max_width(width.max(120.0));
             card().show(ui, |ui| {
                 ui.label(titled(ui.ctx(), &legend_text(shown)));
             });
         });
+    cellworks_workspace::mark(ui.ctx(), "slot.legend", drawn.response.rect);
 }

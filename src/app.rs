@@ -597,6 +597,11 @@ impl CellworksApp {
         self.tree_open
     }
 
+    /// The selected element, if any.
+    pub fn selection(&self) -> Option<&std::path::Path> {
+        self.navigation.selection()
+    }
+
     /// The towers the last frame drew, back to front.
     pub fn towers(&self) -> &[DrawnTower] {
         &self.towers
@@ -710,7 +715,15 @@ impl CellworksApp {
         if self.why.as_ref().is_some_and(|(at, _)| *at == selected) {
             return;
         }
-        let why = mapped(&self.opened).and_then(|map| cellworks_map::why_of(map, &selected));
+        // A click on a block's ground or on a cellar picks the file: its
+        // tallest tower explains it.
+        let why = mapped(&self.opened).and_then(|map| {
+            let tower = map
+                .items_of(&selected)
+                .and_then(|items| items.iter().max_by_key(|item| item.floors.len()))
+                .map_or_else(|| selected.clone(), |item| item.path.clone());
+            cellworks_map::why_of(map, &tower)
+        });
         self.why = Some((selected, why));
     }
 
@@ -1355,6 +1368,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         }
     }
     let mut bar: (Option<Lens>, (bool, bool)) = (None, (false, false));
+    let mut info_jump: Option<std::path::PathBuf> = None;
     match &app.opened {
         None if app.tickets_open => {
             // PROTOTYPE: the ticket picker stands in for the launcher.
@@ -1451,20 +1465,35 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             // The why panel, in its own right column between the tree and
             // the city; nothing or a district selected shows no panel.
             let why = app.why().cloned();
-            if let Some(why) = &why {
+            // A running iterate loop's round box heads the same column, so the
+            // two never share space.
+            let looping = !casing && app.case.is_none() && app.iterate.is_some();
+            if why.is_some() || looping {
                 // Inside the tower, the floor the engineer stands on is
                 // explained too.
                 let floor = app.navigation.inside().and_then(|(item, floor)| {
                     let map = mapped(&app.opened)?;
                     cellworks_map::floor_commit(map, map.item(item)?, floor)
                 });
-                egui::Panel::right("why")
+                let iterate = &mut app.iterate;
+                info_jump = egui::Panel::right("why")
                     .exact_size(WHY_WIDTH)
                     .frame(cellworks_workspace::theme::frame().inner_margin(14))
                     .show(ui, |ui| {
-                        egui::ScrollArea::vertical()
-                            .show(ui, |ui| cellworks_map::ui::why_panel(ui, why, floor));
-                    });
+                        let jump = iterate
+                            .as_mut()
+                            .filter(|_| looping)
+                            .and_then(|it| iterate_info(ui, it));
+                        if let Some(why) = &why {
+                            if looping {
+                                ui.add_space(12.0);
+                            }
+                            egui::ScrollArea::vertical()
+                                .show(ui, |ui| cellworks_map::ui::why_panel(ui, why, floor));
+                        }
+                        jump
+                    })
+                    .inner;
             }
             let tint = why.as_ref().map(|why| why.floors.as_slice());
             let mut sidebar_centre: Option<egui::Pos2> = None;
@@ -1491,6 +1520,15 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             app.sessions.pane(ui);
             let explorer = app.tree_open && crate::demo::is_demo() && !casing;
             let map_rect = ui.available_rect_before_wrap();
+            // What the side panels, the Explorer, the right column and the
+            // dock leave of the map: the floating overlays take their slots in it.
+            if !casing {
+                let mut free = map_rect;
+                if explorer {
+                    free.min.x += crate::explorer::WIDTH + 10.0;
+                }
+                crate::demo::mark(ui.ctx(), "map.free", free);
+            }
             let framing = mapped(&app.opened).map(|map| {
                 let mut target = app.navigation.framing(map);
                 if explorer {
@@ -1548,8 +1586,13 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                         if let Some(tour) = app.demo.as_mut() {
                             crate::demo::paint_world(ui, tour, map, &shown.view);
                         }
+                        // Inside a tower the floors stand clear of the Explorer.
+                        let mut room = shown.panel;
+                        if explorer {
+                            room.min.x += crate::explorer::WIDTH + 10.0;
+                        }
                         let floor = app.navigation.inside().and_then(|(item, floor)| {
-                            cellworks_map::ui::inside(ui, map, item, floor, shown.panel)
+                            cellworks_map::ui::inside(ui, map, item, floor, room)
                         });
                         (drawn, minimap, floor, sessions_result)
                     })
@@ -1738,6 +1781,9 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     if let Some((key, now)) = case_key {
         app.open_case(&key, now);
     }
+    if let Some(path) = info_jump {
+        app.jump(path);
+    }
     iterate_overlay(ui, app);
     crate::demo::overlay(ui, app);
     let (picked, (import_lanes, call_lanes)) = bar;
@@ -1867,6 +1913,46 @@ pub fn drive_line(ui: &mut egui::Ui, app: &mut CellworksApp, line: &str) {
         "jump" => {
             if let Some(root) = app.map().map(|m| m.root.clone()) {
                 app.jump(root.join(arg));
+            }
+        }
+        // PROTOTYPE: flies the camera to frame the element at `arg`.
+        "frame" => {
+            if let Some(map) = mapped(&app.opened) {
+                app.navigation.frame_on(map, map.root.join(arg));
+                app.flight = app.last_framing.map(|f| (f, ui.input(|i| i.time)));
+            }
+        }
+        // PROTOTYPE: steps inside the tower of the file `arg` a story built,
+        // else its tallest.
+        "enter" => {
+            if let Some(map) = mapped(&app.opened)
+                && let Some(items) = map.items_of(&map.root.join(arg))
+            {
+                let storied = |item: &cellworks_map::Item| {
+                    (0..item.floors.len()).any(|i| {
+                        cellworks_map::floor_commit(map, item, i)
+                            .is_some_and(|c| !c.stories.is_empty())
+                    })
+                };
+                let tower = items
+                    .iter()
+                    .find(|item| storied(item))
+                    .or_else(|| items.iter().max_by_key(|item| item.floors.len()));
+                if let Some(tower) = tower {
+                    app.navigation.step_inside(map, tower.path.clone());
+                }
+            }
+        }
+        // PROTOTYPE: inside a tower, picks the first floor a story built.
+        "floor-story" => {
+            if let Some(map) = mapped(&app.opened)
+                && let Some((item, _)) = app.navigation.inside()
+                && let Some(item) = map.item(item)
+                && let Some(i) = (0..item.floors.len()).find(|i| {
+                    cellworks_map::floor_commit(map, item, *i).is_some_and(|c| !c.stories.is_empty())
+                })
+            {
+                app.navigation.pick_floor(i);
             }
         }
         "shot" => ui
@@ -2208,8 +2294,108 @@ fn iterate_screen(ui: &mut egui::Ui, app: &mut CellworksApp) {
     }
 }
 
-/// PROTOTYPE: the loop's strip, the fires and scaffolding on the towers, and
-/// the feedback note.
+/// PROTOTYPE: the iterate loop's round box: branch, dev server, session,
+/// rounds, fires and keys. Returns a fire's file to jump to.
+fn iterate_info(ui: &mut egui::Ui, it: &mut crate::iterate::Iterate) -> Option<std::path::PathBuf> {
+    use cellworks_workspace::theme;
+    let mut jump = None;
+    let mut revert = None;
+    let mut retry = false;
+    theme::frame().show(ui, |ui| {
+        ui.set_max_width(360.0);
+        let mono = |text: String, colour| {
+            egui::RichText::new(text)
+                .monospace()
+                .size(11.0)
+                .color(colour)
+        };
+        ui.horizontal(|ui| {
+            ui.label(mono(format!("proto/{}", it.slug), theme::YELLOW));
+            match (it.status.port, it.status.live) {
+                (Some(port), true) => {
+                    ui.label(mono(format!("● live :{port}"), theme::OK));
+                    if theme::tab(ui, "open", false, false).clicked()
+                        && let Some(url) = it.url()
+                    {
+                        let _ = std::process::Command::new("open").arg(url).spawn();
+                    }
+                }
+                (Some(port), false) => {
+                    ui.label(mono(format!("○ down :{port}"), theme::DIM));
+                }
+                (None, _) => {
+                    ui.label(mono("○ no launch.json".into(), theme::DIM));
+                }
+            }
+        });
+        match &it.spawned {
+            None => {
+                ui.label("starting session…");
+            }
+            Some(Err(e)) => {
+                ui.colored_label(theme::DANGER, e);
+                if theme::tab(ui, "retry session", false, false).clicked() {
+                    retry = true;
+                }
+            }
+            Some(Ok(_)) => {
+                ui.label(mono(format!("session {}", it.session_name), theme::DIM));
+            }
+        }
+        ui.separator();
+        let live = it.rounds.len() - 1;
+        let shown = match it.viewing {
+            Some(k) => format!("viewing round {}: {}", k + 1, it.rounds[k].note),
+            None => format!(
+                "round {} open · {} notes · R closes it",
+                live + 1,
+                it.notes_in_round()
+            ),
+        };
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(shown).color(theme::INK));
+            if let Some(k) = it.viewing
+                && ui
+                    .small_button(format!("undo round {} and later", k + 1))
+                    .clicked()
+            {
+                revert = Some(k);
+            }
+        });
+        ui.label(
+            egui::RichText::new(format!("{} files touched", it.scaffolding().len()))
+                .color(theme::DIM),
+        );
+        if !it.status.fires.is_empty() {
+            ui.separator();
+            for (file, line, text) in &it.status.fires {
+                if ui
+                    .link(format!("🔥 {file}:{line}"))
+                    .on_hover_text(text)
+                    .clicked()
+                {
+                    jump = Some(it.worktree.join(file));
+                }
+            }
+        }
+        for line in it.log.iter().rev().take(2) {
+            ui.label(mono(line.clone(), theme::DIM));
+        }
+        ui.label(mono(
+            "P pin · C capture · R close round · , . step".into(),
+            theme::TERRAIN_INK,
+        ));
+    });
+    if let Some(k) = revert {
+        it.revert(k);
+    }
+    if retry {
+        it.respawn();
+    }
+    jump
+}
+
+/// PROTOTYPE: the fires and scaffolding on the towers, and the feedback note.
 fn iterate_overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
     // In a case the iterate screen has its own chrome; on its city view only
     // the marks on the towers come from here.
@@ -2222,107 +2408,6 @@ fn iterate_overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
         return;
     };
     let ctx = ui.ctx().clone();
-    let mut jump: Option<std::path::PathBuf> = None;
-    let mut revert: Option<usize> = None;
-    let mut retry = false;
-    if !in_case {
-        egui::Area::new(egui::Id::new("iterate-strip"))
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 40.0))
-            .show(&ctx, |ui| {
-                use cellworks_workspace::theme;
-                theme::frame().show(ui, |ui| {
-                    ui.set_max_width(360.0);
-                    let mono = |text: String, colour| {
-                        egui::RichText::new(text)
-                            .monospace()
-                            .size(11.0)
-                            .color(colour)
-                    };
-                    ui.horizontal(|ui| {
-                        ui.label(mono(format!("proto/{}", it.slug), theme::YELLOW));
-                        match (it.status.port, it.status.live) {
-                            (Some(port), true) => {
-                                ui.label(mono(format!("● live :{port}"), theme::OK));
-                                if theme::tab(ui, "open", false, false).clicked()
-                                    && let Some(url) = it.url()
-                                {
-                                    let _ = std::process::Command::new("open").arg(url).spawn();
-                                }
-                            }
-                            (Some(port), false) => {
-                                ui.label(mono(format!("○ down :{port}"), theme::DIM));
-                            }
-                            (None, _) => {
-                                ui.label(mono("○ no launch.json".into(), theme::DIM));
-                            }
-                        }
-                    });
-                    match &it.spawned {
-                        None => {
-                            ui.label("starting session…");
-                        }
-                        Some(Err(e)) => {
-                            ui.colored_label(theme::DANGER, e);
-                            if theme::tab(ui, "retry session", false, false).clicked() {
-                                retry = true;
-                            }
-                        }
-                        Some(Ok(_)) => {
-                            ui.label(mono(format!("session {}", it.session_name), theme::DIM));
-                        }
-                    }
-                    ui.separator();
-                    let live = it.rounds.len() - 1;
-                    let shown = match it.viewing {
-                        Some(k) => format!("viewing round {}: {}", k + 1, it.rounds[k].note),
-                        None => format!(
-                            "round {} open · {} notes · R closes it",
-                            live + 1,
-                            it.notes_in_round()
-                        ),
-                    };
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(shown).color(theme::INK));
-                        if let Some(k) = it.viewing
-                            && ui
-                                .small_button(format!("undo round {} and later", k + 1))
-                                .clicked()
-                        {
-                            revert = Some(k);
-                        }
-                    });
-                    ui.label(
-                        egui::RichText::new(format!("{} files touched", it.scaffolding().len()))
-                            .color(theme::DIM),
-                    );
-                    if !it.status.fires.is_empty() {
-                        ui.separator();
-                        for (file, line, text) in &it.status.fires {
-                            if ui
-                                .link(format!("🔥 {file}:{line}"))
-                                .on_hover_text(text)
-                                .clicked()
-                            {
-                                jump = Some(it.worktree.join(file));
-                            }
-                        }
-                    }
-                    for line in it.log.iter().rev().take(2) {
-                        ui.label(mono(line.clone(), theme::DIM));
-                    }
-                    ui.label(mono(
-                        "P pin · C capture · R close round · , . step".into(),
-                        theme::TERRAIN_INK,
-                    ));
-                });
-            });
-    }
-    if let Some(k) = revert {
-        it.revert(k);
-    }
-    if retry {
-        it.respawn();
-    }
 
     // Fires and scaffolding on the files' plots, whatever form they are
     // drawn in at this zoom.
@@ -2384,8 +2469,10 @@ fn iterate_overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
     let mut send = false;
     let mut cancel = false;
     if !in_case && let Some(draft) = &mut it.draft {
+        let free = crate::demo::free_rect(&ctx).unwrap_or(ctx.content_rect());
         egui::Window::new("Feedback")
-            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -40.0))
+            .pivot(egui::Align2::CENTER_BOTTOM)
+            .fixed_pos(free.center_bottom() - egui::vec2(0.0, 40.0))
             .collapsible(false)
             .resizable(false)
             .show(&ctx, |ui| {
@@ -2433,9 +2520,6 @@ fn iterate_overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
             None => std::time::Duration::ZERO,
         };
         it.send(delay);
-    }
-    if let Some(path) = jump {
-        app.jump(path);
     }
 }
 

@@ -939,13 +939,15 @@ fn session_row(
         cellworks_map::ui::theme::named(ui.ctx(), 13.0, "semibold"),
         if picked { ATTENTION } else { INK },
     );
-    painter.text(
-        rect.left_top() + vec2(22.0, 20.0),
-        egui::Align2::LEFT_TOP,
+    // A long branch ends in an ellipsis inside the row, not at the panel's edge.
+    let mut job = egui::text::LayoutJob::simple_singleline(
         format!("{} · {}", session.repo, session.branch),
         egui::FontId::monospace(10.0),
         TERRAIN_INK,
     );
+    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 28.0).max(1.0));
+    let galley = painter.layout_job(job);
+    painter.galley(rect.left_top() + vec2(22.0, 20.0), galley, TERRAIN_INK);
 
     let snippet: String = session.summary.chars().take(110).collect();
     let mut job = egui::text::LayoutJob::simple(

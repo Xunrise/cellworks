@@ -85,9 +85,19 @@ fn drive(h: &mut Harness<'_, State>, line: &str) {
     h.step();
 }
 
-#[test]
-#[ignore]
-fn demo_tour() {
+/// The window size: CELLWORKS_TOUR_SIZE=WxH (default 1600x1000).
+fn size() -> egui::Vec2 {
+    std::env::var("CELLWORKS_TOUR_SIZE")
+        .ok()
+        .and_then(|s| {
+            let (w, h) = s.split_once('x')?;
+            Some(egui::vec2(w.parse().ok()?, h.parse().ok()?))
+        })
+        .unwrap_or(egui::vec2(1600.0, 1000.0))
+}
+
+/// Builds the demo world and a scanned app in a headless harness.
+fn start() -> Harness<'static, State> {
     // SAFETY: set before the app or any thread exists.
     unsafe {
         std::env::set_var("CELLWORKS_DEMO", "1");
@@ -100,16 +110,9 @@ fn demo_tour() {
         .expect("run setup.sh");
     assert!(status.success(), "setup.sh failed");
     cellworks::demo::init();
-    let out = PathBuf::from(
-        std::env::var("CELLWORKS_TOUR_OUT")
-            .unwrap_or_else(|_| format!("{manifest}/target/demo-tour")),
-    );
-    let _ = std::fs::remove_dir_all(&out);
-    std::fs::create_dir_all(&out).unwrap();
-
     let app = CellworksApp::start();
     let mut h = Harness::builder()
-        .with_size(egui::vec2(1600.0, 1000.0))
+        .with_size(size())
         .with_step_dt(1.0 / 20.0)
         .with_max_steps(1)
         .build_ui_state(
@@ -130,6 +133,72 @@ fn demo_tour() {
     println!("scanning");
     frames(&mut h, 3000); // the scan
     println!("scanned");
+    h
+}
+
+/// Clicking a tower on the map in the tour's free play selects it and opens
+/// the why panel, as it does outside the demo.
+#[test]
+#[ignore]
+fn map_click_opens_why() {
+    let mut h = start();
+    let root = cellworks::demo::root();
+    drive(&mut h, &format!("open {}/projects/shopfront", root.display()));
+    frames(&mut h, 6000);
+    drive(&mut h, "tour-go 2");
+    frames(&mut h, 300);
+    use cellworks::demo::TutorialPhase as P;
+    for _ in 0..40 {
+        if info(&h).phase == P::Free {
+            break;
+        }
+        drive(&mut h, "tour-next");
+        settle(&mut h);
+    }
+    assert_eq!(info(&h).phase, P::Free, "chapter 2 reaches free play");
+    drive(&mut h, "fit");
+    settle(&mut h);
+    let free = cellworks::demo::free_rect(&h.ctx).expect("the free map rect");
+    let taken = cellworks::demo::overlay_rects(&h.ctx);
+    // The tallest tower clear of the overlays: its middle is on the tower.
+    let tower = h
+        .state()
+        .app
+        .towers()
+        .iter()
+        .filter(|t| {
+            let at = t.outline.center();
+            free.shrink(20.0).contains(at) && !taken.iter().any(|r| r.contains(at))
+        })
+        .max_by(|a, b| a.outline.area().total_cmp(&b.outline.area()))
+        .map(|t| (t.path.clone(), t.outline.center()))
+        .expect("a tower clear of the overlays");
+    click_at(&mut h, tower.1);
+    frames(&mut h, 600);
+    let app = &h.state().app;
+    println!("clicked {:?} -> selection {:?}", tower.0, app.selection());
+    assert!(app.selection().is_some(), "the click selected something");
+    assert!(app.why().is_some(), "a click on a tower opens the why panel");
+    // A click that lands on a block's ground picks the file: its tallest
+    // tower explains it.
+    drive(&mut h, "frame src/cart/totals.ts");
+    frames(&mut h, 600);
+    let app = &h.state().app;
+    println!("jumped -> selection {:?}", app.selection());
+    assert!(app.why().is_some(), "a selected file opens the why panel");
+}
+
+#[test]
+#[ignore]
+fn demo_tour() {
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let mut h = start();
+    let out = PathBuf::from(
+        std::env::var("CELLWORKS_TOUR_OUT")
+            .unwrap_or_else(|_| format!("{manifest}/target/demo-tour")),
+    );
+    let _ = std::fs::remove_dir_all(&out);
+    std::fs::create_dir_all(&out).unwrap();
 
     // CELLWORKS_TOUR_FROM=<n>: open shopfront and start at chapter n (debug).
     if let Ok(from) = std::env::var("CELLWORKS_TOUR_FROM") {
@@ -252,6 +321,18 @@ fn demo_tour() {
                 }
                 settle(&mut h);
                 let after = snap(&mut h, &out, &format!("{name}-after"));
+                if cur.target == "floor.story" {
+                    use egui_kittest::kittest::{NodeT, Queryable};
+                    let floor = h.query_by_label("This floor").is_some();
+                    let story: Vec<String> = h
+                        .query_all_by_label_contains("SHOP-42")
+                        .filter_map(|n| n.accesskit_node().label().map(|l| l.to_string()))
+                        .collect();
+                    println!("floor panel: {floor}, SHOP-42 labels: {story:?}");
+                    if !floor || story.is_empty() {
+                        fallbacks.push(format!("{label}: the why panel shows no SHOP-42 floor"));
+                    }
+                }
                 println!("{label}: {}", cellworks::demo::status(&h.state().app));
                 last = Some(after);
                 // Skip the explanation.

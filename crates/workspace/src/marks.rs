@@ -38,3 +38,21 @@ pub fn marked(ctx: &egui::Context, id: &str) -> Option<egui::Rect> {
     .filter(|(_, at)| now - at < 0.5)
     .map(|(rect, _)| rect)
 }
+
+/// Every rect marked under `prefix` within the last half second: the
+/// floating overlays that claimed a slot on the map.
+pub fn marked_all(ctx: &egui::Context, prefix: &str) -> Vec<egui::Rect> {
+    let now = ctx.input(|i| i.time);
+    ctx.data(|d| {
+        d.get_temp::<Marks>(store())
+            .map(|marks| {
+                marks
+                    .0
+                    .iter()
+                    .filter(|(key, (_, at))| key.starts_with(prefix) && now - at < 0.5)
+                    .map(|(_, (rect, _))| *rect)
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}

@@ -509,11 +509,21 @@ pub const CHAPTERS: [Chapter; 12] = [
                 )
             },
             Guided {
-                prep: &["history last", "wait 2500"],
-                emulate: &["jump src/cart/promo.ts"],
+                // The Explorer framing may have left the tower off screen.
+                prep: &["history last", "wait 2500", "frame src/cart", "wait 1200"],
+                then: &["enter src/cart/promo.ts"],
+                done_if: Some(inside_promo),
                 ..click(
                     "tower:src/cart/promo.ts",
-                    "Click a tower, then a floor, to see why it was built",
+                    "Click the promo tower to step inside",
+                    "Inside, every floor is a line of code, tagged with the pull request and story that wrote it.",
+                )
+            },
+            Guided {
+                emulate: &["floor-story"],
+                ..click(
+                    "floor.story",
+                    "Click a floor to see why it was built",
                     "The why panel traces the floor back to SHOP-42, the ticket that asked for it.",
                 )
             },
@@ -673,34 +683,71 @@ impl Block {
     }
 }
 
-/// Puts a `size` box beside `target`, on the side with room.
-fn beside(screen: Rect, target: Rect, size: egui::Vec2) -> Rect {
+/// Puts a `size` box near `target`, where it covers the least of `taken`:
+/// beside the target when a side is clear, else on the free map (`free`),
+/// else wherever overlaps least. The panels around `free` count as taken.
+fn beside(screen: Rect, target: Rect, size: egui::Vec2, free: Option<Rect>, taken: &[Rect]) -> Rect {
     let gap = 18.0;
     let room = screen.shrink(12.0);
-    let candidates = [
+    let mut taken = taken.to_vec();
+    taken.push(target.expand(8.0));
+    let mut candidates = vec![
         pos2(target.right() + gap, target.center().y - size.y / 2.0),
-        pos2(
-            target.left() - gap - size.x,
-            target.center().y - size.y / 2.0,
-        ),
+        pos2(target.left() - gap - size.x, target.center().y - size.y / 2.0),
         pos2(target.center().x - size.x / 2.0, target.bottom() + gap),
-        pos2(
-            target.center().x - size.x / 2.0,
-            target.top() - gap - size.y,
-        ),
+        pos2(target.center().x - size.x / 2.0, target.top() - gap - size.y),
     ];
-    for at in candidates {
-        let rect = Rect::from_min_size(at, size);
-        if room.contains_rect(rect) {
-            return rect;
+    if let Some(free) = free {
+        taken.extend([
+            Rect::from_min_max(screen.min, pos2(screen.right(), free.top())),
+            Rect::from_min_max(pos2(screen.left(), free.bottom()), screen.max),
+            Rect::from_min_max(pos2(screen.left(), free.top()), free.left_bottom()),
+            Rect::from_min_max(free.right_top(), pos2(screen.right(), free.bottom())),
+        ]);
+        let inner = free.shrink(12.0);
+        let ys = [
+            target.center().y - size.y / 2.0,
+            target.bottom() + gap,
+            target.top() - gap - size.y,
+            inner.top(),
+            inner.bottom() - size.y,
+        ];
+        let xs = [
+            target.center().x - size.x / 2.0,
+            inner.left(),
+            inner.center().x - size.x / 2.0,
+            inner.right() - size.x,
+        ];
+        for y in ys {
+            for x in xs {
+                candidates.push(pos2(x, y));
+            }
         }
     }
-    // No side has room: over the target's lower part, clamped on screen.
-    let at = pos2(
-        (target.center().x - size.x / 2.0).clamp(room.left(), room.right() - size.x),
-        (target.bottom() - size.y - gap).clamp(room.top(), room.bottom() - size.y),
-    );
-    Rect::from_min_size(at, size)
+    let overlap = |rect: Rect| -> f32 {
+        taken
+            .iter()
+            .map(|t| {
+                let i = t.intersect(rect);
+                if i.is_positive() { i.area() } else { 0.0 }
+            })
+            .sum()
+    };
+    candidates
+        .into_iter()
+        .map(|at| {
+            // Kept on screen.
+            let at = pos2(
+                at.x.clamp(room.left(), (room.right() - size.x).max(room.left())),
+                at.y.clamp(room.top(), (room.bottom() - size.y).max(room.top())),
+            );
+            Rect::from_min_size(at, size)
+        })
+        .min_by(|a, b| {
+            let key = |r: &Rect| (overlap(*r), (r.center() - target.center()).length());
+            key(a).partial_cmp(&key(b)).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap_or(Rect::from_min_size(room.min, size))
 }
 
 /// Dims everything but a hole at `hole`, with a pulsing chamfered ring.
@@ -760,9 +807,19 @@ fn callout(
     // The eyebrow takes the colour asked for.
     block.eyebrow = eyebrow(ctx, eye, eye_colour);
     let size = vec2(width + 32.0, block.height() + 32.0);
-    let rect = match anchor {
-        Some(target) => beside(screen, target, size),
-        None => Rect::from_min_size(
+    let free = super::free_rect(ctx);
+    let taken = super::overlay_rects(ctx);
+    let rect = match (anchor, free) {
+        (Some(target), _) => beside(screen, target, size, free, &taken),
+        // No target: near the bottom of the free map, clear of its overlays.
+        (None, Some(free)) => {
+            let near = Rect::from_center_size(
+                pos2(free.center().x, free.bottom() - size.y / 2.0 - 12.0),
+                vec2(0.0, 0.0),
+            );
+            beside(screen, near, size, Some(free), &taken)
+        }
+        (None, None) => Rect::from_min_size(
             pos2(
                 screen.center().x - size.x / 2.0,
                 screen.bottom() - size.y - 56.0,
@@ -953,6 +1010,12 @@ fn resolve(app: &CellworksApp, ctx: &egui::Context, target: &str) -> Option<Rect
         cellworks_workspace::marked(ctx, target)
     };
     found.filter(|r| r.intersects(screen) && r.width() > 2.0 && r.height() > 2.0)
+}
+
+fn inside_promo(app: &CellworksApp) -> bool {
+    app.navigation
+        .inside()
+        .is_some_and(|(item, _)| item.ancestors().any(|a| a.ends_with("src/cart/promo.ts")))
 }
 
 fn project_open(app: &CellworksApp) -> bool {
