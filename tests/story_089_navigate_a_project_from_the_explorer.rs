@@ -56,7 +56,10 @@ fn rows<'t>(root: Node<'t>) -> Vec<Node<'t>> {
             let node = node.accesskit_node();
             node.role() == Role::Button
                 && node.toggled().is_some()
-                && !matches!(node.label().as_deref(), Some("lens panel" | "flat view"))
+                && !matches!(
+                    node.label().as_deref(),
+                    Some("lens panel" | "flat view" | "Settings")
+                )
                 && !node
                     .label()
                     .is_some_and(|label| label.starts_with("tickets "))
