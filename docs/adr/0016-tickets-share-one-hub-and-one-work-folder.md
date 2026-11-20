@@ -1,7 +1,7 @@
 # ADR-0016: Tickets share one hub (Cockpit) and one work folder (.work/<KEY>/)
 
 ## Status
-Proposed
+Accepted
 
 ## Date
 2026-11-20

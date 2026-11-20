@@ -18,6 +18,6 @@ Index of the architecture decision records in [`docs/adr/`](../adr/README.md).
 - [ADR-0013: The before side of a review is the merge base's own city](../adr/0013-the-before-side-of-a-review-is-the-merge-bases-own-city.md) — Accepted — structure
 - [ADR-0014: A review is posted through gh api](../adr/0014-a-review-is-posted-through-gh-api.md) — Accepted — technology
 - [ADR-0015: settings.toml is written by the app](../adr/0015-settings-toml-is-written-by-the-app.md) — Accepted — structure
-- [ADR-0016: Tickets share one hub (Cockpit) and one work folder](../adr/0016-tickets-share-one-hub-and-one-work-folder.md) — Proposed — structure
+- [ADR-0016: Tickets share one hub (Cockpit) and one work folder](../adr/0016-tickets-share-one-hub-and-one-work-folder.md) — Accepted — structure
 
 ADR-0012 is recorded by STORY-022 (#44) and enters the index when that merges.
