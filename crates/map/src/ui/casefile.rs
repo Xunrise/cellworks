@@ -10,12 +10,14 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-/// Where the case file for `key` lives, whether or not it exists.
+/// Where the case file for `key` (a ticket's stable `<source>:<key>` form, or
+/// a bare Jira key) lives, whether or not it exists.
 pub fn path(key: &str) -> PathBuf {
+    let stem = crate::tickets::TicketRef::parse(key).file_stem();
     std::env::var_os("CELLWORKS_CASES")
         .map(PathBuf::from)
         .unwrap_or_else(|| home().join(".cellworks/cases"))
-        .join(format!("{key}.json"))
+        .join(format!("{stem}.json"))
 }
 
 fn home() -> PathBuf {
@@ -464,7 +466,7 @@ pub fn advance(
     case.status = status;
     case.history.push(Event {
         status,
-        at: super::jira::clock(SystemTime::now(), true),
+        at: crate::tickets::clock(SystemTime::now(), true),
         note: note.to_owned(),
     });
     let text = serde_json::to_string_pretty(&case).map_err(|e| e.to_string())?;

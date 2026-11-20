@@ -1,0 +1,51 @@
+{
+  "data": {
+    "viewer": {
+      "assignedIssues": {
+        "nodes": [
+          {
+            "identifier": "ENG-7",
+            "title": "Cache the catalog",
+            "description": "Catalog reads dominate latency.",
+            "url": "https://linear.app/acme/issue/ENG-7/cache-the-catalog",
+            "priorityLabel": "High",
+            "updatedAt": "2026-11-10T08:30:00.000Z",
+            "state": {"name": "In Progress", "type": "started"},
+            "assignee": {"name": "Ada"},
+            "creator": {"name": "Grace"},
+            "team": {"key": "ENG", "name": "Engineering"},
+            "labels": {"nodes": [{"name": "backend"}]},
+            "comments": {"nodes": [{"body": "Measured 40ms.", "createdAt": "2026-11-09T10:00:00.000Z", "user": {"name": "Grace"}}]},
+            "relations": {"nodes": [{"type": "blocks", "relatedIssue": {"identifier": "ENG-9", "title": "Cache layer"}}]}
+          },
+          {
+            "identifier": "ENG-8",
+            "title": "Drop the legacy flag",
+            "description": null,
+            "url": "https://linear.app/acme/issue/ENG-8/drop-the-legacy-flag",
+            "priorityLabel": "No priority",
+            "updatedAt": "2026-11-01T08:30:00.000Z",
+            "state": {"name": "Todo", "type": "unstarted"},
+            "assignee": {"name": "Ada"},
+            "creator": null,
+            "team": {"key": "ENG", "name": "Engineering"},
+            "labels": {"nodes": []},
+            "comments": {"nodes": []},
+            "relations": {"nodes": []}
+          }
+        ]
+      }
+    },
+    "issue": {
+      "id": "uuid-1",
+      "team": {"states": {"nodes": [
+        {"id": "s-back", "name": "Backlog", "type": "backlog", "position": 0},
+        {"id": "s-todo", "name": "Todo", "type": "unstarted", "position": 1},
+        {"id": "s-doing", "name": "In Progress", "type": "started", "position": 2},
+        {"id": "s-review", "name": "In Review", "type": "started", "position": 3},
+        {"id": "s-done", "name": "Done", "type": "completed", "position": 4},
+        {"id": "s-cancel", "name": "Canceled", "type": "canceled", "position": 5}
+      ]}}
+    }
+  }
+}

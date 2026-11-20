@@ -1,44 +1,72 @@
 [
   {
+    "source": "jira",
     "key": "SHOP-42",
-    "summary": "Apply a promo code at checkout",
+    "title": "Apply a promo code at checkout",
     "status": "To Do",
-    "updated": "2026-10-27"
+    "category": "todo",
+    "project": "SHOP",
+    "updated": "2026-10-27",
+    "repo": "shopfront"
   },
   {
+    "source": "jira",
     "key": "SHOP-38",
-    "summary": "Show stock level on product cards",
+    "title": "Show stock level on product cards",
     "status": "To Do",
-    "updated": "2026-10-27"
+    "category": "todo",
+    "project": "SHOP",
+    "updated": "2026-10-27",
+    "repo": "shopfront"
   },
   {
+    "source": "jira",
     "key": "SHOP-39",
-    "summary": "Remember the cart after a page reload",
+    "title": "Remember the cart after a page reload",
     "status": "To Do",
-    "updated": "2026-10-27"
+    "category": "todo",
+    "project": "SHOP",
+    "updated": "2026-10-27",
+    "repo": "shopfront"
   },
   {
+    "source": "jira",
     "key": "SHOP-40",
-    "summary": "Order confirmation page shows the order number",
+    "title": "Order confirmation page shows the order number",
     "status": "To Do",
-    "updated": "2026-10-27"
+    "category": "todo",
+    "project": "SHOP",
+    "updated": "2026-10-27",
+    "repo": "shopfront"
   },
   {
+    "source": "jira",
     "key": "SHOP-41",
-    "summary": "Search ignores accents",
+    "title": "Search ignores accents",
     "status": "To Do",
-    "updated": "2026-10-27"
+    "category": "todo",
+    "project": "SHOP",
+    "updated": "2026-10-27",
+    "repo": "shopfront"
   },
   {
+    "source": "jira",
     "key": "SHOP-43",
-    "summary": "Free shipping banner above 50 EUR",
+    "title": "Free shipping banner above 50 EUR",
     "status": "To Do",
-    "updated": "2026-10-27"
+    "category": "todo",
+    "project": "SHOP",
+    "updated": "2026-10-27",
+    "repo": "shopfront"
   },
   {
+    "source": "jira",
     "key": "SHOP-44",
-    "summary": "Payment provider timeout is not reported to the shopper",
+    "title": "Payment provider timeout is not reported to the shopper",
     "status": "To Do",
-    "updated": "2026-10-27"
+    "category": "todo",
+    "project": "SHOP",
+    "updated": "2026-10-27",
+    "repo": "shopfront"
   }
 ]

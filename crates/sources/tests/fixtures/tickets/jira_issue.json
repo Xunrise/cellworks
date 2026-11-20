@@ -1,0 +1,22 @@
+{
+  "key": "SHOP-42",
+  "names": {"summary": "Summary", "description": "Description"},
+  "fields": {
+    "summary": "Checkout drops the coupon",
+    "issuetype": {"name": "Bug"},
+    "status": {"name": "In Review", "statusCategory": {"key": "indeterminate"}},
+    "priority": {"name": "High"},
+    "assignee": {"displayName": "Ada"},
+    "reporter": {"displayName": "Grace"},
+    "labels": ["checkout", "coupons"],
+    "updated": "2026-11-03T09:12:44.000+0100",
+    "description": "The coupon is lost on the payment redirect.\n# Acceptance criteria\n- Coupon survives the redirect\n- Total is recomputed\n# Notes\n- none",
+    "issuelinks": [
+      {"type": {"outward": "blocks", "inward": "is blocked by"},
+       "outwardIssue": {"key": "SHOP-40", "fields": {"summary": "Payment redirect"}}}
+    ],
+    "comment": {"comments": [
+      {"author": {"displayName": "Grace"}, "created": "2026-11-02T08:00:00.000+0100", "body": "Reproduced on staging."}
+    ]}
+  }
+}

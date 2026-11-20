@@ -1,27 +1,27 @@
-//! PROTOTYPE: Jira, read-only, through Atlassian's remote MCP server, with
-//! Cellworks as its own OAuth client (dynamic client registration and PKCE
-//! in the browser; no model in the loop). Only the read tools are called:
+//! Jira, read-only, through Atlassian's remote MCP server, with Cellworks as
+//! its own OAuth client (dynamic client registration and PKCE in the browser;
+//! no model in the loop). Only the read tools are called:
 //! `getAccessibleAtlassianResources`, `getJiraIssue` and
 //! `searchJiraIssuesUsingJql`. Nothing here writes to Jira.
 //!
-//! Tokens are kept in `~/.config/cellworks/atlassian.json` (0600). Each issue
-//! is cached in `~/.cache/cellworks/jira/issues/<KEY>.json` and shown from
-//! the cache until a fetch on a background thread brings it fresh; results
-//! reach the UI thread as [`JiraEvent`]s over `std::sync::mpsc`.
+//! Tokens are kept in `~/.config/cellworks/atlassian.json` (0600). The
+//! facade (`super::Tickets`) caches what this source answers and calls it on
+//! worker threads.
 //!
-//! `CELLWORKS_JIRA_OFFLINE` keeps every call off the network, and
-//! `CELLWORKS_JIRA_CACHE` moves the cache, so the screenshot harness runs on
-//! a fixture.
+//! The endpoints are the `/v1` ones: Atlassian's `/v2/mcp` is announced, but
+//! it sits behind a different authorization server and scopes, so it is not a
+//! drop-in change and stays unswitched until it can be tried against a real
+//! sign-in.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+use super::http::{home, post, random_hex, write_private};
+use super::{Category, SourceError, SourceId, Ticket, TicketSource, day, now};
 
 const MCP: &str = "https://mcp.atlassian.com/v1/mcp";
 const AUTH: &str = "https://mcp.atlassian.com/v1";
@@ -29,292 +29,53 @@ const AUTH: &str = "https://mcp.atlassian.com/v1";
 /// The JQL behind "my open tickets".
 pub const MINE: &str = "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC";
 
-/// One issue, as the case shows it.
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct Issue {
-    pub key: String,
-    pub summary: String,
-    pub kind: String,
-    pub status: String,
-    /// "new", "indeterminate" or "done".
-    pub category: String,
-    pub priority: String,
-    pub assignee: Option<String>,
-    pub reporter: Option<String>,
-    pub updated: String,
-    /// The description as plain text.
-    pub description: String,
-    /// The acceptance criteria, one per entry, and where they were found:
-    /// the name of a custom field, or "description".
-    pub criteria: Vec<String>,
-    pub criteria_from: String,
-    /// (how the link reads from this issue, the other key, its summary).
-    pub links: Vec<(String, String, String)>,
-    /// The latest comments, newest last: (author, created, body).
-    pub comments: Vec<(String, String, String)>,
-    pub url: String,
-}
-
-/// One row of a search.
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct Row {
-    pub key: String,
-    pub summary: String,
-    pub status: String,
-    pub updated: String,
-}
-
-/// What a background call brought back.
-pub enum JiraEvent {
-    IssueFetched { key: String, issue: Box<Issue> },
-    MineListed(Vec<Row>),
-    FetchFailed { key: String, reason: String },
-    SignInNeeded,
-    SignedIn,
-    SignInFailed(String),
-}
-
-/// When the shown copy was synced: this session, or only the cache's age.
-#[derive(Clone, Copy, Debug)]
-pub enum Synced {
-    Live(SystemTime),
-    Cached(SystemTime),
-}
-
-impl Synced {
-    /// "synced 14:02" or "cached 2026-10-21 09:13", in local time.
-    pub fn label(self) -> String {
-        match self {
-            Synced::Live(at) => format!("synced {}", clock(at, false)),
-            Synced::Cached(at) => format!("cached {}", clock(at, true)),
-        }
-    }
-}
-
-/// Where sign-in stands.
-#[derive(Clone, Debug, PartialEq)]
-pub enum SignIn {
-    Unknown,
-    Needed,
-    /// The browser was opened; waiting for it to come back.
-    Pending,
-    Failed(String),
-    Done,
-}
-
-/// The issues known this session, the fetches under way, and sign-in.
+/// Jira over the Atlassian remote MCP server.
 pub struct Jira {
-    tx: Sender<JiraEvent>,
-    rx: Receiver<JiraEvent>,
-    issues: BTreeMap<String, (Issue, Synced)>,
-    asked: BTreeSet<String>,
-    pending: BTreeSet<String>,
-    failed: BTreeMap<String, String>,
-    mine: Option<(Vec<Row>, Synced)>,
-    mine_asked: bool,
-    pub sign_in: SignIn,
-}
-
-impl Default for Jira {
-    fn default() -> Self {
-        Jira::new()
-    }
+    /// Part of the site's address to pick when a sign-in reaches several.
+    site: Option<String>,
 }
 
 impl Jira {
-    pub fn new() -> Jira {
-        let (tx, rx) = channel();
-        Jira {
-            tx,
-            rx,
-            issues: BTreeMap::new(),
-            asked: BTreeSet::new(),
-            pending: BTreeSet::new(),
-            failed: BTreeMap::new(),
-            mine: None,
-            mine_asked: false,
-            sign_in: SignIn::Unknown,
-        }
-    }
-
-    /// Takes what the background calls brought back; once per frame.
-    pub fn poll(&mut self) {
-        while let Ok(event) = self.rx.try_recv() {
-            match event {
-                JiraEvent::IssueFetched { key, issue } => {
-                    self.pending.remove(&key);
-                    self.failed.remove(&key);
-                    self.issues
-                        .insert(key, (*issue, Synced::Live(SystemTime::now())));
-                    self.sign_in = SignIn::Done;
-                }
-                JiraEvent::MineListed(rows) => {
-                    self.pending.remove(MINE);
-                    self.mine = Some((rows, Synced::Live(SystemTime::now())));
-                    self.sign_in = SignIn::Done;
-                }
-                JiraEvent::FetchFailed { key, reason } => {
-                    self.pending.remove(&key);
-                    self.failed.insert(key, reason);
-                }
-                JiraEvent::SignInNeeded => {
-                    self.pending.clear();
-                    if self.sign_in != SignIn::Pending {
-                        self.sign_in = SignIn::Needed;
-                    }
-                }
-                JiraEvent::SignedIn => {
-                    self.sign_in = SignIn::Done;
-                    // Ask again for everything that waited on sign-in.
-                    self.asked.clear();
-                    self.mine_asked = false;
-                    self.failed.clear();
-                }
-                JiraEvent::SignInFailed(reason) => self.sign_in = SignIn::Failed(reason),
-            }
-        }
-    }
-
-    /// The issue `key`, from this session or the cache; asks for it fresh
-    /// once per session.
-    pub fn issue(&mut self, key: &str) -> Option<&(Issue, Synced)> {
-        if !self.issues.contains_key(key)
-            && let Some(cached) = load::<Issue>(&cache_file(key))
-        {
-            self.issues.insert(key.to_owned(), cached);
-        }
-        if self.asked.insert(key.to_owned()) && !offline() && self.sign_in != SignIn::Pending {
-            self.pending.insert(key.to_owned());
-            let (tx, key) = (self.tx.clone(), key.to_owned());
-            std::thread::spawn(move || {
-                let event = match fetch_issue(&key) {
-                    Ok(issue) => {
-                        save_cache(&cache_file(&key), &issue);
-                        JiraEvent::IssueFetched {
-                            key,
-                            issue: Box::new(issue),
-                        }
-                    }
-                    Err(Failure::SignIn) => JiraEvent::SignInNeeded,
-                    Err(Failure::Other(reason)) => JiraEvent::FetchFailed { key, reason },
-                };
-                let _ = tx.send(event);
-            });
-        }
-        self.issues.get(key)
-    }
-
-    /// My open tickets, from this session or the cache; asks once.
-    pub fn mine(&mut self) -> Option<&(Vec<Row>, Synced)> {
-        if self.mine.is_none() {
-            self.mine = load::<Vec<Row>>(&cache_file("mine"));
-        }
-        if !self.mine_asked && !offline() && self.sign_in != SignIn::Pending {
-            self.mine_asked = true;
-            self.pending.insert(MINE.to_owned());
-            let tx = self.tx.clone();
-            std::thread::spawn(move || {
-                let event = match search(MINE) {
-                    Ok(rows) => {
-                        save_cache(&cache_file("mine"), &rows);
-                        JiraEvent::MineListed(rows)
-                    }
-                    Err(Failure::SignIn) => JiraEvent::SignInNeeded,
-                    Err(Failure::Other(reason)) => JiraEvent::FetchFailed {
-                        key: MINE.to_owned(),
-                        reason,
-                    },
-                };
-                let _ = tx.send(event);
-            });
-        }
-        self.mine.as_ref()
-    }
-
-    pub fn is_fetching(&self, key: &str) -> bool {
-        self.pending.contains(key)
-    }
-
-    pub fn failure(&self, key: &str) -> Option<&str> {
-        self.failed.get(key).map(String::as_str)
-    }
-
-    /// Opens the browser to sign in, on a thread of its own; under
-    /// `CELLWORKS_DRY_LAUNCH` or offline nothing opens and sign-in stays
-    /// pending.
-    pub fn start_sign_in(&mut self) {
-        self.sign_in = SignIn::Pending;
-        if offline() || std::env::var_os("CELLWORKS_DRY_LAUNCH").is_some() {
-            return;
-        }
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(match sign_in() {
-                Ok(()) => JiraEvent::SignedIn,
-                Err(reason) => JiraEvent::SignInFailed(reason),
-            });
-        });
+    pub fn new(site: Option<String>) -> Jira {
+        Jira { site }
     }
 }
 
-fn offline() -> bool {
-    std::env::var_os("CELLWORKS_JIRA_OFFLINE").is_some()
+impl From<Failure> for SourceError {
+    fn from(failure: Failure) -> SourceError {
+        match failure {
+            Failure::SignIn => SourceError::SignIn,
+            Failure::Other(reason) => SourceError::Other(reason),
+        }
+    }
+}
+
+impl TicketSource for Jira {
+    fn id(&self) -> SourceId {
+        SourceId::Jira
+    }
+
+    fn list_mine(&self) -> Result<Vec<Ticket>, SourceError> {
+        self.list(MINE)
+    }
+
+    fn list(&self, jql: &str) -> Result<Vec<Ticket>, SourceError> {
+        Ok(search(jql, self.site.as_deref())?)
+    }
+
+    fn get(&self, key: &str) -> Result<Ticket, SourceError> {
+        Ok(fetch_issue(key, self.site.as_deref())?)
+    }
+
+    fn sign_in(&self) -> Result<(), String> {
+        sign_in()
+    }
 }
 
 // ---------------------------------------------------------------- files
 
-fn home() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
-}
-
 fn tokens_path() -> PathBuf {
     home().join(".config/cellworks/atlassian.json")
-}
-
-fn cache_dir() -> PathBuf {
-    std::env::var_os("CELLWORKS_JIRA_CACHE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(".cache/cellworks/jira/issues"))
-}
-
-fn cache_file(name: &str) -> PathBuf {
-    cache_dir().join(format!("{name}.json"))
-}
-
-fn load<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<(T, Synced)> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let at = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
-    Some((serde_json::from_str(&text).ok()?, Synced::Cached(at)))
-}
-
-fn save_cache<T: Serialize>(path: &Path, value: &T) {
-    if let (Some(dir), Ok(text)) = (path.parent(), serde_json::to_string_pretty(value)) {
-        let _ = std::fs::create_dir_all(dir);
-        let _ = std::fs::write(path, text);
-    }
-}
-
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
-/// `at` in local time, through `date`, which knows the time zone.
-pub(crate) fn clock(at: SystemTime, with_date: bool) -> String {
-    let secs = at.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let format = if with_date {
-        "+%Y-%m-%d %H:%M"
-    } else {
-        "+%H:%M"
-    };
-    Command::new("date")
-        .args(["-r", &secs.to_string(), format])
-        .output()
-        .ok()
-        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| secs.to_string())
 }
 
 // ---------------------------------------------------------------- HTTP
@@ -328,92 +89,6 @@ impl From<String> for Failure {
     fn from(reason: String) -> Failure {
         Failure::Other(reason)
     }
-}
-
-/// POSTs `body` through curl and returns (status, headers, body). Headers
-/// and body go through curl's config on stdin and a private file, so no
-/// token shows in the process list.
-fn post(
-    url: &str,
-    headers: &[(&str, &str)],
-    content_type: &str,
-    body: &str,
-) -> Result<(u32, String, String), String> {
-    let mut config = format!(
-        "url = \"{url}\"\nrequest = \"POST\"\nsilent\ninclude\nheader = \"Content-Type: {content_type}\"\n"
-    );
-    for (name, value) in headers {
-        config += &format!("header = \"{name}: {value}\"\n");
-    }
-    let dir = home().join(".cache/cellworks");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let tmp = dir.join(format!("req-{}.tmp", random_hex(8)));
-    write_private(&tmp, body)?;
-    config += &format!("data-binary = \"@{}\"\n", tmp.display());
-    let run = || -> Result<String, String> {
-        let mut child = Command::new("curl")
-            .args(["-K", "-"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("curl: {e}"))?;
-        child
-            .stdin
-            .take()
-            .ok_or("curl: no stdin")?
-            .write_all(config.as_bytes())
-            .map_err(|e| e.to_string())?;
-        let mut out = String::new();
-        child
-            .stdout
-            .take()
-            .ok_or("curl: no stdout")?
-            .read_to_string(&mut out)
-            .map_err(|e| e.to_string())?;
-        child.wait().map_err(|e| e.to_string())?;
-        Ok(out)
-    };
-    let out = run();
-    let _ = std::fs::remove_file(&tmp);
-    let out = out?;
-    // Skip "100 Continue": the last header block is the response's.
-    let mut rest = out.as_str();
-    loop {
-        let (head, body) = rest
-            .split_once("\r\n\r\n")
-            .ok_or_else(|| format!("no response from {url}"))?;
-        let status: u32 = head
-            .split_whitespace()
-            .nth(1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-        if status == 100 {
-            rest = body;
-            continue;
-        }
-        return Ok((status, head.to_owned(), body.to_owned()));
-    }
-}
-
-fn write_private(path: &Path, text: &str) -> Result<(), String> {
-    use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .and_then(|mut file| file.write_all(text.as_bytes()))
-        .map_err(|e| e.to_string())
-}
-
-fn random_hex(bytes: usize) -> String {
-    let mut buf = vec![0u8; bytes];
-    if let Ok(mut file) = std::fs::File::open("/dev/urandom") {
-        let _ = file.read_exact(&mut buf);
-    }
-    buf.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Decodes a URL-encoded value exactly once.
@@ -742,27 +417,22 @@ impl Session {
     }
 
     /// The cloud id and the site's address: the first site this sign-in
-    /// reaches, or the one named in `CELLWORKS_JIRA_SITE`.
-    fn site(&mut self) -> Result<(String, String), Failure> {
-        let wanted = std::env::var("CELLWORKS_JIRA_SITE").ok();
+    /// reaches, or the one whose address contains `wanted`.
+    fn site(&mut self, wanted: Option<&str>) -> Result<(String, String), Failure> {
         let resources = self.tool("getAccessibleAtlassianResources", json!({}))?;
         resources
             .as_array()
             .into_iter()
             .flatten()
-            .find(|r| {
-                wanted
-                    .as_deref()
-                    .is_none_or(|w| r["url"].as_str().unwrap_or_default().contains(w))
-            })
+            .find(|r| wanted.is_none_or(|w| r["url"].as_str().unwrap_or_default().contains(w)))
             .and_then(|r| Some((r["id"].as_str()?.to_owned(), r["url"].as_str()?.to_owned())))
             .ok_or_else(|| Failure::Other("no Atlassian site reachable".into()))
     }
 }
 
-fn fetch_issue(key: &str) -> Result<Issue, Failure> {
+fn fetch_issue(key: &str, site: Option<&str>) -> Result<Ticket, Failure> {
     let mut session = Session::open()?;
-    let (cloud, site) = session.site()?;
+    let (cloud, site) = session.site(site)?;
     let raw = session.tool(
         "getJiraIssue",
         json!({"cloudId": cloud, "issueIdOrKey": key, "expand": "names"}),
@@ -770,13 +440,13 @@ fn fetch_issue(key: &str) -> Result<Issue, Failure> {
     Ok(issue(&raw, &site))
 }
 
-fn search(jql: &str) -> Result<Vec<Row>, Failure> {
+fn search(jql: &str, site: Option<&str>) -> Result<Vec<Ticket>, Failure> {
     let mut session = Session::open()?;
-    let (cloud, _) = session.site()?;
+    let (cloud, site) = session.site(site)?;
     let result = session.tool(
         "searchJiraIssuesUsingJql",
         json!({"cloudId": cloud, "jql": jql, "maxResults": 30,
-               "fields": ["summary", "status", "updated"]}),
+               "fields": ["summary", "status", "updated", "priority", "issuetype", "labels"]}),
     )?;
     // Two answer shapes: {issues: [..], isLast, nextPageToken} or
     // {issues: {nodes, pageInfo}}.
@@ -786,15 +456,7 @@ fn search(jql: &str) -> Result<Vec<Row>, Failure> {
     Ok(nodes
         .into_iter()
         .flatten()
-        .map(|n| {
-            let f = &n["fields"];
-            Row {
-                key: text(&n["key"]),
-                summary: text(&f["summary"]).trim().to_owned(),
-                status: text(&f["status"]["name"]),
-                updated: text(&f["updated"]).chars().take(10).collect(),
-            }
-        })
+        .map(|n| issue(n, &site))
         .collect())
 }
 
@@ -802,8 +464,9 @@ fn text(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_owned()
 }
 
-/// The issue as the case shows it, from Jira's answer.
-fn issue(raw: &Value, site: &str) -> Issue {
+/// The ticket as the case shows it, from Jira's answer (a full read or a
+/// search row: what is missing stays empty).
+fn issue(raw: &Value, site: &str) -> Ticket {
     let f = &raw["fields"];
     let key = text(&raw["key"]);
     let description = rich(&f["description"]);
@@ -846,16 +509,26 @@ fn issue(raw: &Value, site: &str) -> Issue {
             )
         })
         .collect();
-    Issue {
-        summary: text(&f["summary"]).trim().to_owned(),
+    let status_key = text(&f["status"]["statusCategory"]["key"]);
+    let status = text(&f["status"]["name"]);
+    Ticket {
+        source: SourceId::Jira,
+        title: text(&f["summary"]).trim().to_owned(),
         kind: text(&f["issuetype"]["name"]),
-        status: text(&f["status"]["name"]),
-        category: text(&f["status"]["statusCategory"]["key"]),
+        category: category(&status_key, &status),
+        status,
         priority: text(&f["priority"]["name"]),
         assignee: f["assignee"]["displayName"].as_str().map(str::to_owned),
         reporter: f["reporter"]["displayName"].as_str().map(str::to_owned),
-        updated: text(&f["updated"]).chars().take(10).collect(),
-        description,
+        labels: f["labels"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|l| l.as_str().map(str::to_owned))
+            .collect(),
+        updated: day(&text(&f["updated"])),
+        project: key.split('-').next().unwrap_or_default().to_owned(),
+        body: description,
         criteria,
         criteria_from,
         links: f["issuelinks"]
@@ -878,7 +551,24 @@ fn issue(raw: &Value, site: &str) -> Issue {
             .collect(),
         comments,
         url: format!("{}/browse/{key}", site.trim_end_matches('/')),
+        repo: None,
         key,
+    }
+}
+
+/// Jira's status category key ("new", "indeterminate", "done"); a status
+/// named "won't do" or "cancel..." in the done category is a cancellation.
+fn category(key: &str, status: &str) -> Category {
+    let lower = status.to_lowercase();
+    match key {
+        "done"
+            if lower.contains("cancel") || lower.contains("won't") || lower.contains("reject") =>
+        {
+            Category::Canceled
+        }
+        "done" => Category::Done,
+        "indeterminate" => Category::InProgress,
+        _ => Category::Todo,
     }
 }
 
@@ -997,32 +687,44 @@ mod tests {
         assert_eq!(items(&part), ["Kein `root`.", "Rollen."]);
     }
 
-    /// PROTOTYPE: fetches one issue for real and prints what came back.
-    /// `JIRA_PROBE=SHOP-42 cargo test -p cellworks-map probe -- --ignored --nocapture`
     #[test]
-    #[ignore = "network"]
-    fn probe() {
-        let Ok(key) = std::env::var("JIRA_PROBE") else {
-            return;
-        };
-        match fetch_issue(&key) {
-            Ok(issue) => {
-                save_cache(&cache_file(&key), &issue);
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&issue).unwrap_or_default()
-                );
-            }
-            Err(Failure::SignIn) => println!("sign-in needed"),
-            Err(Failure::Other(reason)) => println!("failed: {reason}"),
-        }
-        match search(MINE) {
-            Ok(rows) => {
-                println!("mine: {} rows", rows.len());
-                save_cache(&cache_file("mine"), &rows);
-            }
-            Err(Failure::SignIn) => println!("mine: sign-in needed"),
-            Err(Failure::Other(reason)) => println!("mine failed: {reason}"),
-        }
+    fn a_recorded_issue_becomes_a_ticket() {
+        let raw: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/tickets/jira_issue.json"))
+                .unwrap();
+        let ticket = issue(&raw, "https://acme.atlassian.net/");
+        assert_eq!(ticket.source, SourceId::Jira);
+        assert_eq!(ticket.key, "SHOP-42");
+        assert_eq!(ticket.title, "Checkout drops the coupon");
+        assert_eq!(ticket.category, Category::InProgress);
+        assert_eq!(ticket.project, "SHOP");
+        assert_eq!(ticket.url, "https://acme.atlassian.net/browse/SHOP-42");
+        assert_eq!(
+            ticket.criteria,
+            ["Coupon survives the redirect", "Total is recomputed"]
+        );
+        assert_eq!(ticket.criteria_from, "description");
+        assert_eq!(ticket.links[0].1, "SHOP-40");
+        assert_eq!(ticket.comments.len(), 1);
+    }
+
+    #[test]
+    fn a_search_row_has_what_a_search_asks_for() {
+        let raw = json!({"key": "SHOP-7", "fields": {"summary": " Rows ", "updated": "2026-11-02T10:00:00.000+0100",
+            "status": {"name": "To Do", "statusCategory": {"key": "new"}}}});
+        let ticket = issue(&raw, "https://acme.atlassian.net");
+        assert_eq!(
+            (ticket.title.as_str(), ticket.updated.as_str()),
+            ("Rows", "2026-11-02")
+        );
+        assert_eq!(ticket.category, Category::Todo);
+        assert!(ticket.body.is_empty());
+    }
+
+    #[test]
+    fn categories_follow_jiras_status_categories() {
+        assert_eq!(category("done", "Won't Do"), Category::Canceled);
+        assert_eq!(category("done", "Done"), Category::Done);
+        assert_eq!(category("indeterminate", "In Review"), Category::InProgress);
     }
 }

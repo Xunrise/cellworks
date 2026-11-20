@@ -1,0 +1,64 @@
+{
+ "tickets": [
+  {
+   "key": "TIC-1",
+   "repo": "ticket-cockpit",
+   "title": "add ssh support",
+   "body": "",
+   "status": "done",
+   "priority": 3,
+   "project": "ticket-cockpit",
+   "cluster": null,
+   "blocked_by": null,
+   "session": "a2c703b3-9fe5-4a16-911d-83c992e2f5aa",
+   "rank": 1.0,
+   "created": "2026-11-18T14:37:16.282Z",
+   "updated": "2026-11-18T14:48:51.700Z"
+  },
+  {
+   "key": "TIC-2",
+   "repo": "ticket-cockpit",
+   "title": "push to github and make it easily installable/deployable",
+   "body": "",
+   "status": "todo",
+   "priority": 3,
+   "project": "ticket-cockpit",
+   "cluster": null,
+   "blocked_by": null,
+   "session": null,
+   "rank": 2.0,
+   "created": "2026-11-18T14:49:22.185Z",
+   "updated": "2026-11-18T14:49:22.185Z"
+  }
+ ],
+ "repos": [
+  {
+   "name": "Cellworks",
+   "path": "/home/dev/Projects/Cellworks"
+  },
+  {
+   "name": "The-Factory",
+   "path": "/home/dev/Projects/TheFactory/The-Factory"
+  },
+  {
+   "name": "Waypoint",
+   "path": "/home/dev/Projects/Waypoint"
+  },
+  {
+   "name": "Wishlang",
+   "path": "/home/dev/Projects/Wishlang"
+  },
+  {
+   "name": "shopfront-api",
+   "path": "/home/dev/Projects/Accounts/acme/shopfront-api"
+  },
+  {
+   "name": "cellworks",
+   "path": "/home/dev/Projects/Cellworks/cellworks"
+  },
+  {
+   "name": "ticket-cockpit",
+   "path": "/home/dev/Projects/ticket-cockpit"
+  }
+ ]
+}

@@ -1,7 +1,8 @@
 {
+  "source": "jira",
   "kind": "Story",
   "status": "To Do",
-  "category": "new",
+  "category": "todo",
   "priority": "Low",
   "assignee": "Martin Galusinski",
   "reporter": "Dana Weber",
@@ -10,11 +11,13 @@
   "links": [],
   "comments": [],
   "key": "SHOP-40",
-  "summary": "Order confirmation page shows the order number",
-  "description": "Order confirmation page shows the order number.\n\nSee the acceptance criteria.",
+  "title": "Order confirmation page shows the order number",
+  "body": "Order confirmation page shows the order number.\n\nSee the acceptance criteria.",
   "criteria": [
     "The order number is shown after payment.",
     "The number can be copied."
   ],
-  "url": "https://shopfront.atlassian.net/browse/SHOP-40"
+  "url": "https://shopfront.atlassian.net/browse/SHOP-40",
+  "project": "SHOP",
+  "repo": "shopfront"
 }

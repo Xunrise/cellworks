@@ -1,7 +1,8 @@
 {
+  "source": "jira",
   "kind": "Story",
   "status": "To Do",
-  "category": "new",
+  "category": "todo",
   "priority": "Low",
   "assignee": "Martin Galusinski",
   "reporter": "Dana Weber",
@@ -10,10 +11,12 @@
   "links": [],
   "comments": [],
   "key": "SHOP-41",
-  "summary": "Search ignores accents",
-  "description": "Search ignores accents.\n\nSee the acceptance criteria.",
+  "title": "Search ignores accents",
+  "body": "Search ignores accents.\n\nSee the acceptance criteria.",
   "criteria": [
     "Searching 'cafe' finds 'Caf\u00e9 Mug'."
   ],
-  "url": "https://shopfront.atlassian.net/browse/SHOP-41"
+  "url": "https://shopfront.atlassian.net/browse/SHOP-41",
+  "project": "SHOP",
+  "repo": "shopfront"
 }

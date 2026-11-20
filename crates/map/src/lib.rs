@@ -20,6 +20,7 @@ mod layout;
 mod lens;
 mod review;
 mod rules;
+pub mod tickets;
 pub mod ui;
 mod view;
 mod why;

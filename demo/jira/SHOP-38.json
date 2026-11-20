@@ -1,7 +1,8 @@
 {
+  "source": "jira",
   "kind": "Story",
   "status": "To Do",
-  "category": "new",
+  "category": "todo",
   "priority": "Medium",
   "assignee": "Martin Galusinski",
   "reporter": "Dana Weber",
@@ -10,11 +11,13 @@
   "links": [],
   "comments": [],
   "key": "SHOP-38",
-  "summary": "Show stock level on product cards",
-  "description": "Show stock level on product cards.\n\nSee the acceptance criteria.",
+  "title": "Show stock level on product cards",
+  "body": "Show stock level on product cards.\n\nSee the acceptance criteria.",
   "criteria": [
     "The card shows 'Only n left' under 5 in stock.",
     "Out of stock products disable the add button."
   ],
-  "url": "https://shopfront.atlassian.net/browse/SHOP-38"
+  "url": "https://shopfront.atlassian.net/browse/SHOP-38",
+  "project": "SHOP",
+  "repo": "shopfront"
 }
