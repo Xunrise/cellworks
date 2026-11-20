@@ -19,7 +19,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const MANIFEST: &str =
     "https://github.com/Xunrise/cellworks/releases/latest/download/manifest.json";
@@ -31,7 +31,7 @@ const CHECK_EVERY: Duration = Duration::from_secs(60 * 60);
 const STARTED_AFTER: Duration = Duration::from_secs(5);
 
 /// `manifest.json`, as the release workflow writes it.
-#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Manifest {
     pub schema: u32,
     pub version: String,
@@ -40,7 +40,7 @@ pub struct Manifest {
     pub notes: String,
 }
 
-#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Asset {
     pub name: String,
     pub url: String,
@@ -91,7 +91,8 @@ impl Updater {
                     let _ = std::fs::remove_file(dir().join("failed"));
                     State::Failed(reason.trim().to_owned())
                 }
-                Err(_) => State::Idle,
+                // A version downloaded before the last quit is still ready.
+                Err(_) => staged().map_or(State::Idle, State::Ready),
             },
             None => State::Unsupported,
         };
@@ -344,7 +345,27 @@ fn stage(manifest: &Manifest) -> Result<(), String> {
         return Err(format!("the download says it is {}", said.trim()));
     }
     let _ = std::fs::remove_file(&part);
+    let kept = serde_json::to_vec(manifest).map_err(|e| e.to_string())?;
+    std::fs::write(staging.join("manifest.json"), kept).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// The staged version, when one newer than this build waits in `staging`
+/// and its app still says it is that version.
+fn staged() -> Option<Manifest> {
+    let staging = dir().join("staging");
+    let manifest: Manifest =
+        serde_json::from_slice(&std::fs::read(staging.join("manifest.json")).ok()?).ok()?;
+    if !newer(&manifest, env!("CARGO_PKG_VERSION")) {
+        let _ = std::fs::remove_dir_all(&staging);
+        return None;
+    }
+    let out = Command::new(staging.join("app/Cellworks.app/Contents/MacOS/cellworks"))
+        .arg("--version")
+        .output()
+        .ok()?;
+    (String::from_utf8_lossy(&out.stdout).trim() == format!("cellworks {}", manifest.version))
+        .then_some(manifest)
 }
 
 fn sha256(path: &Path) -> Result<String, String> {
