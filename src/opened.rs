@@ -131,6 +131,18 @@ impl OpenedProject {
         }
     }
 
+    /// Starts seen through `lens` with `lanes` shown, as the map settings
+    /// default. A lens the map cannot be seen through once read falls back to
+    /// the folders.
+    pub fn starting_with(mut self, lens: Lens, lanes: Lanes) -> OpenedProject {
+        self.lens = lens;
+        self.lanes = Lanes {
+            imports: lanes.imports || lens.lanes().imports,
+            calls: lanes.calls || lens.lanes().calls,
+        };
+        self
+    }
+
     /// Whether the map is drawn as the city or flat.
     pub fn view_mode(&self) -> ViewMode {
         self.view_mode

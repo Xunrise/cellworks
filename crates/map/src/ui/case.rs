@@ -3798,7 +3798,8 @@ fn session(dir: &Path, prompt: &str) -> String {
 /// A ticket skill's SKILL.md: under `CELLWORKS_SKILLS`, else in this
 /// source tree.
 fn skill(name: &str) -> String {
-    let root = cellworks_workspace::skills_folder().unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.claude/skills"));
+    let root = cellworks_workspace::skills_folder()
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.claude/skills"));
     let path = root.join(name).join("SKILL.md");
     path.canonicalize().unwrap_or(path).display().to_string()
 }

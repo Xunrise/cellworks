@@ -168,6 +168,9 @@ pub struct Launcher {
     /// 6): themed by default, switched to [`PLAIN`] once the settings file's
     /// `ThemeWordsTurnedOff` is applied.
     words: &'static Words,
+    /// The header's settings tab was clicked; read (and cleared) once by the
+    /// app, which owns the settings window.
+    settings_requested: bool,
 }
 
 impl Launcher {
@@ -187,7 +190,23 @@ impl Launcher {
             details: HashMap::new(),
             focus_request: None,
             words: &THEMED,
+            settings_requested: false,
         }
+    }
+
+    /// Switches the theme words on or off, as `[launcher] theme_words` says.
+    pub fn set_theme_words(&mut self, on: bool) {
+        self.words = if on { &THEMED } else { &PLAIN };
+    }
+
+    /// Asks for the settings window (the header's tab).
+    pub(crate) fn request_settings(&mut self) {
+        self.settings_requested = true;
+    }
+
+    /// Whether the settings window was asked for since the last call.
+    pub fn take_settings_request(&mut self) -> bool {
+        std::mem::take(&mut self.settings_requested)
     }
 
     /// The vocabulary currently in effect, for the view to read its words

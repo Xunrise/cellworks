@@ -78,14 +78,14 @@ const EXPLORER_FLIGHT: f64 = 0.6;
 pub struct CellworksApp {
     /// Self-update from GitHub Releases; inert outside a `.app` bundle.
     pub updates: crate::update::Updater,
-    universe: Universe,
-    events: Option<Receiver<WorkspaceEvent>>,
+    pub(crate) universe: Universe,
+    pub(crate) events: Option<Receiver<WorkspaceEvent>>,
     pub(crate) opened: Option<OpenedProject>,
     pub(crate) navigation: Navigation,
     git: Arc<dyn GitListing + Send + Sync>,
     /// Whether git-ignored files and hidden folders are on the map. Off at
     /// every start, kept for every project opened in this session.
-    show_ignored: bool,
+    pub(crate) show_ignored: bool,
     /// The Explorer beside the map: open by default, its folds, its filter
     /// and the camera's flight to what it frames (STORY-089).
     pub(crate) explorer: Explorer,
@@ -140,7 +140,7 @@ pub struct CellworksApp {
     why: Option<(std::path::PathBuf, Option<Why>)>,
     /// The launcher's own view model: search, pick, selection, host states and
     /// project details, read off the frame loop.
-    launcher: Launcher,
+    pub(crate) launcher: Launcher,
     /// How a remote host's reachability is decided (STORY-078).
     probe: Arc<dyn HostProbe + Send + Sync>,
     /// PROTOTYPE (stakeholder demo): the guided tour, in demo mode only.
@@ -191,7 +191,11 @@ pub struct CellworksApp {
     /// PROTOTYPE: the ticket menu (T), from which a case opens.
     pub(crate) tickets_open: bool,
     /// The tickets of every enabled source: Jira, Cockpit, GitHub, Linear.
-    tickets: cellworks_sources::tickets::Tickets,
+    pub(crate) tickets: cellworks_sources::tickets::Tickets,
+    /// The settings window and the settings in force.
+    pub(crate) settings: crate::settings_view::SettingsWindow,
+    /// Where the scan looks, to scan again when the folders change.
+    scan_sources: Option<Sources>,
     /// The Tickets panel's filters and the key typed into it.
     tickets_panel: cellworks_map::ui::tickets_panel::TicketsPanel,
 }
@@ -257,6 +261,25 @@ impl CellworksApp {
     /// With no `$HOME` there is nowhere to scan: no thread starts, and the
     /// universe is reported empty rather than left scanning for ever.
     pub fn start() -> CellworksApp {
+        let mut app = CellworksApp::start_scanning();
+        let file = app
+            .scan_sources
+            .as_ref()
+            .map(|sources| sources.settings_file.clone());
+        if let Some(file) = file {
+            let keychain = Arc::new(cellworks_workspace::SecurityCli);
+            app.settings = crate::settings_view::SettingsWindow::stored(
+                cellworks_workspace::SettingsStore::at(file),
+                keychain,
+                cellworks_workspace::Env::process(),
+            );
+        }
+        app.settings.list_on_change = true;
+        crate::settings_view::apply_all(&mut app);
+        app
+    }
+
+    fn start_scanning() -> CellworksApp {
         match crate::demo::sources().or_else(Sources::for_this_user) {
             Some(sources) => CellworksApp {
                 updates: Default::default(),
@@ -289,6 +312,8 @@ impl CellworksApp {
                 tickets_open: false,
                 tickets: cellworks_sources::tickets::Tickets::default(),
                 tickets_panel: Default::default(),
+                settings: Default::default(),
+                scan_sources: Some(sources.clone()),
                 universe: Universe::scanning(&sources),
                 events: Some(start_scan(sources)),
                 opened: None,
@@ -346,6 +371,8 @@ impl CellworksApp {
                 tickets_open: false,
                 tickets: cellworks_sources::tickets::Tickets::default(),
                 tickets_panel: Default::default(),
+                settings: Default::default(),
+                scan_sources: None,
                 universe: Universe::without_home(),
                 events: None,
                 opened: None,
@@ -405,6 +432,8 @@ impl CellworksApp {
             tickets_open: false,
             tickets: cellworks_sources::tickets::Tickets::default(),
             tickets_panel: Default::default(),
+            settings: Default::default(),
+            scan_sources: None,
             universe,
             events: Some(events),
             opened: None,
@@ -987,11 +1016,26 @@ impl CellworksApp {
                 .collect();
             keeper.keep(ids);
         }
-        let mode = match &self.arrangements {
-            Some((store, _)) if store.is_flat(&project.id) => ViewMode::Flat,
-            _ => ViewMode::City,
+        // The project's own saved choice of view wins; without one, the map
+        // settings say (`[map] default_view`).
+        let defaults = self.settings.committed().map.clone();
+        let flat = match &self.arrangements {
+            Some((store, _)) => store.view_choice(&project.id),
+            None => None,
+        }
+        .unwrap_or(defaults.default_view == cellworks_workspace::DefaultView::Flat);
+        let mode = if flat { ViewMode::Flat } else { ViewMode::City };
+        let lens = Lens::ALL
+            .into_iter()
+            .find(|lens| lens.name() == defaults.default_lens)
+            .unwrap_or_default();
+        let lanes = cellworks_map::Lanes {
+            imports: defaults.import_lanes,
+            calls: defaults.call_lanes,
         };
-        let mut opened = OpenedProject::reading(project, events).in_mode(mode);
+        let mut opened = OpenedProject::reading(project, events)
+            .in_mode(mode)
+            .starting_with(lens, lanes);
         opened.know(knowledge);
         if let Some(arranged) = arranged {
             opened.arrange(arranged);
@@ -1058,6 +1102,15 @@ impl CellworksApp {
             opened.reread(events);
             note_unknown_prefix(opened);
         }
+    }
+
+    /// Walks the projects folders again, after they changed in the settings.
+    pub(crate) fn rescan_projects(&mut self) {
+        let Some(sources) = self.scan_sources.clone() else {
+            return;
+        };
+        self.universe = Universe::scanning(&sources);
+        self.events = Some(start_scan(sources));
     }
 
     /// PROTOTYPE (stakeholder demo): reads the open project again, leaving
@@ -1161,6 +1214,12 @@ impl eframe::App for CellworksApp {
 /// Enter and Esc, the Explorer and the panels carry over, and a double-click
 /// on a machine or hall of the flat view frames it.
 pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
+    crate::settings_view::keys(ui, app);
+    draw_app(ui, app);
+    crate::settings_view::show(ui, app);
+}
+
+fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
     // PROTOTYPE: an open case lies over the app. From stage 2 on it wants the
     // map of the repository it is shown on, and the camera gliding onto the
     // case's buildings.
@@ -1236,7 +1295,8 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     // A focused session terminal owns the keyboard: the map's keys do nothing.
     let terminal = app.sessions.has_keyboard(ui)
         || ui.memory(|m| m.has_focus(egui::Id::new("iterate-note")))
-        || (app.case.is_none() && app.iterate.as_ref().is_some_and(|it| it.draft.is_some()));
+        || (app.case.is_none() && app.iterate.as_ref().is_some_and(|it| it.draft.is_some()))
+        || app.settings.open;
     // So does the launcher, whole: in CMD the search field takes the letters,
     // and in NAV the launcher reads them itself (j, k, g, G, ":", "/"), so
     // none of them may also toggle underground, the cables or the navigation
@@ -1797,6 +1857,10 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                             app.tickets_open = !app.tickets_open;
                         }
                         crate::demo::mark(ui.ctx(), "tickets.toggle", toggle.rect);
+                        theme::rule(ui);
+                        if theme::tab(ui, "Settings", app.settings.open, true).clicked() {
+                            app.settings.open = !app.settings.open;
+                        }
                         let flat = opened.view_mode() == ViewMode::Flat;
                         let mode_tab = theme::tab(ui, "flat view", flat, true);
                         theme::rule(ui);

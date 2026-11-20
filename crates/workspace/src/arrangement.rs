@@ -91,18 +91,34 @@ impl ArrangementStore {
         self.file(project).with_extension("flat").exists()
     }
 
-    /// Keeps whether `project` is seen in the flat view.
-    pub fn keep_flat(&self, project: &ProjectId, flat: bool) -> io::Result<()> {
-        let marker = self.file(project).with_extension("flat");
-        if flat {
-            fs::create_dir_all(&self.folder)?;
-            fs::write(marker, "")
+    /// Whether the engineer chose a view for `project`: `Some(true)` for the
+    /// flat view, `Some(false)` for the city, `None` while they never did, and
+    /// the map's default view applies.
+    pub fn view_choice(&self, project: &ProjectId) -> Option<bool> {
+        if self.is_flat(project) {
+            Some(true)
         } else {
-            match fs::remove_file(marker) {
-                Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-                _ => Ok(()),
-            }
+            self.file(project)
+                .with_extension("city")
+                .exists()
+                .then_some(false)
         }
+    }
+
+    /// Keeps whether `project` is seen in the flat view (or, if not, the
+    /// city, as a choice of its own).
+    pub fn keep_flat(&self, project: &ProjectId, flat: bool) -> io::Result<()> {
+        let (keep, drop) = if flat {
+            ("flat", "city")
+        } else {
+            ("city", "flat")
+        };
+        fs::create_dir_all(&self.folder)?;
+        match fs::remove_file(self.file(project).with_extension(drop)) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
+        fs::write(self.file(project).with_extension(keep), "")
     }
 
     /// The file of `project`: its path with every character that is not a
@@ -208,6 +224,8 @@ mod tests {
         store.keep_flat(&shop, false).expect("kept");
         store.keep_flat(&shop, false).expect("kept twice");
         assert!(!store.is_flat(&shop));
+        assert_eq!(store.view_choice(&shop), Some(false));
+        assert_eq!(store.view_choice(&other), None);
     }
 
     #[test]

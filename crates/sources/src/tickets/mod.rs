@@ -174,6 +174,26 @@ impl TicketsConfig {
     }
 }
 
+/// Reads my tickets from one source of `config`, once, to see whether it
+/// answers: the number it listed, or why it did not. Blocks; read-only.
+pub fn test_connection(config: &TicketsConfig, source: SourceId) -> Result<usize, String> {
+    let source: Arc<dyn TicketSource> = match source {
+        SourceId::Jira => return Err("Jira is checked by signing in".to_owned()),
+        SourceId::Cockpit => Arc::new(cockpit::Cockpit::new(&config.cockpit_url)),
+        SourceId::GitHub => Arc::new(github::GitHub::new(config.github_repos.clone())),
+        SourceId::Linear => match &config.linear_api_key {
+            Some(key) => Arc::new(linear::Linear::new(key)),
+            None => return Err("no API key yet".to_owned()),
+        },
+    };
+    match source.list_mine() {
+        Ok(tickets) => Ok(tickets.len()),
+        Err(SourceError::SignIn) => Err("not signed in".to_owned()),
+        Err(SourceError::Unsupported) => Err("not supported".to_owned()),
+        Err(SourceError::Other(reason)) => Err(reason),
+    }
+}
+
 /// What a background call brought back.
 pub enum TicketEvent {
     Listed {

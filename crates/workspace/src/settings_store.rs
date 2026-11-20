@@ -253,7 +253,7 @@ impl Settings {
             ("skills.folder", &self.skills_folder),
         ] {
             let v = value.trim();
-            if !v.is_empty() && !(v.starts_with('/') || v.starts_with("~/")) {
+            if !(v.is_empty() || v.starts_with('/') || v.starts_with("~/")) {
                 out.insert(key, "needs an absolute path".to_owned());
             }
         }
