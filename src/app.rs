@@ -37,7 +37,7 @@ use cellworks_workspace::{
     start_probes, start_scan,
 };
 
-use crate::opened::{OpenedNotice, OpenedProject, ProjectState};
+use crate::opened::{OpenedNotice, OpenedProject, ProjectState, ViewMode};
 use crate::review::{self, PanelAction, ReviewSession};
 
 /// Shown from the moment a project is opened until its map arrives.
@@ -247,6 +247,8 @@ struct Keys {
     /// `[` / `]`: step to the previous / next session in this city.
     session_prev: bool,
     session_next: bool,
+    /// V: switches the open project between the city and the flat view.
+    view_mode: bool,
 }
 
 impl CellworksApp {
@@ -985,7 +987,11 @@ impl CellworksApp {
                 .collect();
             keeper.keep(ids);
         }
-        let mut opened = OpenedProject::reading(project, events);
+        let mode = match &self.arrangements {
+            Some((store, _)) if store.is_flat(&project.id) => ViewMode::Flat,
+            _ => ViewMode::City,
+        };
+        let mut opened = OpenedProject::reading(project, events).in_mode(mode);
         opened.know(knowledge);
         if let Some(arranged) = arranged {
             opened.arrange(arranged);
@@ -1003,6 +1009,26 @@ impl CellworksApp {
         self.changes = None;
         self.changes_read_at = None;
         self.changes_for = Some(path);
+    }
+
+    /// Switches the open project between the city and the flat view, each
+    /// keeping its own camera, and keeps the choice for the project where
+    /// custom arrangements are kept. Nothing while no project is open.
+    pub fn toggle_view_mode(&mut self) {
+        let Some(opened) = &mut self.opened else {
+            return;
+        };
+        let leaving = self.navigation.swap_camera(None);
+        let restored = opened.toggle_view_mode(leaving);
+        self.navigation.swap_camera(restored);
+        if let Some((store, _)) = &self.arrangements {
+            let (store, id) = (store.clone(), opened.project().id.clone());
+            let flat = opened.view_mode() == ViewMode::Flat;
+            // Kept off the frame loop; a failed write only loses the choice.
+            std::thread::spawn(move || {
+                let _ = store.keep_flat(&id, flat);
+            });
+        }
     }
 
     /// Ends the open review, if any (STORY-022): `self.review` is dropped,
@@ -1129,7 +1155,11 @@ impl eframe::App for CellworksApp {
 /// hidden, Q turns it a quarter (Shift+Q back), F fits it into view, the
 /// arrows or a drag pan, Tab moves to the next tower on the block, L cycles
 /// the lens, and Enter or a double-click on a tower steps inside it, where j
-/// and k or the arrows move between floors.
+/// and k or the arrows move between floors. V, or the breadcrumb's "flat
+/// view" tab, switches the open project between the city and the flat view
+/// seen from straight above, each with a camera of its own; the selection,
+/// Enter and Esc, the Explorer and the panels carry over, and a double-click
+/// on a machine or hall of the flat view frames it.
 pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     // PROTOTYPE: an open case lies over the app. From stage 2 on it wants the
     // map of the repository it is shown on, and the camera gliding onto the
@@ -1249,6 +1279,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
         pointer,
         session_prev,
         session_next,
+        view_mode,
     } = {
         // A wheel notches in lines or pages and zooms; a trackpad sends points
         // and pans. Each scroll goes to one of them, never both.
@@ -1341,6 +1372,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 pointer: input.pointer.hover_pos(),
                 session_prev: !typing && plain && pressed(egui::Key::OpenBracket),
                 session_next: !typing && plain && pressed(egui::Key::CloseBracket),
+                view_mode: !typing && plain && pressed(egui::Key::V),
             }
         })
     };
@@ -1488,6 +1520,9 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             ui.ctx().request_repaint();
         }
         opened.prepare_network();
+    }
+    if view_mode && !casing {
+        app.toggle_view_mode();
     }
     if fit && app.opened.is_some() {
         app.navigation.fit();
@@ -1682,6 +1717,9 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     // below, so it waits until the match is over.
     let mut leaving: Option<ReviewSession> = None;
     let mut info_jump: Option<std::path::PathBuf> = None;
+    // The breadcrumb's "flat view" tab was clicked: applied once the match
+    // no longer borrows the opened project.
+    let mut flip_mode = false;
     match &app.opened {
         None if app.tickets_open => {
             // PROTOTYPE: the Tickets panel stands in for the launcher.
@@ -1759,17 +1797,21 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                             app.tickets_open = !app.tickets_open;
                         }
                         crate::demo::mark(ui.ctx(), "tickets.toggle", toggle.rect);
+                        let flat = opened.view_mode() == ViewMode::Flat;
+                        let mode_tab = theme::tab(ui, "flat view", flat, true);
                         theme::rule(ui);
                         let mode = theme::tab(ui, mode, false, false);
-                        (mode.clicked(), toggled)
+                        (mode.clicked(), (toggled, mode_tab.clicked()))
                     })
                     .inner
                 })
                 .inner;
+            let (toggled, mode_clicked) = toggled;
             if switched {
                 app.navigation.toggle_lock();
             }
             bar = (None, toggled);
+            flip_mode = mode_clicked;
             // The why panel, in its own right column beside the city; nothing
             // or a district selected shows no panel. The Explorer is drawn
             // separately, over the map, once the city's own space is known
@@ -1895,6 +1937,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                             tint,
                             review_overlay,
                             &mut app.explorer,
+                            &app.changed,
                             now,
                         );
                         let (Some(shown), ProjectState::Mapped(map)) = (&drawn, opened.state())
@@ -2040,7 +2083,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             }
             // Close enough, the camera turns to face a facade; the pivot
             // glides to it over the next frames.
-            if let Some(map) = mapped(&app.opened) {
+            if let Some(map) = mapped(&app.opened).filter(|_| !drawn.view.is_flat()) {
                 let turn = cellworks_map::turn_at(drawn.view.scale());
                 let middle = drawn
                     .view
@@ -2114,17 +2157,27 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 app.navigation.drop_lane();
             }
             if !pane_opened
-                && let Some(tower) = drawn.entered
+                && let Some(entered) = drawn.entered
                 && let Some(map) = mapped(&app.opened)
             {
-                app.navigation.step_inside(map, tower);
+                // A tower is stepped inside; a machine or a hall of the flat
+                // view is framed, as Enter would.
+                if map.item(&entered).is_some() {
+                    app.navigation.step_inside(map, entered);
+                } else {
+                    app.navigation.frame(map, entered);
+                }
             }
             if zoom != 1.0
                 && !over_case
                 && let Some(map) = mapped(&app.opened)
             {
                 // Turned towards a facade, zooming anchors on it.
-                let pivot = app.navigation.pivot(map).map(|pivot| pivot.ground);
+                let pivot = app
+                    .navigation
+                    .pivot(map)
+                    .filter(|_| !drawn.view.is_flat())
+                    .map(|pivot| pivot.ground);
                 let around = match (pivot, pointer) {
                     (Some(pivot), _) => pivot,
                     (None, Some(pointer)) => drawn.view.to_ground(pointer),
@@ -2152,6 +2205,9 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     }
     iterate_overlay(ui, app);
     crate::demo::overlay(ui, app);
+    if flip_mode {
+        app.toggle_view_mode();
+    }
     let (picked, (import_lanes, call_lanes)) = bar;
     if let Some(opened) = &mut app.opened {
         if let Some(lens) = picked {
@@ -2977,6 +3033,7 @@ fn project(
     tint: Option<&[usize]>,
     review: Option<&ReviewOverlay>,
     explorer: &mut Explorer,
+    changed: &HashSet<std::path::PathBuf>,
     now: f64,
 ) -> Option<Drawn> {
     for notice in opened.notices() {
@@ -3014,26 +3071,29 @@ fn project(
                 _ => framing,
             };
             let panel = ui.available_rect_before_wrap();
-            Some(cellworks_map::ui::project(
-                ui,
-                &opened
-                    .shown(ui.input(|input| input.time))
-                    .unwrap_or(std::borrow::Cow::Borrowed(map)),
-                cellworks_map::ui::ViewOptions {
-                    framing,
-                    selected: navigation.selection(),
-                    folder_view: navigation.folder_view(map),
-                    pivot: navigation.pivot(map),
-                    underground,
-                    lanes: opened.lanes(),
-                    picked: navigation.picked_lane(),
-                    network: opened.network(),
-                    cables: navigation.shows_cables(),
-                    tint,
-                    review,
-                    within: Some(seen_in(explorer.is_open(), panel)),
-                },
-            ))
+            let flat = opened.view_mode() == ViewMode::Flat;
+            let shown = opened
+                .shown(ui.input(|input| input.time))
+                .unwrap_or(std::borrow::Cow::Borrowed(map));
+            let options = cellworks_map::ui::ViewOptions {
+                framing,
+                selected: navigation.selection(),
+                folder_view: navigation.folder_view(map),
+                pivot: navigation.pivot(map).filter(|_| !flat),
+                underground,
+                lanes: opened.lanes(),
+                picked: navigation.picked_lane(),
+                network: opened.network(),
+                cables: navigation.shows_cables(),
+                tint,
+                review,
+                within: Some(seen_in(explorer.is_open(), panel)),
+            };
+            Some(if flat {
+                cellworks_map::ui::flat(ui, &shown, options, changed)
+            } else {
+                cellworks_map::ui::project(ui, &shown, options)
+            })
         }
     }
 }
@@ -3068,7 +3128,13 @@ fn fly_explorer(
     let (Some(panel), Some(view)) = (panel, view) else {
         return;
     };
-    let target = cellworks_map::fit_visible(navigation.framing(map), seen_in(true, panel));
+    let framing = navigation.framing(map);
+    let seen = seen_in(true, panel);
+    let target = if view.is_flat() {
+        cellworks_map::fit_flat(framing, seen).visible
+    } else {
+        cellworks_map::fit_visible(framing, seen)
+    };
     explorer.fly(view.visible, target, now);
 }
 

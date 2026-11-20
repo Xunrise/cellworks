@@ -26,6 +26,9 @@ pub struct View {
     /// screen, before scaling; height always goes straight up.
     across: Vec2,
     down: Vec2,
+    /// How far up one unit of height goes on screen, before scaling: 1 for
+    /// the city, 0 for the flat view seen from straight above.
+    rise: f32,
 }
 
 /// The ground axes seen from the corner.
@@ -59,7 +62,7 @@ pub struct Pivot {
 
 impl View {
     fn project(&self, ground: Pos2, z: f32) -> Vec2 {
-        self.across * ground.x + self.down * ground.y - vec2(0.0, z)
+        self.across * ground.x + self.down * ground.y - vec2(0.0, z * self.rise)
     }
 
     fn unproject(&self, seen: Vec2) -> Pos2 {
@@ -78,7 +81,7 @@ impl View {
 
     /// The point at height `z` seen at the screen point `screen`.
     pub fn to_ground_at(&self, screen: Pos2, z: f32) -> Pos2 {
-        self.unproject((screen.to_vec2() - self.offset) / self.scale + vec2(0.0, z))
+        self.unproject((screen.to_vec2() - self.offset) / self.scale + vec2(0.0, z * self.rise))
     }
 
     /// The ground point under the screen point `screen`.
@@ -170,9 +173,39 @@ pub(crate) fn fit(framing: Framing, panel: Rect) -> View {
         offset,
         across: ISO_ACROSS,
         down: ISO_DOWN,
+        rise: 1.0,
     };
     view.visible = Rect::from_center_size(view.to_ground(panel.center()), vec2(side, side));
     view
+}
+
+/// The view from straight above that scales `framing.area` to fill
+/// `framing.fill` of `panel`, centred, and never closer than
+/// `framing.closest`: the flat view's. Heights are not seen.
+pub fn fit_flat(framing: Framing, panel: Rect) -> View {
+    let seen = framing.area;
+    let scale = (panel.width() * framing.fill / seen.width().max(f32::EPSILON))
+        .min(panel.height() * framing.fill / seen.height().max(f32::EPSILON))
+        .min(framing.closest);
+    let offset = panel.center().to_vec2() - seen.center().to_vec2() * scale;
+    let side = panel.width().min(panel.height()) / scale;
+    let mut view = View {
+        visible: Rect::NOTHING,
+        scale,
+        offset,
+        across: vec2(1.0, 0.0),
+        down: vec2(0.0, 1.0),
+        rise: 0.0,
+    };
+    view.visible = Rect::from_center_size(view.to_ground(panel.center()), vec2(side, side));
+    view
+}
+
+impl View {
+    /// Whether the view looks from straight above: the flat view's.
+    pub fn is_flat(&self) -> bool {
+        self.rise == 0.0
+    }
 }
 
 /// The part of the ground in view when `framing` is drawn in `panel`: the

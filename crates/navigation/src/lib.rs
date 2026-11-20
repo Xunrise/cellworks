@@ -782,6 +782,15 @@ impl Navigation {
         self.facing = None;
     }
 
+    /// Swaps the camera for `camera`, returning the one it had: the city and
+    /// the flat view each keep a camera of their own, and the one not shown
+    /// is parked while the other is (`None` frames what is framed). The layer
+    /// and the selection stay as they are.
+    pub fn swap_camera(&mut self, camera: Option<Rect>) -> Option<Rect> {
+        self.facing = None;
+        std::mem::replace(&mut self.camera, camera)
+    }
+
     /// Brings the whole project into view, on the Project layer, keeping the
     /// selection.
     pub fn fit(&mut self) {

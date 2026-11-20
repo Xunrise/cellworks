@@ -85,6 +85,26 @@ impl ArrangementStore {
         fs::rename(written, file)
     }
 
+    /// Whether `project` was last seen in the flat view rather than as the
+    /// city: kept as an empty marker file beside its arrangement.
+    pub fn is_flat(&self, project: &ProjectId) -> bool {
+        self.file(project).with_extension("flat").exists()
+    }
+
+    /// Keeps whether `project` is seen in the flat view.
+    pub fn keep_flat(&self, project: &ProjectId, flat: bool) -> io::Result<()> {
+        let marker = self.file(project).with_extension("flat");
+        if flat {
+            fs::create_dir_all(&self.folder)?;
+            fs::write(marker, "")
+        } else {
+            match fs::remove_file(marker) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+                _ => Ok(()),
+            }
+        }
+    }
+
     /// The file of `project`: its path with every character that is not a
     /// letter or a digit written as `_`, and a hash of the path, so
     /// `my-shop` and `my_shop` keep arrangements of their own.
@@ -170,6 +190,24 @@ mod tests {
             store.load(&Project::at(PathBuf::from("/p/other")).id),
             Arrangement::default()
         );
+    }
+
+    #[test]
+    fn the_flat_view_is_kept_per_project() {
+        let folder = tempfile::tempdir().expect("a temporary directory");
+        let store = ArrangementStore::at(folder.path().join("arrangements"));
+        let (shop, other) = (
+            Project::at(PathBuf::from("/p/shop")).id,
+            Project::at(PathBuf::from("/p/other")).id,
+        );
+        assert!(!store.is_flat(&shop));
+
+        store.keep_flat(&shop, true).expect("kept");
+        assert!(store.is_flat(&shop) && !store.is_flat(&other));
+
+        store.keep_flat(&shop, false).expect("kept");
+        store.keep_flat(&shop, false).expect("kept twice");
+        assert!(!store.is_flat(&shop));
     }
 
     #[test]
