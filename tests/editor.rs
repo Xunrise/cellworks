@@ -12,6 +12,7 @@ use cellworks::app::CellworksApp;
 use cellworks_navigation::Layer;
 use egui::Key;
 use egui_kittest::Harness;
+use egui_kittest::kittest::{NodeT, Queryable};
 
 use common::{map, shop_city};
 
@@ -216,4 +217,61 @@ fn editor_shots() {
     harness.state_mut().editors.blur();
     settle(&mut harness);
     snap(&mut harness, "3-flat-popped");
+}
+
+/// In the flat view a double-click on a folder focuses it, its files in the
+/// middle; a double-click on one of them opens it in the editor, and Esc
+/// steps back out to the floor.
+#[test]
+fn a_folder_double_clicked_in_the_flat_view_is_focused_until_esc() {
+    let (tree, mut harness) = shop_city();
+    // The Explorer stands over the left of the floor: out of the way.
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, Key::B);
+    harness.key_press(Key::V);
+    harness.run();
+    let catalog = tree.root.join("catalog");
+    let area = map(&harness).find(&catalog).expect("catalog").area;
+    let view = harness.state().view().expect("drawn");
+    // Just inside the hall's corner, clear of its machines.
+    let corner = view.to_screen(area.min, 0.0) + egui::vec2(3.0, 3.0);
+    click_at(&mut harness, corner, 1);
+    let view = harness.state().view().expect("drawn");
+    let corner = view.to_screen(area.min, 0.0) + egui::vec2(3.0, 3.0);
+    click_at(&mut harness, corner, 2);
+    assert_eq!(harness.state().focus.path(), Some(catalog.as_path()));
+
+    // Its files stand in the middle, by name.
+    let card = |harness: &Harness<'_, CellworksApp>| {
+        let card = harness
+            .get_all_by_label("pricing.rs")
+            .last()
+            .expect("pricing.rs in the middle");
+        let at = card.accesskit_node().bounding_box().expect("laid out");
+        egui::pos2(
+            ((at.x0 + at.x1) / 2.0) as f32,
+            ((at.y0 + at.y1) / 2.0) as f32,
+        )
+    };
+    // Selected first: the why panel it opens moves the map.
+    let at = card(&harness);
+    click_at(&mut harness, at, 1);
+    let at = card(&harness);
+    click_at(&mut harness, at, 2);
+    let open = harness.state().editors.shown();
+    assert!(
+        open.iter().any(|e| e.path.ends_with("catalog/pricing.rs")),
+        "{open:?}"
+    );
+
+    harness.key_press(Key::Escape);
+    harness.run();
+    assert!(!harness.state().editors.has_keyboard());
+    harness.key_press(Key::Escape);
+    harness.run();
+    assert_eq!(
+        harness.state().focus.path(),
+        None,
+        "Esc steps back to the floor"
+    );
+    assert!(harness.state().opened().is_some());
 }

@@ -825,7 +825,15 @@ pub fn flat(
             .map(|(_, path)| path.to_path_buf());
         let hit = crate_hit.or(machine_hit).or(folder_hit);
         if ground.double_clicked() {
-            entered = hit.clone();
+            // A district is entered too, though a click on its ground selects
+            // nothing.
+            let district_hit = || {
+                map.districts
+                    .iter()
+                    .find(|district| floor.screen(district.area).contains(at))
+                    .map(|district| district.path.clone())
+            };
+            entered = hit.clone().or_else(district_hit);
         }
         match hit {
             Some(path) => floor.clicked = Some(path),

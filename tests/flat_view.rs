@@ -292,3 +292,73 @@ fn flat_shots() {
     settle(&mut harness);
     snap(&mut harness, "6-flat-call-belts");
 }
+
+/// PNGs of the flat view's focus over this repository at 1600x1000: a folder,
+/// a file and a crate focused, then with only the context lanes, written to
+/// target/focus-shots.
+#[test]
+#[ignore = "renders PNGs through wgpu; run on demand"]
+fn focus_shots() {
+    let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/focus-shots");
+    std::fs::create_dir_all(&out).expect("create target/focus-shots");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .canonicalize()
+        .expect("the repository");
+    let project = Project::at(root.clone());
+    let git = std::sync::Arc::new(cellworks_code_analysis::GitCli);
+    let app = common::app(vec![project.clone()], git);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1600.0, 1000.0))
+        .with_step_dt(1.0 / 20.0)
+        .with_max_steps(1)
+        .build_ui_state(|ui, app: &mut CellworksApp| cellworks::draw(ui, app), app);
+    harness.ctx.set_theme(egui::Theme::Dark);
+    cellworks_workspace::theme::apply(&harness.ctx);
+    harness.state_mut().open(project);
+    let settle = |harness: &mut Harness<'_, CellworksApp>| {
+        for _ in 0..40 {
+            harness.state_mut().apply_pending();
+            harness.step();
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let started = std::time::Instant::now();
+        while harness
+            .state()
+            .opened()
+            .is_some_and(|o| o.is_reading() || o.is_preparing())
+            && started.elapsed() < Duration::from_secs(120)
+        {
+            harness.state_mut().apply_pending();
+            harness.step();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        for _ in 0..10 {
+            harness.state_mut().apply_pending();
+            harness.step();
+        }
+    };
+    settle(&mut harness);
+    let snap = |harness: &mut Harness<'_, CellworksApp>, name: &str| {
+        let path = out.join(format!("{name}.png"));
+        harness.render().expect("render").save(&path).expect("save");
+        println!("{}", path.display());
+    };
+    snap(&mut harness, "0-city");
+    harness.key_press(Key::V);
+    settle(&mut harness);
+    snap(&mut harness, "0-flat-fit");
+    for (name, rel) in [
+        ("1-focus-folder", "crates/map/src/ui"),
+        ("2-focus-file", "crates/map/src/ui/flat.rs"),
+        ("3-focus-crate", "crates/editing"),
+    ] {
+        harness.state_mut().focus.leave();
+        harness.state_mut().focus.enter(root.join(rel));
+        settle(&mut harness);
+        snap(&mut harness, name);
+    }
+    harness.state_mut().focus.links.imports = false;
+    harness.state_mut().focus.links.calls = false;
+    settle(&mut harness);
+    snap(&mut harness, "4-focus-context-only");
+}

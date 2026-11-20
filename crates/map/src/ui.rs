@@ -17,6 +17,7 @@ pub mod case;
 pub mod casefile;
 mod explain;
 mod flat;
+mod focus;
 mod lanes;
 pub mod tickets_panel;
 mod why;
@@ -28,6 +29,7 @@ pub use explain::{
     banner, caption, caption_text, lane_toggles, legend, legend_text, lens_bar, lens_help,
 };
 pub use flat::{Detail, FileShape, complexity, complexity_colour, detail, flat, shape_of};
+pub use focus::{Focus, FocusDrawn, Links, focus};
 pub use lanes::{DrawnLane, colour_of};
 pub use why::{NO_CONTEXT, NO_STORY, why_panel};
 

@@ -83,6 +83,8 @@ pub struct CellworksApp {
     /// The files open for editing: one docked beside the map, the rest popped
     /// out; the same in the city and the flat view.
     pub editors: cellworks_editing::Editors,
+    /// What the flat view focuses on, if anything, and the lanes it shows.
+    pub focus: cellworks_map::ui::Focus,
     pub(crate) universe: Universe,
     pub(crate) events: Option<Receiver<WorkspaceEvent>>,
     pub(crate) opened: Option<OpenedProject>,
@@ -289,6 +291,7 @@ impl CellworksApp {
             Some(sources) => CellworksApp {
                 updates: Default::default(),
                 editors: Default::default(),
+                focus: Default::default(),
                 arrangements: Some(kept(ArrangementStore::beside(&sources.settings_file))),
                 launcher: Launcher::new(
                     sources
@@ -355,6 +358,7 @@ impl CellworksApp {
             None => CellworksApp {
                 updates: Default::default(),
                 editors: Default::default(),
+                focus: Default::default(),
                 arrangements: None,
                 launcher: Launcher::new(None),
                 probe: Arc::new(SshProbe),
@@ -421,6 +425,7 @@ impl CellworksApp {
         CellworksApp {
             updates: Default::default(),
             editors: Default::default(),
+            focus: Default::default(),
             lens_panel: Default::default(),
             arrangements: None,
             launcher: Launcher::new(None),
@@ -994,6 +999,7 @@ impl CellworksApp {
     /// the very review it is completing.
     pub fn open(&mut self, project: Project) {
         self.review = None;
+        self.focus.leave();
         self.open_reading(project);
     }
 
@@ -1725,6 +1731,14 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
         }
     } else if esc && app.sessions.deselect() {
         // handled: a session selection is cleared before anything else.
+    } else if esc
+        && app
+            .opened
+            .as_ref()
+            .is_some_and(|o| o.view_mode() == ViewMode::Flat)
+        && app.focus.back()
+    {
+        // handled: the flat view's focus steps back out first.
     } else if esc {
         match app.navigation.esc(mapped(&app.opened)) {
             Some(Moved::Closed) => {
@@ -2009,6 +2023,7 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 crate::demo::mark(ui.ctx(), "map.free", free);
             }
             let sessions_view = &mut app.sessions;
+            let mut focused: Option<cellworks_map::ui::FocusDrawn> = None;
             let (drawn, minimap, floor, (sessions_drawn, session_clicked, pane_opened)) =
                 egui::CentralPanel::default()
                     .frame(egui::Frame::central_panel(ui.style()).inner_margin(0.0))
@@ -2038,7 +2053,11 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
                                 cellworks_navigation::ui::hints(ui, shown.panel, &hints);
                             }
                             let beside = seen_in(explorer, shown.panel);
-                            cellworks_map::ui::caption(ui, beside, opened.lens());
+                            // The focus names itself where the lens caption stands.
+                            let focusing = shown.view.is_flat() && app.focus.path().is_some();
+                            if !focusing {
+                                cellworks_map::ui::caption(ui, beside, opened.lens());
+                            }
                             if let Some(age) =
                                 opened.switched_at().map(|at| ui.input(|i| i.time) - at)
                             {
@@ -2057,6 +2076,17 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
                         let floor = app.navigation.inside().and_then(|(item, floor)| {
                             cellworks_map::ui::inside(ui, map, item, floor, room)
                         });
+                        // The flat view's focus stands over the floor.
+                        if shown.view.is_flat() && app.focus.path().is_some() {
+                            focused = Some(cellworks_map::ui::focus(
+                                ui,
+                                map,
+                                opened.network(),
+                                &mut app.focus,
+                                app.navigation.selection(),
+                                room,
+                            ));
+                        }
                         (drawn, minimap, floor, sessions_result)
                     })
                     .inner;
@@ -2232,8 +2262,37 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 app.navigation.deselect();
                 app.navigation.drop_lane();
             }
+            if let Some(focused) = focused
+                && let Some(map) = mapped(&app.opened)
+            {
+                if let Some(path) = focused.clicked {
+                    app.explorer.follow(map, &path);
+                    app.navigation.select(path);
+                }
+                if let Some(path) = focused.refocus {
+                    app.focus.enter(path);
+                }
+                if let Some(path) = focused.entered {
+                    app.navigation.select(path.clone());
+                    edit(&mut app.editors, map, &path);
+                }
+            }
+            // In the flat view a folder or a file double-clicked is focused.
+            let entered = match drawn.entered {
+                Some(path)
+                    if drawn.view.is_flat()
+                        && mapped(&app.opened)
+                            .and_then(|map| map.find(&path))
+                            .is_some_and(|found| found.kind != cellworks_map::Element::Item) =>
+                {
+                    app.navigation.select(path.clone());
+                    app.focus.enter(path);
+                    None
+                }
+                other => other,
+            };
             if !pane_opened
-                && let Some(entered) = drawn.entered
+                && let Some(entered) = entered
                 && let Some(map) = mapped(&app.opened)
             {
                 // A file opens in the editor, framed; a tower opens its file at
