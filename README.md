@@ -2,7 +2,7 @@
 
 **Your projects, code, agent sessions and tickets on one map.**
 
-![The src district of the demo shop as a city in Cellworks: import lanes with traffic running between file towers, agent sessions writing](docs/assets/city-lanes.jpg)
+![The whole demo shop as a city in Cellworks: import lanes run as highways between the districts with traffic moving along them, agent sessions writing](docs/assets/city-lanes.jpg)
 
 Cellworks is a native macOS app that draws the projects on your machine as a zoomable city. Every folder is a
 district, every file a tower whose floors are its functions, and lanes show what imports or calls what. Your Claude
