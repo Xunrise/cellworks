@@ -2,7 +2,7 @@
 
 **Your projects, code, agent sessions and tickets on one map.**
 
-![A TypeScript shop open as a city in Cellworks: districts per folder, towers per file, a Claude Code session at work in the catalog](docs/assets/city.png)
+![The src district of the demo shop as a city in Cellworks: import lanes with traffic running between file towers, agent sessions writing](docs/assets/city-lanes.jpg)
 
 Cellworks is a native macOS app that draws the projects on your machine as a zoomable city. Every folder is a
 district, every file a tower whose floors are its functions, and lanes show what imports or calls what. Your Claude
@@ -12,6 +12,21 @@ account: it reads your disk and the tools you already use (git, `claude`, `gh`, 
 
 [Website](https://xunrise.github.io/cellworks/) · [Install](#install) · [First steps](#first-steps) ·
 [Releases](https://github.com/Xunrise/cellworks/releases)
+
+## From ticket to done
+
+One ticket, SHOP-42 "Apply a promo code at checkout", from the demo shop. The
+[website](https://xunrise.github.io/cellworks/#loop) walks through every step.
+
+| 1 · Ingest | 2 · Prototype and iterate | 3 · Plan and approve |
+|---|---|---|
+| ![The SHOP-42 case: the problem in plain words, tied to files and functions](docs/assets/loop-2-case.jpg) | ![Round 2 of SHOP-42: note, screenshot and pinned line sent to the agent while it writes](docs/assets/loop-4-round.jpg) | ![The SHOP-42 plan: ordered steps with evidence and risks](docs/assets/loop-6-plan.jpg) |
+| The case is written from the ticket and the code. | A worktree, a Claude session and the app running; you steer in rounds. | Freeze distils the session; the pipeline plans, you approve. |
+
+| 4 · The Factory builds | 5 · Review | 6 · Deploy and trace |
+|---|---|---|
+| ![The Factory building SHOP-42: the pipeline strip at CHECKS while an agent writes in the city](docs/assets/loop-7-factory.jpg) | ![The diff of src/cart/promo.ts against main](docs/assets/loop-8-review.jpg) | ![Inside the promo tower: the why panel tracing a line back to SHOP-42](docs/assets/loop-11-why.jpg) |
+| Agents commit in turn; every commit shows on the map. | Each changed file, against main. | Merged, on staging, and every line traces back to the ticket. |
 
 ## What you get
 
@@ -38,13 +53,9 @@ account: it reads your disk and the tools you already use (git, `claude`, `gh`, 
 - **Updates itself.** The app checks GitHub Releases and swaps itself in place, with a rollback if the new version does
   not start.
 
-| The 2D flat view (V) | A ticket as a case |
+| The 2D flat view (V) with belts | The launcher |
 |---|---|
-| ![The same project as a flat factory floor seen from above](docs/assets/flat.png) | ![Ticket SHOP-42 as a case: the problem in plain words, tied to the files and functions it touches](docs/assets/case.png) |
-
-| The launcher | The ticket panel (T) |
-|---|---|
-| ![The launcher listing local and remote projects with git branch and file counts](docs/assets/launcher.png) | ![Jira tickets listed over the city](docs/assets/tickets.png) |
+| ![The same project as a flat factory floor seen from above, belts between the machines](docs/assets/flat-belts.jpg) | ![The launcher listing local and remote projects with git branch and file counts](docs/assets/launcher.jpg) |
 
 ## Supported languages
 

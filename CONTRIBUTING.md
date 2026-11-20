@@ -46,13 +46,15 @@ Tests never open a window: the UI is driven headlessly through `egui_kittest`. M
 
 ## Screenshots
 
-The images in `docs/assets/` are rendered headlessly from the demo world:
+The pictures in `docs/assets/` are rendered headlessly from the demo world: the stills, and under `anim/` the
+frame films the website plays when a key is pressed (one frame per 1/20 s harness step, or every other one). The test
+crops, scales and writes JPEGs itself; keep the TMPDIR short and neutral, since case screens show the demo path.
 
 ```sh
 TMPDIR=$(mktemp -d /tmp/cw.XXXX)/ cargo test --release --test demo_tour readme_shots -- --ignored --nocapture
-for f in docs/assets/{launcher,city,flat,tickets,case}.png; do sips -c 984 1584 "$f"; done   # trim the harness's edge
-sips -c 440 760 --cropOffset 250 480 docs/assets/city.png --out docs/assets/city-detail.png   # the site's close-up
 ```
+
+The site's `data-n` counts in `site/index.html` must match the number of frames each film has.
 
 `demo/setup.sh` runs `npm install` once for the sample shop; point `CELLWORKS_NPM_CACHE` at a warm npm cache to stay
 offline.
