@@ -6,32 +6,7 @@
       "Edit",
       "Write",
       "Bash"
-    ],
-    "ask": [
-      "Bash(gh pr merge:*)"
     ]
-  },
-  "extraKnownMarketplaces": {
-    "the-factory": {
-      "source": {
-        "source": "settings",
-        "name": "the-factory",
-        "plugins": [
-          {
-            "name": "factory",
-            "source": {
-              "source": "git-subdir",
-              "url": "squer-solutions/The-Factory",
-              "path": "plugins/factory",
-              "ref": "v3.0.0"
-            }
-          }
-        ]
-      }
-    }
-  },
-  "enabledPlugins": {
-    "factory@the-factory": true
   },
   "env": {
     "CLAUDE_CODE_SUBAGENT_MODEL": "sonnet"

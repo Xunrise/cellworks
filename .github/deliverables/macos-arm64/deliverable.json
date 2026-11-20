@@ -1,5 +1,0 @@
-{
-  "runs-on": "macos-14",
-  "kind": "files",
-  "channels": ["pr", "test", "main"]
-}
