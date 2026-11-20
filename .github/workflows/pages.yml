@@ -27,8 +27,8 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v6
-      - name: Copy the screenshots into the site
-        run: mkdir -p site/assets && cp docs/assets/*.png site/assets/
+      - name: Copy the screenshots and films into the site
+        run: mkdir -p site/assets && cp -R docs/assets/. site/assets/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Cellworks: your projects as a city</title>
-<meta name="description" content="A native macOS map of your projects: code as a zoomable 3D city, live Claude Code sessions walking it, and tickets from Jira, Cockpit, GitHub and Linear opened as cases.">
+<meta name="description" content="A native macOS map of your projects: code as a zoomable 3D city, live Claude Code sessions walking it, and tickets taken from problem to prototype, plan, review and deploy on the map.">
 <meta property="og:title" content="Cellworks: your projects as a city">
-<meta property="og:description" content="Code as a zoomable city, agent sessions on the map, tickets as cases. Native, macOS, MIT.">
-<meta property="og:image" content="https://xunrise.github.io/cellworks/assets/city.png">
+<meta property="og:description" content="Code as a zoomable city, agent sessions on the map, tickets taken from problem to deploy. Native, macOS, MIT.">
+<meta property="og:image" content="https://xunrise.github.io/cellworks/assets/city-lanes.jpg">
 <meta name="theme-color" content="#07090c">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="preload" href="fonts/ChakraPetch-SemiBold.ttf" as="font" type="font/ttf" crossorigin>
@@ -19,6 +19,7 @@
 <header>
   <nav aria-label="Main">
     <a class="brand" href="#" aria-label="Cellworks home"><img src="favicon.svg" width="22" height="22" alt="">CELL<span>WORKS</span></a>
+    <a href="#loop">The loop</a>
     <a href="#features">Features</a>
     <a href="#install">Install</a>
     <a href="https://github.com/Xunrise/cellworks#readme">Docs</a>
@@ -32,60 +33,218 @@
     <div class="pitch">
       <p class="eyebrow">// native map for engineers · macOS</p>
       <h1>Your projects, code, agents and tickets. <em>One map.</em></h1>
-      <p class="lead">Cellworks draws every project on your machine as a zoomable city: folders become districts, files become towers, functions become floors. Your Claude Code sessions walk to the files they touch, and tickets open as cases you take from problem to prototype to review.</p>
+      <p class="lead">Cellworks draws every project on your machine as a zoomable city: folders become districts, files become towers. Your Claude Code sessions walk to the files they touch, and a ticket goes from problem to prototype, plan, review and deploy without leaving the map.</p>
       <div class="cmd hero-cmd"><code>curl -fsSL https://raw.githubusercontent.com/Xunrise/cellworks/main/install.sh | sh</code><button type="button" class="copy">Copy</button></div>
       <div class="actions">
-        <a class="btn primary" href="#install">Install Cellworks</a>
-        <a class="btn" href="https://github.com/Xunrise/cellworks">View on GitHub</a>
+        <a class="btn primary" href="#loop">Follow a ticket</a>
+        <a class="btn" href="#install">Install Cellworks</a>
       </div>
       <p class="fine">MIT · macOS 13+ on Apple silicon · no server, no account, no telemetry</p>
     </div>
     <figure class="shot hero-shot">
-      <img src="assets/city.png" width="1584" height="984" alt="A TypeScript shop open as a city in Cellworks: districts per folder, towers per file, a Claude Code session writing in the catalog district" fetchpriority="high">
+      <img src="assets/city-lanes.jpg" width="1600" height="894" alt="The src district of the demo shop as a city in Cellworks: import lanes with traffic running between file towers, agent sessions writing" fetchpriority="high">
     </figure>
+  </div>
+</section>
+
+<section id="loop" class="loop" aria-labelledby="loop-title">
+  <div class="wrap">
+    <div class="loop-head">
+      <p class="tag">the loop · SHOP-42 "Apply a promo code at checkout"</p>
+      <h2 id="loop-title">From ticket to done, on the map.</h2>
+      <p class="lead dim">Follow one ticket through Cellworks. You decide and steer; agents write the case, the code and the plan; every file they touch lights up in the city.</p>
+    </div>
+    <ol class="steps">
+      <li class="step" data-stage="Ticket" data-film="loop/tickets" data-n="5" data-fps="10">
+        <figure class="shot"><img src="assets/loop-1-ticket.jpg" width="1600" height="894" loading="lazy" alt="The tickets panel over the city, listing SHOP-38 to SHOP-44 from Jira"></figure>
+        <div class="say">
+          <p class="tag">01 · ticket</p>
+          <h3>A ticket arrives</h3>
+          <p>Press <kbd>T</kbd>: your open tickets from Jira, Cockpit, GitHub and Linear, one key away from the map. SHOP-42 asks for a promo code at checkout.</p>
+          <dl class="who"><div><dt>Cellworks</dt><dd>Lists the tickets of every tracker beside the city.</dd></div><div><dt>Agent</dt><dd>Nothing yet.</dd></div></dl>
+        </div>
+      </li>
+      <li class="step" data-stage="Ingest" data-film="loop/case" data-n="10" data-fps="16">
+        <figure class="shot"><img src="assets/loop-2-case.jpg" width="1600" height="894" loading="lazy" alt="The SHOP-42 case: the problem in plain words, problems tied to files and functions, the chain of systems today and the done-when criteria"></figure>
+        <div class="say">
+          <p class="tag">02 · ingest</p>
+          <h3>The case gets written</h3>
+          <p>Open SHOP-42 and click INGEST. The case states the problem in plain words, ties each part to the file and function it lives in, draws today's chain from the checkout view to the database, and lists when it is done.</p>
+          <dl class="who"><div><dt>Cellworks</dt><dd>Opens the case over the city and keeps SHOP-42's perspective.</dd></div><div><dt>Agent</dt><dd>Writes the case from the ticket and the code.</dd></div></dl>
+        </div>
+      </li>
+      <li class="step" data-stage="Prototype">
+        <figure class="shot"><img src="assets/loop-3-prototype.jpg" width="1600" height="894" loading="lazy" alt="The iterate screen of SHOP-42: the agent session, the dev server and the first round of changes"></figure>
+        <div class="say">
+          <p class="tag">03 · prototype</p>
+          <h3>Prototype it</h3>
+          <p>PROTOTYPE IT makes a worktree and a branch for the ticket, starts a Claude session and the dev server, and runs the app beside the city. Towers rise as the agent writes files and the shop hot-reloads with a promo field.</p>
+          <dl class="who"><div><dt>Cellworks</dt><dd>Worktree, branch, session, dev server.</dd></div><div><dt>Agent</dt><dd>Builds the first promo code field.</dd></div></dl>
+        </div>
+      </li>
+      <li class="step" data-stage="Iterate" data-film="loop/round" data-n="10" data-fps="4">
+        <figure class="shot"><img src="assets/loop-4-round.jpg" width="1600" height="894" loading="lazy" alt="Round 2 of SHOP-42: the note, screenshot and pinned line sent to the agent, which is writing cart totals"></figure>
+        <div class="say">
+          <p class="tag">04 · iterate</p>
+          <h3>Steer it in rounds</h3>
+          <p>CAPTURE the shop window, PIN a line, write a note and SEND. The agent answers with round 2: its session walks the city to the files it changes. CLOSE ROUND keeps what was asked and what changed.</p>
+          <dl class="who"><div><dt>Cellworks</dt><dd>Sends the note with the screenshot and the pinned line, and shows each write on the map.</dd></div><div><dt>Agent</dt><dd>Changes the files: the discount on the total, the old total struck through.</dd></div></dl>
+        </div>
+      </li>
+      <li class="step" data-stage="Freeze">
+        <figure class="shot"><img src="assets/loop-5-freeze.jpg" width="1600" height="894" loading="lazy" alt="The freeze stage of the SHOP-42 case"></figure>
+        <div class="say">
+          <p class="tag">05 · freeze</p>
+          <h3>Freeze the prototype</h3>
+          <p>When the behaviour is right, FREEZE distils the session into a prototype note and hands the work to the Factory. Nothing is built by hand from here.</p>
+          <dl class="who"><div><dt>Cellworks</dt><dd>Hands the frozen prototype to the pipeline.</dd></div><div><dt>Agent</dt><dd>Distils the rounds into the prototype note.</dd></div></dl>
+        </div>
+      </li>
+      <li class="step" data-stage="Plan">
+        <figure class="shot"><img src="assets/loop-6-plan.jpg" width="1600" height="894" loading="lazy" alt="The SHOP-42 plan: ordered steps with the files they touch, their evidence and their risks"></figure>
+        <div class="say">
+          <p class="tag">06 · plan · approve</p>
+          <h3>Read the plan, approve it</h3>
+          <p>The pipeline plans from the frozen prototype. Each step names the files it touches, the evidence behind it and what could go wrong. Approval is the only gate.</p>
+          <dl class="who"><div><dt>Cellworks</dt><dd>Shows the steps, evidence and risks; you click APPROVE.</dd></div><div><dt>Agent</dt><dd>Writes the plan.</dd></div></dl>
+        </div>
+      </li>
+      <li class="step" data-stage="Build">
+        <figure class="shot"><img src="assets/loop-7-factory.jpg" width="1600" height="894" loading="lazy" alt="The Factory building SHOP-42: the pipeline strip at CHECKS while an agent writes checkout/order.ts in the city"></figure>
+        <div class="say">
+          <p class="tag">07 · the factory builds</p>
+          <h3>The Factory builds</h3>
+          <p>The pipeline builds, checks, delivers and reviews on its own. Agents commit in turn and every commit shows on the map as the buildings rise; the strip tracks BUILD, CHECKS, DELIVER and REVIEW.</p>
+          <dl class="who"><div><dt>Cellworks</dt><dd>Shows the pipeline and each agent's writes live.</dd></div><div><dt>Agent</dt><dd>Three agents commit: promo codes, the discounted total, the glossary.</dd></div></dl>
+        </div>
+      </li>
+      <li class="step" data-stage="Review">
+        <figure class="shot"><img src="assets/loop-8-review.jpg" width="1600" height="894" loading="lazy" alt="The review stage: the changed files of SHOP-42 and the diff of src/cart/promo.ts against main"></figure>
+        <div class="say">
+          <p class="tag">08 · review</p>
+          <h3>Review against main</h3>
+          <p>Open each changed file. The diff is against main, so you see only what this ticket changed. Mark the case reviewed and it is ready to merge.</p>
+          <dl class="who"><div><dt>Cellworks</dt><dd>Lists the files and commits since main, with their diffs.</dd></div><div><dt>Agent</dt><dd>Done; you sign it off.</dd></div></dl>
+        </div>
+      </li>
+      <li class="step" data-stage="Deploy" data-film="loop/deploy" data-n="12" data-fps="4">
+        <figure class="shot"><img src="assets/loop-9-deploy.jpg" width="1600" height="894" loading="lazy" alt="The city after the merge: the staging server node shows the new version"></figure>
+        <div class="say">
+          <p class="tag">09 · deploy</p>
+          <h3>Merge and deploy</h3>
+          <p>The reviewed change merges and goes to staging. A packet travels from the depot to the staging server, which now runs v1.4.0.</p>
+          <dl class="who"><div><dt>Cellworks</dt><dd>Shows the deploy on the infrastructure in the city.</dd></div><div><dt>Agent</dt><dd>Nothing to do.</dd></div></dl>
+        </div>
+      </li>
+      <li class="step" data-stage="History">
+        <figure class="shot"><img src="assets/loop-10-history.jpg" width="1600" height="894" loading="lazy" alt="The history slider set to an earlier commit, the city rebuilt as it stood then"></figure>
+        <div class="say">
+          <p class="tag">10 · history</p>
+          <h3>Watch the shop grow</h3>
+          <p>The history slider rebuilds the city from each commit. Scrub back and it shrinks; scrub forward and SHOP-42's buildings rise again.</p>
+          <dl class="who"><div><dt>Cellworks</dt><dd>Rebuilds the city per commit.</dd></div><div><dt>Agent</dt><dd>Nothing to do.</dd></div></dl>
+        </div>
+      </li>
+      <li class="step" data-stage="Why">
+        <figure class="shot"><img src="assets/loop-11-why.jpg" width="1600" height="894" loading="lazy" alt="Inside the promo tower: a floor picked and the why panel tracing it back to SHOP-42"></figure>
+        <div class="say">
+          <p class="tag">11 · why</p>
+          <h3>Ask why it was built</h3>
+          <p>Step inside the promo tower: every floor is a line of code, tagged with the pull request and story that wrote it. The why panel traces the floor back to SHOP-42, the ticket that asked for it.</p>
+          <dl class="who"><div><dt>Cellworks</dt><dd>Joins git history, pull requests and stories per line.</dd></div><div><dt>Agent</dt><dd>Nothing to do.</dd></div></dl>
+        </div>
+      </li>
+    </ol>
   </div>
 </section>
 
 <section id="features">
   <div class="wrap">
-    <div class="row">
+    <div class="row demo-row">
       <div class="copy-col">
         <p class="tag">01 · the city</p>
         <h2>Read a codebase from above.</h2>
-        <p class="dim">Districts for folders, towers for files, floors for functions, tests in the cellar. Zoom from the whole project down into one tower. Lenses rearrange the same city by folders, imports, calls, co-change or your bounded contexts, and lanes show what imports or calls what.</p>
-        <ul class="keys"><li><kbd>L</kbd> next lens</li><li><kbd>G</kbd> import lanes</li><li><kbd>A</kbd> call lanes</li><li><kbd>E</kbd> explorer</li></ul>
+        <p class="dim">Districts for folders, towers for files, tests in the cellar. Fly from the whole project into one tower. Lenses rearrange the same city by folders, imports, calls, co-change or your bounded contexts, and lanes show what imports or calls what. Press a key.</p>
+        <div class="keycaps" role="group" aria-label="City actions">
+          <span class="group-label">lens <kbd>L</kbd></span>
+          <button type="button" class="key" data-key="l" data-film="city/imports" data-n="15" data-fps="12" data-caption="Imports lens: the towers fly to districts of files that import each other.">imports</button>
+          <button type="button" class="key" data-key="l" data-film="city/calls" data-n="15" data-fps="12" data-caption="Calls lens: blocks are functions, districts the ones that call each other.">calls</button>
+          <button type="button" class="key" data-key="l" data-film="city/co-change" data-n="15" data-fps="12" data-caption="Co-change lens: files changed in the same commits stand together.">co-change</button>
+          <button type="button" class="key" data-key="l" data-film="city/cells" data-n="15" data-fps="12" data-caption="Cells lens: districts are the bounded contexts of the domain model.">cells</button>
+          <button type="button" class="key" data-key="l" data-reset data-caption="Folders lens: districts are folders, blocks are files.">folders</button>
+          <span class="group-label">lanes</span>
+          <button type="button" class="key" data-key="g" data-film="city/lanes-imports" data-n="10" data-fps="20" data-caption="Import lanes: imports between files, along the ground; traffic runs downstream."><kbd>G</kbd> imports</button>
+          <button type="button" class="key" data-key="a" data-film="city/lanes-calls" data-n="10" data-fps="20" data-caption="Call lanes, for the selected tower: from its lines to the functions they call, through the air."><kbd>A</kbd> calls</button>
+          <span class="group-label">move</span>
+          <button type="button" class="key" data-key="enter" data-film="city/zoom city/inside" data-n="14 14" data-fps="20" data-caption="Enter layers in: the camera flies to the cart district, then steps inside a tower to read it floor by floor."><kbd>Enter</kbd> in</button>
+          <button type="button" class="key" data-key="u" data-film="city/zoom city/underground" data-n="14 3" data-fps="20" data-caption="U goes underground: the cellar comes within reach and the city above steps back."><kbd>U</kbd> under</button>
+          <button type="button" class="key" data-key="m" data-film="city/zoom city/cables" data-n="14 3" data-fps="20" data-caption="M shows the cables from each mast to the building it calls."><kbd>M</kbd> cables</button>
+          <button type="button" class="key" data-key="q" data-film="city/turn" data-n="2" data-fps="4" data-caption="Q turns the city a quarter."><kbd>Q</kbd> turn</button>
+          <button type="button" class="key" data-key="e" data-film="city/explorer" data-n="12" data-fps="20" data-caption="E opens the Explorer: the same project as a tree, with a lens bar."><kbd>E</kbd> explorer</button>
+          <button type="button" class="key" data-key="f" data-reset data-caption="F fits the whole city in view."><kbd>F</kbd> fit</button>
+        </div>
       </div>
-      <figure class="shot"><img src="assets/city-detail.png" width="760" height="440" loading="lazy" alt="Close up of the src district: towers per file with floors of functions, a session writing in the catalog"></figure>
+      <figure class="shot demo">
+        <img src="assets/city.jpg" width="1600" height="894" loading="lazy" alt="The demo shop as a city of districts and towers; buttons beside it play what each key does">
+        <figcaption class="cap" aria-live="polite">The folder city. Press a key or click one.</figcaption>
+      </figure>
     </div>
 
-    <div class="row flip">
+    <div class="row flip demo-row">
       <div class="copy-col">
         <p class="tag">02 · the factory floor</p>
         <h2>Flip to 2D with one key.</h2>
-        <p class="dim">The flat view lays the same project out as a floor plan seen from straight above: halls for folders, machines for files. Selection, Explorer and panels carry over, and every project remembers which view you left it in.</p>
-        <ul class="keys"><li><kbd>V</kbd> city ↔ flat</li><li><kbd>F</kbd> fit</li><li><kbd>Enter</kbd> / <kbd>Esc</kbd> layer in / out</li></ul>
+        <p class="dim">The flat view lays the same project out as a floor plan seen from straight above: halls for folders, machines for files, belts for lanes. Selection, Explorer and panels carry over, and every project remembers which view you left it in.</p>
+        <div class="keycaps" role="group" aria-label="Flat view actions">
+          <button type="button" class="key" data-key="v" data-film="flat/view" data-n="4" data-fps="6" data-caption="V flips the city to the flat factory floor."><kbd>V</kbd> city ↔ flat</button>
+          <button type="button" class="key" data-key="g" data-film="flat/belts" data-n="10" data-fps="20" data-caption="Import lanes become belts between the machines."><kbd>G</kbd> belts</button>
+          <button type="button" class="key" data-key="enter" data-film="flat/zoom" data-n="14" data-fps="20" data-caption="Enter flies to the cart hall and its machines."><kbd>Enter</kbd> in</button>
+          <button type="button" class="key" data-key="f" data-reset data-caption="F fits the whole floor."><kbd>F</kbd> fit</button>
+        </div>
       </div>
-      <figure class="shot"><img src="assets/flat.png" width="1584" height="984" loading="lazy" alt="The same project as a flat factory floor seen from above"></figure>
+      <figure class="shot demo">
+        <img src="assets/flat.jpg" width="1600" height="894" loading="lazy" alt="The same project as a flat factory floor seen from above">
+        <figcaption class="cap" aria-live="polite">The factory floor. Press a key or click one.</figcaption>
+      </figure>
     </div>
 
-    <div class="row">
+    <div class="row demo-row">
       <div class="copy-col">
         <p class="tag">03 · tickets as cases</p>
-        <h2>From ticket to frozen plan, on the map.</h2>
-        <p class="dim">One panel lists tickets from Jira, Cockpit, GitHub and Linear. Open one as a case: Claude ingests it into problems tied to real files and functions, you prototype it in a worktree with the app running, iterate in rounds, freeze, plan and review.</p>
-        <ul class="keys"><li><kbd>T</kbd> tickets</li><li>ingest → prototype → freeze → plan → review</li></ul>
+        <h2>Open a ticket as a case.</h2>
+        <p class="dim">One panel lists tickets from Jira, Cockpit, GitHub and Linear. Open one as a case over the city and walk it through its stages; <a href="#loop">the loop above</a> follows SHOP-42 all the way.</p>
+        <div class="keycaps" role="group" aria-label="Case actions">
+          <button type="button" class="key" data-key="t" data-film="loop/tickets" data-n="5" data-fps="10" data-caption="T opens the tickets of every tracker beside the map."><kbd>T</kbd> tickets</button>
+          <button type="button" class="key" data-key="enter" data-film="loop/case" data-n="10" data-fps="16" data-caption="SHOP-42 opens as a case over the city.">open SHOP-42</button>
+          <span class="group-label">stages</span>
+          <button type="button" class="key" data-key="1" data-src="loop-2-case.jpg" data-caption="Problem: the ticket in plain words, tied to files and functions."><kbd>1</kbd> problem</button>
+          <button type="button" class="key" data-key="2" data-src="loop-4-round.jpg" data-caption="Iterate: rounds of feedback to a live session, with the app running."><kbd>2</kbd> iterate</button>
+          <button type="button" class="key" data-key="3" data-src="loop-5-freeze.jpg" data-caption="Freeze: the session distilled into a prototype note."><kbd>3</kbd> freeze</button>
+          <button type="button" class="key" data-key="4" data-src="loop-6-plan.jpg" data-caption="Plan: ordered steps with evidence and risks."><kbd>4</kbd> plan</button>
+          <button type="button" class="key" data-key="5" data-src="loop-8-review.jpg" data-caption="Review: each changed file against main."><kbd>5</kbd> review</button>
+        </div>
       </div>
-      <figure class="shot"><img src="assets/case.png" width="1584" height="984" loading="lazy" alt="Ticket SHOP-42 as a case: the problem in plain words, tied to the files and functions it touches"></figure>
+      <figure class="shot demo">
+        <img src="assets/loop-2-case.jpg" width="1600" height="894" loading="lazy" alt="Ticket SHOP-42 as a case; buttons beside it show the tickets panel and each stage">
+        <figcaption class="cap" aria-live="polite">SHOP-42 as a case. Press a key or click one.</figcaption>
+      </figure>
     </div>
 
-    <div class="row flip">
+    <div class="row flip demo-row">
       <div class="copy-col">
         <p class="tag">04 · the launcher</p>
         <h2>Every project, one keystroke away.</h2>
         <p class="dim">A keyboard-first palette of every git repository under your project folders and on the hosts you reach over ssh, with branch, size and open tickets at a glance.</p>
-        <ul class="keys"><li><kbd>⌘K</kbd> search</li><li><kbd>j</kbd>/<kbd>k</kbd> move</li><li><kbd>⌘,</kbd> settings</li></ul>
+        <div class="keycaps" role="group" aria-label="Launcher actions">
+          <button type="button" class="key" data-key="j" data-film="launcher/move" data-n="4" data-fps="2" data-caption="j and k move through the projects; the preview follows."><kbd>j</kbd>/<kbd>k</kbd> move</button>
+          <button type="button" class="key" data-key="enter" data-film="launcher/open" data-n="4" data-fps="3" data-caption="Enter opens the project as a city."><kbd>Enter</kbd> open</button>
+        </div>
+        <ul class="keys"><li><kbd>⌘K</kbd> search</li><li><kbd>⌘,</kbd> settings</li></ul>
       </div>
-      <figure class="shot"><img src="assets/launcher.png" width="1584" height="984" loading="lazy" alt="The launcher listing local and remote projects"></figure>
+      <figure class="shot demo">
+        <img src="assets/launcher.jpg" width="1600" height="894" loading="lazy" alt="The launcher listing local and remote projects">
+        <figcaption class="cap" aria-live="polite">The launcher. Press a key or click one.</figcaption>
+      </figure>
     </div>
 
     <div class="grid">
