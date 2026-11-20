@@ -6,16 +6,23 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::ActionKind;
+
 /// One file event read off a tool call in a transcript line.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ToolCall {
-    pub write: bool,
+    pub kind: ActionKind,
     /// Absolute: resolved against the line's own `cwd` when the tool named
-    /// a relative path.
+    /// a relative path. A folder for a search or command that names none
+    /// file; empty for a call that leaves the map (a web fetch).
     pub path: PathBuf,
     pub line: Option<usize>,
-    /// Lines added, for a write; 0 for a read.
+    /// Lines added, for a write; 0 otherwise.
     pub added: usize,
+    /// The command, pattern, task or URL, verbatim; empty for file tools.
+    pub detail: String,
+    /// The `tool_use` block's id, which its `tool_result` names.
+    pub id: String,
     /// Copied verbatim from the transcript line.
     pub timestamp: String,
 }
@@ -115,8 +122,11 @@ fn line_of(content: &Option<String>, needle: &str) -> Option<usize> {
 }
 
 /// Tool calls become file events, tolerantly: unknown tools, unparsable
-/// lines, and blocks that are not `tool_use` are ignored. See
-/// `design.md`'s requirement 3 for the per-tool rules this pins.
+/// lines, and blocks that are not `tool_use` are ignored. Only `assistant`
+/// lines count: newer transcripts also hold `api-request-blob` lines that
+/// replay earlier tool calls, which would send a session back to files it
+/// left long ago. See `design.md`'s requirement 3 for the per-tool rules
+/// this pins.
 pub(crate) fn tool_events(lines: &[String]) -> Vec<ToolCall> {
     let mut events = Vec::new();
 
@@ -124,6 +134,9 @@ pub(crate) fn tool_events(lines: &[String]) -> Vec<ToolCall> {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
+        if value["type"] != "assistant" {
+            continue;
+        }
 
         let cwd_str = value.get("cwd").and_then(|v| v.as_str()).unwrap_or("/");
         let cwd = Path::new(cwd_str);
@@ -144,138 +157,202 @@ pub(crate) fn tool_events(lines: &[String]) -> Vec<ToolCall> {
             let Some(name) = block["name"].as_str() else {
                 continue;
             };
-
-            match name {
-                "Read" => {
-                    let Some(file_path) = block["input"]["file_path"].as_str() else {
-                        continue;
-                    };
-                    let path = resolve(cwd, file_path);
-                    let line_no = block["input"]["offset"].as_u64().unwrap_or(1) as usize;
-                    events.push(ToolCall {
-                        write: false,
-                        path,
-                        line: Some(line_no),
-                        added: 0,
-                        timestamp: timestamp.clone(),
-                    });
-                }
-                "Edit" => {
-                    let Some(file_path) = block["input"]["file_path"].as_str() else {
-                        continue;
-                    };
-                    let path = resolve(cwd, file_path);
-                    let old_string = block["input"]["old_string"].as_str().unwrap_or("");
-                    let new_string = block["input"]["new_string"].as_str().unwrap_or("");
-                    let current = std::fs::read_to_string(&path).ok();
-                    let line_no = line_of(&current, new_string);
-                    let added = line_count(new_string).saturating_sub(line_count(old_string));
-                    events.push(ToolCall {
-                        write: true,
-                        path,
-                        line: line_no,
-                        added,
-                        timestamp: timestamp.clone(),
-                    });
-                }
-                "MultiEdit" => {
-                    let Some(file_path) = block["input"]["file_path"].as_str() else {
-                        continue;
-                    };
-                    let Some(edits) = block["input"]["edits"].as_array() else {
-                        continue;
-                    };
-                    if edits.is_empty() {
-                        continue;
-                    }
-                    let path = resolve(cwd, file_path);
-                    let added: usize = edits
-                        .iter()
-                        .map(|edit| {
-                            let old_string = edit["old_string"].as_str().unwrap_or("");
-                            let new_string = edit["new_string"].as_str().unwrap_or("");
-                            line_count(new_string).saturating_sub(line_count(old_string))
-                        })
-                        .sum();
-                    let current = std::fs::read_to_string(&path).ok();
-                    let first_new = edits[0]["new_string"].as_str().unwrap_or("");
-                    let line_no = line_of(&current, first_new);
-                    events.push(ToolCall {
-                        write: true,
-                        path,
-                        line: line_no,
-                        added,
-                        timestamp: timestamp.clone(),
-                    });
-                }
-                "Write" => {
-                    let Some(file_path) = block["input"]["file_path"].as_str() else {
-                        continue;
-                    };
-                    let path = resolve(cwd, file_path);
-                    events.push(ToolCall {
-                        write: true,
-                        path,
-                        line: Some(1),
-                        added: 0,
-                        timestamp: timestamp.clone(),
-                    });
-                }
-                "Bash" => {
-                    let Some(command) = block["input"]["command"].as_str() else {
-                        continue;
-                    };
-                    for token in
-                        command.split(|c: char| !(c.is_ascii_alphanumeric() || "_./-".contains(c)))
-                    {
-                        if token.is_empty() {
-                            continue;
-                        }
-                        let Some((_, last)) = token.rsplit_once('/') else {
-                            continue;
-                        };
-                        let Some((stem, ext)) = last.rsplit_once('.') else {
-                            continue;
-                        };
-                        if stem.is_empty()
-                            || ext.is_empty()
-                            || !ext.chars().all(|c| c.is_ascii_alphanumeric())
-                        {
-                            continue;
-                        }
-                        let path = resolve(cwd, token);
-                        if path.is_file() {
-                            events.push(ToolCall {
-                                write: false,
-                                path,
-                                line: None,
-                                added: 0,
-                                timestamp: timestamp.clone(),
-                            });
-                        }
-                    }
-                }
-                "Grep" | "Glob" => {
-                    let Some(path_str) = block["input"]["path"].as_str() else {
-                        continue;
-                    };
-                    let path = resolve(cwd, path_str);
-                    if path.is_file() {
-                        events.push(ToolCall {
-                            write: false,
-                            path,
-                            line: None,
-                            added: 0,
-                            timestamp: timestamp.clone(),
-                        });
-                    }
-                }
-                _ => {}
+            if let Some(mut call) = tool_call(name, &block["input"], cwd) {
+                call.id = block["id"].as_str().unwrap_or("").to_owned();
+                call.timestamp = timestamp.clone();
+                events.push(call);
             }
         }
     }
 
     events
+}
+
+/// One tool call's event, `None` for a tool that touches nothing on the
+/// map (a todo list, an MCP call) or input missing what it needs.
+fn tool_call(name: &str, input: &serde_json::Value, cwd: &Path) -> Option<ToolCall> {
+    let text = |key: &str| input[key].as_str().unwrap_or("");
+    let call = |kind: ActionKind, path: PathBuf| ToolCall {
+        kind,
+        path,
+        line: None,
+        added: 0,
+        detail: String::new(),
+        id: String::new(),
+        timestamp: String::new(),
+    };
+    let file = || input["file_path"].as_str().map(|path| resolve(cwd, path));
+
+    Some(match name {
+        "Read" => ToolCall {
+            line: Some(input["offset"].as_u64().unwrap_or(1) as usize),
+            ..call(ActionKind::Read, file()?)
+        },
+        "Edit" => {
+            let path = file()?;
+            let (old, new) = (text("old_string"), text("new_string"));
+            let current = std::fs::read_to_string(&path).ok();
+            ToolCall {
+                line: line_of(&current, new),
+                added: line_count(new).saturating_sub(line_count(old)),
+                ..call(ActionKind::Write, path)
+            }
+        }
+        "MultiEdit" => {
+            let path = file()?;
+            let edits = input["edits"].as_array().filter(|e| !e.is_empty())?;
+            let added = edits
+                .iter()
+                .map(|edit| {
+                    let old = edit["old_string"].as_str().unwrap_or("");
+                    let new = edit["new_string"].as_str().unwrap_or("");
+                    line_count(new).saturating_sub(line_count(old))
+                })
+                .sum();
+            let current = std::fs::read_to_string(&path).ok();
+            let first_new = edits[0]["new_string"].as_str().unwrap_or("");
+            ToolCall {
+                line: line_of(&current, first_new),
+                added,
+                ..call(ActionKind::Write, path)
+            }
+        }
+        "Write" => ToolCall {
+            line: Some(1),
+            ..call(ActionKind::Write, file()?)
+        },
+        "NotebookEdit" => call(
+            ActionKind::Write,
+            resolve(cwd, input["notebook_path"].as_str()?),
+        ),
+        "Bash" => {
+            let command = input["command"].as_str()?;
+            let (kind, path) = bash_target(cwd, command);
+            ToolCall {
+                detail: command.lines().next().unwrap_or("").to_owned(),
+                ..call(kind, path)
+            }
+        }
+        "Grep" | "Glob" => {
+            // A missing or vanished path searches the session's own folder.
+            let path = Some(text("path"))
+                .filter(|p| !p.is_empty())
+                .map(|p| resolve(cwd, p))
+                .filter(|p| p.exists())
+                .unwrap_or_else(|| cwd.to_owned());
+            ToolCall {
+                detail: text("pattern").to_owned(),
+                ..call(ActionKind::Search, path)
+            }
+        }
+        "Task" | "Agent" => ToolCall {
+            detail: text("description").to_owned(),
+            ..call(ActionKind::Delegate, cwd.to_owned())
+        },
+        // Off the map: an empty path is in no city.
+        "WebFetch" | "WebSearch" => ToolCall {
+            detail: [text("url"), text("query")].concat(),
+            ..call(ActionKind::Fetch, PathBuf::new())
+        },
+        _ => return None,
+    })
+}
+
+/// What a shell command mostly touches, and whether it searches or runs:
+/// `cd <dir>` moves the base; then `git -C <dir>`, `--test <name>`
+/// (`tests/<name>.rs`), `-p`/`--package <name>` (`crates/<name>` or
+/// `<name>`, with or without its prefix up to the first `-`), the first token naming an existing file, the first naming an
+/// existing folder; else the base itself. `grep`, `rg`, `find`, `fd`, `ls`
+/// and `ag` search; everything else runs.
+fn bash_target(cwd: &Path, command: &str) -> (ActionKind, PathBuf) {
+    let tokens: Vec<&str> = command
+        .split(|c: char| !(c.is_ascii_alphanumeric() || "_./-~".contains(c)))
+        .filter(|token| !token.is_empty())
+        .collect();
+    let after = |flag: &str| {
+        tokens
+            .windows(2)
+            .find(|pair| pair[0] == flag)
+            .map(|pair| pair[1])
+    };
+
+    let mut base = cwd.to_owned();
+    let mut words = tokens.as_slice();
+    if let ["cd", dir, rest @ ..] = words {
+        base = resolve(cwd, dir);
+        words = rest;
+    }
+    let searches = words
+        .iter()
+        .find(|word| !word.contains('='))
+        .is_some_and(|first| matches!(*first, "grep" | "rg" | "find" | "fd" | "ls" | "ag"));
+    let kind = if searches {
+        ActionKind::Search
+    } else {
+        ActionKind::Run
+    };
+
+    let existing = |path: PathBuf, dir: bool| {
+        (if dir { path.is_dir() } else { path.is_file() }).then_some(path)
+    };
+    let target = after("-C")
+        .and_then(|dir| existing(resolve(&base, dir), true))
+        .or_else(|| {
+            after("--test").and_then(|t| existing(base.join(format!("tests/{t}.rs")), false))
+        })
+        .or_else(|| {
+            // A package is often its folder's name with a prefix:
+            // `cellworks-map` lives in `crates/map`.
+            after("-p").or_else(|| after("--package")).and_then(|p| {
+                let short = p.split_once('-').map_or(p, |(_, rest)| rest);
+                [p, short].into_iter().find_map(|name| {
+                    existing(base.join("crates").join(name), true)
+                        .or_else(|| existing(base.join(name), true))
+                })
+            })
+        })
+        .or_else(|| {
+            words.iter().find_map(|token| {
+                let (stem, ext) = token.rsplit('/').next()?.rsplit_once('.')?;
+                if stem.is_empty()
+                    || ext.is_empty()
+                    || !ext.chars().all(|c| c.is_ascii_alphanumeric())
+                {
+                    return None;
+                }
+                existing(resolve(&base, token), false)
+            })
+        })
+        .or_else(|| {
+            words
+                .iter()
+                .filter(|token| token.contains('/') && !token.starts_with('-'))
+                .find_map(|token| existing(resolve(&base, token), true))
+        })
+        .unwrap_or(base);
+    (kind, target)
+}
+
+/// Every finished tool call in `lines`: its `tool_use_id`, and whether it
+/// succeeded (`is_error` absent or false). Only `user` lines carry results.
+pub(crate) fn tool_results(lines: &[String]) -> Vec<(String, bool)> {
+    let mut results = Vec::new();
+    for line in lines {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if value["type"] != "user" {
+            continue;
+        }
+        for block in value["message"]["content"].as_array().into_iter().flatten() {
+            if block["type"] == "tool_result"
+                && let Some(id) = block["tool_use_id"].as_str()
+            {
+                results.push((id.to_owned(), block["is_error"] != true));
+            }
+        }
+    }
+    results
 }
 
 /// `(first ~110 characters of the last assistant message that carries text,
@@ -301,8 +378,8 @@ pub(crate) fn summary(lines: &[String]) -> (Option<String>, Option<u64>) {
         let this_epoch = epoch(value["timestamp"].as_str().unwrap_or(""));
         newest = newest.max(this_epoch);
 
-        let is_assistant = value["type"] == "assistant" || value["message"]["role"] == "assistant";
-        if !is_assistant {
+        // Not the role: `api-request-blob` lines replay old assistant text.
+        if value["type"] != "assistant" {
             continue;
         }
 
@@ -392,6 +469,10 @@ pub(crate) fn entries(lines: &[String]) -> Vec<Entry> {
         };
 
         if value["isSidechain"] == serde_json::Value::Bool(true) {
+            continue;
+        }
+        // `api-request-blob` lines replay what was already said.
+        if value["type"] != "assistant" && value["type"] != "user" {
             continue;
         }
 
@@ -533,6 +614,9 @@ mod tests {
 
         let mut lines = vec![
             tool_use_line("t1", cwd, "Read", json!({"file_path": "foo.rs"})),
+            // A replayed request is not a new call.
+            tool_use_line("t1", cwd, "Read", json!({"file_path": "foo.rs"}))
+                .replace("\"type\":\"assistant\"", "\"type\":\"api-request-blob\""),
             tool_use_line(
                 "t2",
                 cwd,
@@ -583,7 +667,7 @@ mod tests {
         let find = |ts: &str| events.iter().find(|event| event.timestamp == ts);
 
         let read_default = find("t1").expect("a plain Read is kept");
-        assert!(!read_default.write);
+        assert_eq!(read_default.kind, ActionKind::Read);
         assert_eq!(read_default.path, cwd.join("foo.rs"));
         assert_eq!(read_default.line, Some(1), "offset defaults to 1");
         assert_eq!(read_default.added, 0);
@@ -592,7 +676,7 @@ mod tests {
         assert_eq!(read_offset.line, Some(42));
 
         let edit = find("t3").expect("the Edit is kept");
-        assert!(edit.write);
+        assert_eq!(edit.kind, ActionKind::Write);
         assert_eq!(edit.path, cwd.join("foo.rs"));
         assert_eq!(
             edit.line,
@@ -602,7 +686,7 @@ mod tests {
         assert_eq!(edit.added, 2, "3 lines of new_string less 1 of old_string");
 
         let multi = find("t4").expect("the MultiEdit is kept");
-        assert!(multi.write);
+        assert_eq!(multi.kind, ActionKind::Write);
         assert_eq!(multi.path, cwd.join("bar.rs"));
         assert_eq!(
             multi.line,
@@ -615,7 +699,7 @@ mod tests {
         );
 
         let write = find("t5").expect("the Write is kept");
-        assert!(write.write);
+        assert_eq!(write.kind, ActionKind::Write);
         assert_eq!(write.path, cwd.join("baz.rs"));
         assert_eq!(write.line, Some(1));
         assert_eq!(write.added, 0);
@@ -627,24 +711,95 @@ mod tests {
         assert_eq!(
             bash_events.len(),
             1,
-            "only the one token that names an existing file becomes an event: {bash_events:?}"
+            "one command is one event, at the first token that names an existing file: {bash_events:?}"
         );
-        assert!(!bash_events[0].write);
+        assert_eq!(bash_events[0].kind, ActionKind::Search, "grep searches");
+        assert_eq!(
+            bash_events[0].detail,
+            "grep -rn pattern catalog/pricing.rs missingfile/nothere.rs -rf"
+        );
         assert_eq!(bash_events[0].path, cwd.join("catalog/pricing.rs"));
         assert_eq!(bash_events[0].line, None);
 
         let grep = find("t7").expect("Grep's path names an existing file");
-        assert!(!grep.write);
+        assert_eq!(grep.kind, ActionKind::Search);
         assert_eq!(grep.path, cwd.join("catalog/pricing.rs"));
         assert_eq!(grep.line, None);
 
-        assert!(
-            find("t8").is_none(),
-            "Glob's path does not resolve to an existing file"
-        );
+        let glob = find("t8").expect("a Glob whose path is gone still searches");
+        assert_eq!(glob.kind, ActionKind::Search);
+        assert_eq!(glob.path, cwd, "it searches the session's own folder");
         assert!(find("t9").is_none(), "an unknown tool name is ignored");
         assert!(find("t10").is_none(), "a text block is not a tool call");
-        assert_eq!(events.len(), 7, "{events:?}");
+        assert_eq!(events.len(), 8, "{events:?}");
+    }
+
+    /// A shell command lands on what it names, by the rules of
+    /// `bash_target`; a result marks its call as passed or failed.
+    #[test]
+    fn commands_land_on_what_they_name_and_results_close_calls() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let cwd = dir.path();
+        fs::create_dir_all(cwd.join("crates/map/src")).expect("crates/map");
+        fs::create_dir_all(cwd.join("tests")).expect("tests/");
+        fs::write(cwd.join("tests/flat_view.rs"), "").expect("a test file");
+        fs::write(cwd.join("crates/map/src/view.rs"), "").expect("a source file");
+
+        for (command, kind, path) in [
+            ("cargo test", ActionKind::Run, cwd.to_owned()),
+            (
+                "cargo test -p cellworks-map",
+                ActionKind::Run,
+                cwd.join("crates/map"),
+            ),
+            (
+                "cargo test --test flat_view",
+                ActionKind::Run,
+                cwd.join("tests/flat_view.rs"),
+            ),
+            (
+                "cd crates/map && cargo build",
+                ActionKind::Run,
+                cwd.join("crates/map"),
+            ),
+            (
+                "git -C crates/map status",
+                ActionKind::Run,
+                cwd.join("crates/map"),
+            ),
+            (
+                "rg fit_flat crates/map/src",
+                ActionKind::Search,
+                cwd.join("crates/map/src"),
+            ),
+            (
+                "sed -n 1,9p crates/map/src/view.rs",
+                ActionKind::Run,
+                cwd.join("crates/map/src/view.rs"),
+            ),
+        ] {
+            assert_eq!(bash_target(cwd, command), (kind, path), "{command}");
+        }
+
+        let result = |id: &str, error: Option<bool>| {
+            let mut block = json!({"type": "tool_result", "tool_use_id": id, "content": ""});
+            if let Some(error) = error {
+                block["is_error"] = json!(error);
+            }
+            json!({"type": "user", "message": {"role": "user", "content": [block]}}).to_string()
+        };
+        assert_eq!(
+            tool_results(&[
+                result("a", None),
+                result("b", Some(true)),
+                result("c", Some(false))
+            ]),
+            [
+                ("a".to_owned(), true),
+                ("b".to_owned(), false),
+                ("c".to_owned(), true)
+            ]
+        );
     }
 
     /// Pins the tailing rule: an incomplete (no trailing newline) line is

@@ -537,6 +537,15 @@ impl CellworksApp {
         }
     }
 
+    /// The same app, watching the sessions `sources` lists, through the
+    /// same background watch the machine's own sessions take - a test seam.
+    pub fn with_session_sources(self, sources: SessionSources) -> CellworksApp {
+        CellworksApp {
+            sessions: SessionsView::watching(sources),
+            ..self
+        }
+    }
+
     /// The same app, showing `sessions` and pointing a session pane at
     /// `claude` and `transcripts` - a test seam; nothing is watched.
     pub fn with_pane_sources(
@@ -2696,7 +2705,7 @@ fn iterate_screen(ui: &mut egui::Ui, app: &mut CellworksApp) {
         .find(|s| s.name == it.session_name)
         .cloned();
     let runner = session.as_ref().and_then(|s| {
-        let last = s.events.iter().rev().find(|e| e.write)?;
+        let last = s.events.iter().rev().find(|e| e.write())?;
         Some((s.name.as_str(), last.path.as_path()))
     });
     let pane_right =

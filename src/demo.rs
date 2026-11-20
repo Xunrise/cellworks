@@ -994,8 +994,10 @@ fn agent(name: &str, file: &str) {
     };
     let lines = [
         entry(json!({"type": "text", "text": format!("Working on {file}.")})),
-        entry(json!({"type": "tool_use", "name": "Edit",
-            "input": {"file_path": full.display().to_string(), "old_string": "", "new_string": anchor}})),
+        entry(
+            json!({"type": "tool_use", "name": "Edit", "id": format!("{session}-{stamp}"),
+            "input": {"file_path": full.display().to_string(), "old_string": "", "new_string": anchor}}),
+        ),
     ];
     let folder = root().join("transcripts/demo");
     let _ = std::fs::create_dir_all(&folder);

@@ -2,15 +2,16 @@
 //! the binary's acceptance tests (`tests/story_030_sessions_walk_to_the_towers_they_work_on.rs`)
 //! rather than by unit tests here.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
-use egui::{Pos2, Rect, pos2, vec2};
+use egui::{Pos2, Rect, vec2};
 
 use crate::transcript::{Entry, EntryKind};
-use crate::{SessionState, place};
+use crate::units::{Phase, Pose, Unit};
+use crate::{ActionKind, SessionState, paint, place};
 
 /// One session as the overlay drew it this frame.
 #[derive(Clone, Debug, PartialEq)]
@@ -21,6 +22,9 @@ pub struct DrawnSession {
     pub label: Rect,
     pub waiting: bool,
     pub writing: bool,
+    pub pose: Pose,
+    /// What its label says it does: "editing pricing.rs · discount".
+    pub action: String,
 }
 
 /// The `egui::Id` the search field is given, so `search_focused` can check
@@ -36,33 +40,6 @@ const TERMINAL_ID: &str = "cellworks-session-terminal";
 /// requirement 2).
 const PANE_HEIGHT: f32 = 340.0;
 
-/// Height added per marked floor while a session writes on top of a tower
-/// (requirement 8); purely cosmetic, so not read from `cellworks_map::city`.
-const WRITTEN_FLOOR_HEIGHT: f32 = 6.0;
-
-/// How long the eased walk along x then y lasts, in seconds.
-const WALK_SECONDS: f64 = 1.5;
-
-/// How long the climb up to the tower's working height lasts, in seconds.
-const CLIMB_SECONDS: f64 = 0.4;
-
-/// How long a walking session's trail fades for, in seconds.
-const TRAIL_SECONDS: f64 = 0.7;
-
-/// One session's animation state, kept across frames.
-struct Anim {
-    /// The tower it is currently walking to or standing on.
-    tower: PathBuf,
-    from: Pos2,
-    to: Pos2,
-    /// `ui.input(|i| i.time)` when the walk toward `to` began.
-    started: f64,
-    /// A per-session offset so the bustle motion is not synchronized.
-    phase: f32,
-    /// Ground points behind a walking session, with the time they were left.
-    trail: VecDeque<(Pos2, f64)>,
-}
-
 /// The sidebar and overlay's own view model: what it watches, what it last
 /// drew, and which session is selected.
 pub struct SessionsView {
@@ -71,7 +48,9 @@ pub struct SessionsView {
     error: Option<String>,
     selected: Option<String>,
     query: String,
-    anims: HashMap<String, Anim>,
+    units: HashMap<String, Unit>,
+    /// The map the units walk on; a different one starts them afresh.
+    units_root: PathBuf,
     has_sources: bool,
     /// The `claude` program a freshly opened pane attaches to, stops and
     /// continues with.
@@ -107,7 +86,8 @@ impl SessionsView {
             error: None,
             selected: None,
             query: String::new(),
-            anims: HashMap::new(),
+            units: HashMap::new(),
+            units_root: PathBuf::new(),
             has_sources: false,
             claude: PathBuf::new(),
             transcripts: PathBuf::new(),
@@ -694,15 +674,45 @@ impl SessionsView {
         view: &cellworks_map::View,
     ) -> (Vec<DrawnSession>, Option<String>, bool) {
         let now = ui.input(|i| i.time);
+        // The app sets no animation time when the system asks for reduced
+        // motion: units then step to their work and their marks stand still.
+        let motion = ui.style().animation_time > 0.0;
         let painter = ui.painter();
 
-        let placed: Vec<(&crate::Session, crate::Placement)> = self
+        if self.units_root != map.root {
+            self.units.clear();
+            self.units_root = map.root.clone();
+        }
+        let here: Vec<&crate::Session> = self
             .sessions
             .iter()
-            .filter_map(|session| place(map, common_dir, session).map(|p| (session, p)))
+            .filter(|session| place(map, common_dir, session).is_some())
             .collect();
+        self.units
+            .retain(|id, _| here.iter().any(|session| &session.id == id));
+        for session in &here {
+            let Some(unit) = (match self.units.entry(session.id.clone()) {
+                std::collections::hash_map::Entry::Occupied(entry) => Some(entry.into_mut()),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    Unit::new(session, map, common_dir, now).map(|unit| entry.insert(unit))
+                }
+            }) else {
+                continue;
+            };
+            unit.sync(session);
+            unit.advance(now, map, common_dir, motion);
+        }
 
-        let towers: Vec<PathBuf> = placed.iter().map(|(_, p)| p.tower.clone()).collect();
+        // Units at work on one tower stand apart; walking ones need not.
+        let towers: Vec<PathBuf> = here
+            .iter()
+            .map(|session| match self.units.get(&session.id) {
+                Some(unit) if !matches!(unit.phase, Phase::Moving { .. }) => {
+                    unit.target.tower.clone()
+                }
+                _ => PathBuf::from(&session.id),
+            })
+            .collect();
         let fans = crate::fan(&towers);
 
         let click = ui.input(|i| {
@@ -720,120 +730,42 @@ impl SessionsView {
 
         let mut drawn = Vec::new();
         let mut clicked = None;
-        // Deferred, the same way `sidebar` defers it: `open_pane` needs
-        // `&mut self`, which the loop's active borrow of `self.sessions`
-        // (through `placed`) does not allow yet.
+        // Deferred: `open_pane` needs `&mut self`, which the loop's borrow
+        // of `self.sessions` (through `here`) does not allow yet.
         let mut to_open: Option<crate::Session> = None;
-        let mut anything_is_animating = !placed.is_empty();
+        let mut anything_is_animating = false;
+        let t = if motion { now } else { 0.0 };
 
-        for ((session, placement), (k, n)) in placed.iter().zip(fans) {
-            let anim = self
-                .anims
-                .entry(session.id.clone())
-                .or_insert_with(|| Anim {
-                    tower: placement.tower.clone(),
-                    from: placement.centre,
-                    to: placement.centre,
-                    started: now - 100.0,
-                    phase: session.id.bytes().map(f32::from).sum(),
-                    trail: VecDeque::new(),
-                });
-
-            if anim.tower != placement.tower {
-                let (current, _, _) = walk(anim, now, 0.0);
-                anim.from = current;
-                anim.to = placement.centre;
-                anim.tower = placement.tower.clone();
-                anim.started = now;
-                anim.trail.clear();
-            } else {
-                anim.to = placement.centre;
-            }
-
-            let (ground, mut z, walking) = walk(anim, now, placement.z);
-            if walking {
-                anim.trail.push_back((ground, now));
-            }
-            while anim
-                .trail
-                .front()
-                .is_some_and(|(_, t)| now - t > TRAIL_SECONDS)
-            {
-                anim.trail.pop_front();
-            }
-
-            for (g, t) in &anim.trail {
-                let fade = (1.0 - (now - t) / TRAIL_SECONDS).clamp(0.0, 1.0) as f32;
-                painter.circle_filled(
-                    view.to_screen(*g, 0.0),
-                    3.0 * fade + 1.0,
-                    egui::Color32::from_white_alpha((120.0 * fade) as u8),
-                );
-            }
-
-            if !walking && placement.writing {
-                z += placement.added as f32 * WRITTEN_FLOOR_HEIGHT;
-            }
-
-            let base = view.to_screen(ground, z);
-            let mut at = if n > 1 {
+        for (session, (k, n)) in here.iter().zip(fans) {
+            let Some(unit) = self.units.get(&session.id) else {
+                continue;
+            };
+            let pose = unit.pose(now, session);
+            let colour = paint::colour(pose, unit);
+            let base = view.to_screen(unit.position(now), 0.0);
+            let at = if n > 1 {
                 let a = std::f32::consts::TAU * k as f32 / n as f32 - std::f32::consts::FRAC_PI_2;
                 base + vec2(13.0 * a.cos(), 7.0 * a.sin())
             } else {
                 base
             };
 
-            if !walking && session.session_state() != SessionState::Waiting {
-                let speed = if placement.writing { 2.2 } else { 0.7 };
-                let ang = anim.phase + now as f32 * speed;
-                at += vec2(9.0 * ang.cos(), 5.0 * ang.sin() + 2.0 * (ang * 1.7).sin());
-                if placement.writing {
-                    let tick = (now * 14.0) as u64;
-                    for i in 0..3u64 {
-                        let h = tick
-                            .wrapping_mul(2654435761)
-                            .wrapping_add(i * 97 + (anim.phase * 100.0) as u64)
-                            .wrapping_mul(40503);
-                        if !(h >> 7).is_multiple_of(3) {
-                            let d = vec2((h % 13) as f32 - 6.0, -(((h >> 4) % 10) as f32) - 5.0);
-                            painter.circle_filled(
-                                at + d,
-                                1.6,
-                                egui::Color32::from_rgb(255, 220, 60),
-                            );
-                        }
-                    }
-                } else {
-                    painter.circle_filled(
-                        at,
-                        13.0,
-                        egui::Color32::from_rgba_unmultiplied(90, 200, 255, 40),
-                    );
+            if pose == Pose::Moving {
+                paint::path(painter, view, &unit.ahead(now), colour, t);
+            }
+            paint::work(painter, view, unit, pose, at, t, motion);
+            let bob = match pose {
+                Pose::Working(ActionKind::Run) if motion => {
+                    vec2(0.0, -2.5 * (now * 9.0).sin().abs() as f32)
                 }
-            }
-
-            let waiting = session.session_state() == SessionState::Waiting;
-            if waiting {
-                let pulse = (now * 3.0).sin() as f32 * 0.5 + 0.5;
-                painter.circle_stroke(
-                    at,
-                    10.0 + 8.0 * pulse,
-                    egui::Stroke::new(2.0, egui::Color32::YELLOW),
-                );
-            }
-
-            let colour = if waiting {
-                egui::Color32::YELLOW
-            } else if placement.writing {
-                egui::Color32::from_rgb(255, 90, 90)
-            } else {
-                egui::Color32::from_rgb(90, 200, 255)
+                _ => vec2(0.0, 0.0),
             };
-
-            if Some(session.id.as_str()) == self.selected.as_deref() {
-                painter.circle_stroke(at, 10.0, egui::Stroke::new(2.0, egui::Color32::WHITE));
+            if pose == Pose::Working(ActionKind::Write) && motion {
+                paint::sparks(painter, at, now, session.id.len() as u64 * 31);
             }
-            painter.circle_filled(at, 4.5, colour);
+            let selected = Some(session.id.as_str()) == self.selected.as_deref();
+            paint::body(painter, at + bob, colour, selected);
+            paint::marker(painter, at, pose, t, motion);
 
             if click.is_some_and(|c| (c - at).length() <= 9.0) {
                 clicked = Some(session.id.clone());
@@ -842,16 +774,14 @@ impl SessionsView {
                 to_open = Some((*session).clone());
             }
 
-            let what = if waiting {
-                "needs you"
-            } else if placement.writing {
-                "writing"
-            } else {
-                "reading"
+            let action = match pose {
+                Pose::Moving => format!("next: {}", unit.label()),
+                Pose::Working(_) => unit.label(),
+                other => other.name().to_owned(),
             };
             let label_at = base + vec2(24.0, (k as f32 - (n as f32 - 1.0) / 2.0) * 15.0);
             let galley = painter.layout_no_wrap(
-                format!("{} · {what}", session.name),
+                format!("{} · {action}", session.name),
                 egui::FontId::proportional(12.0),
                 egui::Color32::WHITE,
             );
@@ -863,21 +793,28 @@ impl SessionsView {
                 egui::Stroke::new(1.0, colour.gamma_multiply(0.6)),
             );
             painter.rect_filled(label_rect, 3.0, egui::Color32::from_black_alpha(170));
+            painter.rect_filled(
+                Rect::from_min_size(label_rect.min, vec2(2.0, label_rect.height())),
+                0.0,
+                colour,
+            );
             painter.galley(
                 label_rect.min + vec2(5.0, 1.0),
                 galley,
                 egui::Color32::WHITE,
             );
 
-            anything_is_animating |= walking || !waiting;
+            anything_is_animating |= motion && !matches!(pose, Pose::Idle | Pose::Done);
 
             drawn.push(DrawnSession {
                 id: session.id.clone(),
-                tower: placement.tower.clone(),
+                tower: unit.target.tower.clone(),
                 dot: at,
                 label: label_rect,
-                waiting,
-                writing: placement.writing,
+                waiting: pose == Pose::Waiting,
+                writing: unit.action.write(),
+                pose,
+                action,
             });
         }
 
@@ -898,27 +835,6 @@ impl SessionsView {
         }
 
         (drawn, clicked, opened_a_pane)
-    }
-}
-
-/// `(ground position, height, still walking)` at `now`, for `anim`'s current
-/// walk toward `anim.to`: a 1.5 s eased walk along x then y at ground level,
-/// then a 0.4 s climb to `work_z`.
-fn walk(anim: &Anim, now: f64, work_z: f32) -> (Pos2, f32, bool) {
-    let smoothstep = |t: f64| (t * t * (3.0 - 2.0 * t)) as f32;
-    let w = ((now - anim.started) / WALK_SECONDS).clamp(0.0, 1.0);
-    if w < 1.0 {
-        let (dx, dy) = (anim.to.x - anim.from.x, anim.to.y - anim.from.y);
-        let d = smoothstep(w) * (dx.abs() + dy.abs());
-        let ground = if d <= dx.abs() {
-            pos2(anim.from.x + dx.signum() * d, anim.from.y)
-        } else {
-            pos2(anim.to.x, anim.from.y + dy.signum() * (d - dx.abs()))
-        };
-        (ground, 0.0, true)
-    } else {
-        let c = ((now - anim.started - WALK_SECONDS) / CLIMB_SECONDS).clamp(0.0, 1.0);
-        (anim.to, work_z * smoothstep(c), false)
     }
 }
 

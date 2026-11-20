@@ -109,11 +109,12 @@ fn session(id: &str, attach_id: Option<&str>, events: Vec<FileEvent>) -> Session
 /// checkouts, so a path prefix against the city's own root places it.
 fn read_of(path: PathBuf, line: Option<usize>) -> FileEvent {
     FileEvent {
-        write: false,
+        kind: cellworks_agent_sessions::ActionKind::Read,
         checkout: None,
         path,
         line,
         added: 0,
+        ..FileEvent::default()
     }
 }
 

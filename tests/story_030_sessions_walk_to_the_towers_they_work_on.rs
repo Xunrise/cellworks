@@ -80,11 +80,12 @@ fn session_in(
 /// checkouts unless the scenario says so).
 fn read_of(path: PathBuf, line: Option<usize>) -> FileEvent {
     FileEvent {
-        write: false,
+        kind: cellworks_agent_sessions::ActionKind::Read,
         checkout: None,
         path,
         line,
         added: 0,
+        ..FileEvent::default()
     }
 }
 
@@ -148,11 +149,12 @@ fn writing_adds_floors_while_the_session_writes() {
     let (tree, _opened_without_sessions) = shop_city();
     let discount = tree.root.join("catalog/pricing.rs").join("discount");
     let writing_event = FileEvent {
-        write: true,
+        kind: cellworks_agent_sessions::ActionKind::Write,
         checkout: None,
         path: tree.root.join("catalog/pricing.rs"),
         line: Some(3),
         added: 3,
+        ..FileEvent::default()
     };
     let pricing_fix = session("pricing-fix", "busy", "working", vec![writing_event]);
 
@@ -253,11 +255,12 @@ fn a_session_working_in_another_checkout_of_the_project_is_in_the_city() {
         "busy",
         "working",
         vec![FileEvent {
-            write: false,
+            kind: cellworks_agent_sessions::ActionKind::Read,
             checkout: Some(common_dir),
             path: PathBuf::from("catalog/pricing.rs"),
             line: Some(3),
             added: 0,
+            ..FileEvent::default()
         }],
     );
 

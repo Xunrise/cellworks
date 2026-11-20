@@ -5,9 +5,11 @@
 
 mod checkout;
 mod claude;
+mod paint;
 mod terminal;
 mod transcript;
 pub mod ui;
+pub mod units;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -22,11 +24,30 @@ use crate::terminal::Terminal;
 
 pub use claude::{Agent, AgentList, ClaudeCli, ClaudeUnavailable, parse_agents};
 
-/// One file read or write a session made, placed relative to its own
-/// checkout so the open project's own city can decide whether it is in it.
-#[derive(Clone, Debug, PartialEq)]
+/// What a tool call does where it lands: the unit's work animation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ActionKind {
+    #[default]
+    Read,
+    /// Edit, MultiEdit, Write, NotebookEdit.
+    Write,
+    /// A shell command.
+    Run,
+    /// Grep, Glob, or a searching shell command.
+    Search,
+    /// A subagent started with Task/Agent.
+    Delegate,
+    /// WebFetch, WebSearch: off the map.
+    Fetch,
+}
+
+/// One tool call a session made, placed relative to its own checkout so
+/// the open project's own city can decide whether it is in it. A file for
+/// the file tools; a folder for a command or search; an empty path for a
+/// call that leaves the map.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct FileEvent {
-    pub write: bool,
+    pub kind: ActionKind,
     /// The checkout's git common dir (shared by every worktree of one
     /// repository); `None` when the checkout is not a git repository.
     pub checkout: Option<PathBuf>,
@@ -36,6 +57,32 @@ pub struct FileEvent {
     pub path: PathBuf,
     pub line: Option<usize>,
     pub added: usize,
+    /// The command, pattern, task or URL; empty for the file tools.
+    pub detail: String,
+    /// The `tool_use` id, unique within a session; empty in hand-made
+    /// sessions.
+    pub id: String,
+    /// `None` while the call runs; then whether it succeeded.
+    pub outcome: Option<bool>,
+}
+
+impl FileEvent {
+    pub fn write(&self) -> bool {
+        self.kind == ActionKind::Write
+    }
+
+    /// The verb a unit's label shows: "editing", "testing", ...
+    pub fn verb(&self) -> &'static str {
+        match self.kind {
+            ActionKind::Read => "reading",
+            ActionKind::Write => "editing",
+            ActionKind::Run if self.detail.contains("test") => "testing",
+            ActionKind::Run => "running",
+            ActionKind::Search => "searching",
+            ActionKind::Delegate => "delegating",
+            ActionKind::Fetch => "fetching",
+        }
+    }
 }
 
 /// A session's state, read off `claude agents --json`'s `status` and
@@ -250,6 +297,11 @@ fn build_session(
         for tool_call in transcript::tool_events(&new_lines) {
             cache.events.push(resolve_event(&tool_call));
         }
+        for (id, ok) in transcript::tool_results(&new_lines) {
+            if let Some(event) = cache.events.iter_mut().rev().find(|e| e.id == id) {
+                event.outcome = Some(ok);
+            }
+        }
         let (said, newest) = transcript::summary(&new_lines);
         if let Some(said) = said {
             cache.summary = said;
@@ -335,11 +387,14 @@ fn resolve_event(tool_call: &transcript::ToolCall) -> FileEvent {
         None => (None, tool_call.path.clone()),
     };
     FileEvent {
-        write: tool_call.write,
+        kind: tool_call.kind,
         checkout,
         path,
         line: tool_call.line,
         added: tool_call.added,
+        detail: tool_call.detail.clone(),
+        id: tool_call.id.clone(),
+        outcome: None,
     }
 }
 
@@ -638,6 +693,13 @@ pub struct Placement {
     pub z: f32,
     pub writing: bool,
     pub added: usize,
+    /// The ground the tower, building or folder stands on.
+    pub area: egui::Rect,
+    /// The heights of the floors the event touches, when it names a line
+    /// of a tower.
+    pub floor: Option<(f32, f32)>,
+    /// The function or type the tower is, `None` for a file or folder.
+    pub item: Option<String>,
 }
 
 /// Where `session`'s latest event lands in the city at `map`, given the
@@ -657,7 +719,11 @@ pub fn place(map: &ProjectMap, common_dir: Option<&Path>, session: &Session) -> 
 /// this city: its checkout shares `common_dir` (any worktree), or, for a
 /// project that is not a git repository, its path sits under `map.root`.
 /// `None` when `event` is not in this city at all.
-fn city_node(event: &FileEvent, map: &ProjectMap, common_dir: Option<&Path>) -> Option<PathBuf> {
+pub(crate) fn city_node(
+    event: &FileEvent,
+    map: &ProjectMap,
+    common_dir: Option<&Path>,
+) -> Option<PathBuf> {
     let relative: &Path = match (&event.checkout, common_dir) {
         (Some(checkout), Some(open)) if checkout == open => &event.path,
         (None, None) => event.path.strip_prefix(&map.root).ok()?,
@@ -679,7 +745,7 @@ fn in_city_event(event: &FileEvent, map: &ProjectMap, common_dir: Option<&Path>)
 /// covers (a top-level `const`, an `impl` header, a blank line) says only
 /// "somewhere in this file", so it must not claim the first function.
 /// `None` when `map` holds neither an item nor a node at `node`.
-fn tower_of(map: &ProjectMap, node: &Path, event: &FileEvent) -> Option<Placement> {
+pub(crate) fn tower_of(map: &ProjectMap, node: &Path, event: &FileEvent) -> Option<Placement> {
     if let Some(items) = map.items_of(node) {
         let item = match event.line {
             Some(line) => items
@@ -691,12 +757,27 @@ fn tower_of(map: &ProjectMap, node: &Path, event: &FileEvent) -> Option<Placemen
                 .find(|item| item.kind == cellworks_map::ItemKind::Function),
         };
         if let Some(item) = item {
+            let floor = event.line.and_then(|line| {
+                let index = item.floors.iter().position(|f| f.number == line)?;
+                // `floor_z` is a floor's top above ground, its bottom in the
+                // cellar.
+                let z = cellworks_map::city::floor_z(item, index);
+                let span = event.added.max(1) as f32 * cellworks_map::city::floor_height(item);
+                Some(if cellworks_map::city::in_cellar(item) {
+                    (z, z + span)
+                } else {
+                    (z - span, z)
+                })
+            });
             return Some(Placement {
                 tower: item.path.clone(),
                 centre: item.area.center(),
                 z: cellworks_map::city::height(item),
-                writing: event.write,
+                writing: event.write(),
                 added: event.added,
+                area: item.area,
+                floor,
+                item: Some(item.name.clone()),
             });
         }
     }
@@ -706,8 +787,11 @@ fn tower_of(map: &ProjectMap, node: &Path, event: &FileEvent) -> Option<Placemen
         tower: node.to_owned(),
         centre: found.area.center(),
         z: 0.0,
-        writing: event.write,
+        writing: event.write(),
         added: event.added,
+        area: found.area,
+        floor: None,
+        item: None,
     })
 }
 
@@ -897,11 +981,11 @@ mod tests {
 
     fn read_event(path: PathBuf, line: Option<usize>) -> FileEvent {
         FileEvent {
-            write: false,
             checkout: None,
             path,
             line,
             added: 0,
+            ..FileEvent::default()
         }
     }
 
