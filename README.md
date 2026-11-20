@@ -46,6 +46,65 @@ account: it reads your disk and the tools you already use (git, `claude`, `gh`, 
 |---|---|
 | ![The launcher listing local and remote projects with git branch and file counts](docs/assets/launcher.png) | ![Jira tickets listed over the city](docs/assets/tickets.png) |
 
+## Supported languages
+
+Cellworks reads code with [tree-sitter](https://tree-sitter.github.io/). Two languages are analysed in depth today:
+
+| Language | Extensions | Functions and types as floors | Import lanes | Call lanes | Tests in the cellar |
+|---|---|---|---|---|---|
+| Rust | `.rs` | yes | yes | yes | `#[test]`, `#[cfg(test)]` modules |
+| TypeScript and JavaScript | `.ts` `.tsx` `.mts` `.cts` `.js` `.jsx` `.mjs` `.cjs` | yes | yes | yes (by name) | `describe` / `it` / `test`, `*.test.*`, `*.spec.*` |
+
+Every other file still stands on the map. Files in other languages (Python, Go, Java, Kotlin, …) become plain code
+towers: they are sized by their lines and carry git history and the why panel, but have no functions inside and no
+lanes. Non-code files stand as buildings of their kind:
+
+| Building | Files |
+|---|---|
+| Library | Docs: `.md`, `.markdown`, `.rst` |
+| Switchboard | Configuration: `.yaml`, `.yml`, `.json`, `.toml` |
+| Courthouse | Specifications: Gherkin `.feature` |
+| Plant | Infrastructure: `.tf`, `.tfvars` |
+| Customs house | Contracts: `.proto` |
+| Slab | Schemas: `.sql` |
+| Depot | Build: `Dockerfile*`, `Makefile`, `justfile`, shell scripts |
+| Vault | Secrets: `.env*` (examples as a glass vault) |
+| Ghost | Generated: lockfiles and snapshots |
+
+Images and everything else stand as plain towers.
+
+### Add your own language
+
+A language is one module in `crates/code-analysis` that turns source files into map items. Python as the example:
+
+1. **Add the grammar.** Add its tree-sitter crate to `crates/code-analysis/Cargo.toml`, in a version built for
+   `tree-sitter` 0.25 (e.g. `tree-sitter-python`).
+2. **Write the reader.** Create `crates/code-analysis/src/python.rs` with one entry point, the same shape as
+   `rust/mod.rs` and `typescript.rs`:
+
+   ```rust
+   pub(crate) fn read(root: &Path, files: &[PathBuf]) -> BTreeMap<PathBuf, Vec<Item>>
+   ```
+
+   - **Which files:** pick yours by extension, skip very large ones, and parse each with the grammar.
+   - **Items:** emit one `cellworks_map::Item` per function, class, method or type, with:
+     - `name` and `path` (the file plus the item's name);
+     - `kind`, plus `tests: true` for tests;
+     - one `Floor` per source line (number, text, indent, width and tokens);
+     - a `Declaration` saying what it declares and whether it is public.
+   - **Parse failures:** leave out any file you cannot parse. A file no reader returns falls back to a plain tower
+     (`plain.rs`).
+3. **Register it.** In `crates/code-analysis/src/lib.rs`, add `mod python;` and
+   `items.extend(python::read(root, &files));` next to the Rust and TypeScript readers.
+4. **Lanes (optional, recommended).** Resolve each import statement to the file and item it names, and fill
+   `Floor::imports` on that line. Fill `Floor::calls` with the items a line calls. `typescript.rs` (`imports_of`,
+   `resolve`, `link`) is the smallest worked example. Lanes and the imports and calls lenses then work without further
+   changes.
+5. **Test it.** Unit-test the reader on small inline sources, as the `tests` module at the end of `typescript.rs`
+   does, and run the checks in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Pull requests adding languages are welcome.
+
 ## Install
 
 Cellworks runs on **macOS 13 or later on Apple silicon**. It needs `git`; `claude`, `gh`, `nvim`, `kubectl` and
