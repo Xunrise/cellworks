@@ -1069,13 +1069,13 @@ mod tests {
     }
 
     #[test]
-    fn every_jira_seed_parses_as_an_issue() {
+    fn every_jira_seed_parses_as_a_ticket() {
         for entry in std::fs::read_dir(demo_dir("jira")).unwrap().flatten() {
             let text = std::fs::read_to_string(entry.path()).unwrap();
             if entry.file_name() == "mine.json" {
-                serde_json::from_str::<Vec<cellworks_map::ui::jira::Row>>(&text).unwrap();
+                serde_json::from_str::<Vec<cellworks_map::tickets::Ticket>>(&text).unwrap();
             } else {
-                serde_json::from_str::<cellworks_map::ui::jira::Issue>(&text).unwrap();
+                serde_json::from_str::<cellworks_map::tickets::Ticket>(&text).unwrap();
             }
         }
     }

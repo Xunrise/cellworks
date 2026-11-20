@@ -34,6 +34,15 @@ pub enum ProjectState {
     Failed,
 }
 
+/// How the opened project is drawn: as the city in 2.5D, or flat from
+/// straight above as factories and machines. Chosen per project.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ViewMode {
+    #[default]
+    City,
+    Flat,
+}
+
 /// Something about the opened project the engineer should know.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpenedNotice {
@@ -87,6 +96,10 @@ pub struct OpenedProject {
     learned: bool,
     /// The project lens the `Project` lens shows, by name.
     project_lens: Option<(String, Arc<ProjectLens>)>,
+    /// Whether the map is drawn as the city or flat.
+    view_mode: ViewMode,
+    /// The camera of the mode not shown, kept for when it is shown again.
+    parked_camera: Option<egui::Rect>,
 }
 
 impl OpenedProject {
@@ -113,7 +126,43 @@ impl OpenedProject {
             preparing: None,
             learned: false,
             project_lens: None,
+            view_mode: ViewMode::City,
+            parked_camera: None,
         }
+    }
+
+    /// Starts seen through `lens` with `lanes` shown, as the map settings
+    /// default. A lens the map cannot be seen through once read falls back to
+    /// the folders.
+    pub fn starting_with(mut self, lens: Lens, lanes: Lanes) -> OpenedProject {
+        self.lens = lens;
+        self.lanes = Lanes {
+            imports: lanes.imports || lens.lanes().imports,
+            calls: lanes.calls || lens.lanes().calls,
+        };
+        self
+    }
+
+    /// Whether the map is drawn as the city or flat.
+    pub fn view_mode(&self) -> ViewMode {
+        self.view_mode
+    }
+
+    /// The same project, drawn in `mode` from the start.
+    pub fn in_mode(mut self, mode: ViewMode) -> OpenedProject {
+        self.view_mode = mode;
+        self
+    }
+
+    /// Switches between the city and the flat view. `camera` is the camera
+    /// of the mode left, parked; the camera the mode switched to had when
+    /// last left is returned.
+    pub fn toggle_view_mode(&mut self, camera: Option<egui::Rect>) -> Option<egui::Rect> {
+        self.view_mode = match self.view_mode {
+            ViewMode::City => ViewMode::Flat,
+            ViewMode::Flat => ViewMode::City,
+        };
+        std::mem::replace(&mut self.parked_camera, camera)
     }
 
     /// Whether something a tower is explained from — a map, or the domain

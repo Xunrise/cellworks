@@ -68,6 +68,8 @@ enum Event {
 
 pub struct Updater {
     pub state: State,
+    /// Whether the hourly check runs; "check now" works either way.
+    pub auto_check: bool,
     bundle: Option<PathBuf>,
     tx: Sender<Event>,
     rx: Receiver<Event>,
@@ -98,6 +100,7 @@ impl Updater {
         };
         Updater {
             state,
+            auto_check: true,
             bundle,
             tx,
             rx,
@@ -134,7 +137,17 @@ impl Updater {
             let _ = std::fs::write(dir().join("started-ok"), env!("CARGO_PKG_VERSION"));
         }
         let quiet = matches!(self.state, State::Idle | State::UpToDate | State::Failed(_));
-        if quiet && self.last_check.is_none_or(|t| t.elapsed() >= CHECK_EVERY) {
+        if quiet && self.auto_check && self.last_check.is_none_or(|t| t.elapsed() >= CHECK_EVERY) {
+            self.check();
+        }
+    }
+
+    /// Checks now, whatever `auto_check` says; nothing outside a bundle or
+    /// while a check or a download is under way.
+    pub fn check_now(&mut self) {
+        if self.bundle.is_some()
+            && matches!(self.state, State::Idle | State::UpToDate | State::Failed(_))
+        {
             self.check();
         }
     }
@@ -497,9 +510,20 @@ mod tests {
     }
 
     #[test]
+    fn auto_check_off_means_no_hourly_check() {
+        let ctx = egui::Context::default();
+        let mut updater = Updater::new(Some(PathBuf::from("/nowhere/Cellworks.app")));
+        updater.auto_check = false;
+        updater.tick(&ctx);
+        assert_eq!(updater.state, State::Idle);
+    }
+
+    #[test]
     fn outside_a_bundle_nothing_happens() {
         let mut u = Updater::new(None);
         u.tick(&egui::Context::default());
+        assert_eq!(u.state, State::Unsupported);
+        u.check_now();
         assert_eq!(u.state, State::Unsupported);
     }
 }

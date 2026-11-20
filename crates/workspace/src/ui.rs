@@ -613,7 +613,7 @@ fn paint_background(ui: &egui::Ui) {
 /// theme words) and the eyebrow on the left; the project and host counts and
 /// the disabled add-project control on the right (STORY-082 requirement 1,
 /// STORY-083 requirements 1, 2 and 7/8).
-fn header(ui: &mut egui::Ui, rect: egui::Rect, launcher: &Launcher) {
+fn header(ui: &mut egui::Ui, rect: egui::Rect, launcher: &mut Launcher) {
     let words = launcher.words();
     ui.painter().rect_filled(rect, 0.0, BG.gamma_multiply(0.85));
     ui.painter().hline(
@@ -640,7 +640,11 @@ fn header(ui: &mut egui::Ui, rect: egui::Rect, launcher: &Launcher) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 16.0;
                 add_project_button(ui, words.add_project_button);
-                let chips = launcher.location_chips();
+                if crate::theme::tab(ui, "Settings", false, false).clicked() {
+                    launcher.request_settings();
+                }
+                let counts_launcher: &Launcher = launcher;
+                let chips = counts_launcher.location_chips();
                 let projects = chips.first().map_or(0, |chip| chip.count);
                 // Every chip but "All" and "This Mac" is a remote host.
                 let hosts = chips.len().saturating_sub(2);

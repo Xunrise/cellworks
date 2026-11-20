@@ -12,6 +12,7 @@ pub mod iterate_view;
 pub mod lens_panel;
 pub mod opened;
 pub mod review;
+pub mod settings_view;
 pub mod tools;
 pub mod update;
 
