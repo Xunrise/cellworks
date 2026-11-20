@@ -14,12 +14,14 @@ mod arrangement;
 mod discovery;
 mod event;
 mod hosts;
+mod keychain;
 mod launcher;
 mod marks;
 mod project;
 mod recent;
 mod registry;
 mod settings;
+mod settings_store;
 pub mod ui;
 
 pub use marks::{mark, marked, marked_all};
@@ -36,9 +38,15 @@ use std::sync::mpsc;
 pub use arrangement::{Arrangement, ArrangementKeeper, ArrangementStore};
 pub use event::WorkspaceEvent;
 pub use hosts::{HostProbe, SshProbe, start_probes};
+pub use keychain::{Keychain, MemoryKeychain, SecurityCli};
 pub use launcher::{HostState, Launcher, Location, Pick, ProjectDetails, ProjectKind, Sort};
 pub use project::{Project, ProjectId};
 pub use recent::{RecentKeeper, RecentStore};
+pub use settings_store::{
+    CockpitSettings, DefaultView, Env, GitHubSettings, JiraSettings, LENSES, Loaded, MapDefaults,
+    Settings, SettingsStore, apply_runtime, cases_folder, editor_command, expand_home,
+    skills_folder,
+};
 pub use universe::{Notice, NoticeKind, ScanState, Universe};
 
 use settings::Platform;
@@ -52,7 +60,8 @@ use settings::Platform;
 pub struct Sources {
     /// The folder walked for git repositories.
     pub projects_folder: PathBuf,
-    /// The file read for folders added by hand. Never written.
+    /// The settings file: read by the scan, written by the settings window
+    /// (ADR-0015).
     pub settings_file: PathBuf,
 }
 
@@ -92,8 +101,19 @@ fn non_empty(variable: &str) -> Option<std::ffi::OsString> {
 /// directly from a test. Exactly one [`WorkspaceEvent::ProjectsDiscovered`] is
 /// returned, last, after any failure the scan met on the way.
 pub fn scan(sources: &Sources) -> Vec<WorkspaceEvent> {
-    let discovered = discovery::discover(&sources.projects_folder);
     let added = settings::read(&sources.settings_file);
+    // `[projects] folders` replaces the one folder the caller named.
+    let roots = if added.project_folders.is_empty() {
+        vec![sources.projects_folder.clone()]
+    } else {
+        added.project_folders.clone()
+    };
+    let mut discovered = discovery::Discovered::default();
+    for root in roots {
+        let found = discovery::discover(&root);
+        discovered.folders.extend(found.folders);
+        discovered.events.extend(found.events);
+    }
     let theme_words_off = added.theme_words_off;
     let (mut projects, unidentified) = registry::merge(&discovered.folders, &added.folders);
     registry::attach_district_prefixes(&mut projects, &added.district_prefixes);
@@ -186,6 +206,20 @@ mod tests {
         settings_naming(&tree, &[&infra]);
 
         assert_eq!(universe_of(&tree.sources()), vec!["alpha", "infra"]);
+    }
+
+    #[test]
+    fn the_settings_file_names_the_folders_that_are_walked() {
+        let tree = TestTree::new();
+        tree.repository("Projects/alpha");
+        tree.repository("Elsewhere/beta");
+        let elsewhere = tree.path().join("Elsewhere");
+        tree.file(
+            "settings.toml",
+            &format!("[projects]\nfolders = [\"{}\"]\n", elsewhere.display()),
+        );
+
+        assert_eq!(universe_of(&tree.sources()), vec!["beta"]);
     }
 
     #[test]

@@ -1,10 +1,9 @@
 //! Reading the settings file: where it lives, and the folders it adds.
 //!
-//! Read-only by construction. This module exposes a path builder and a
-//! reader and no write function at all — no `fs::write`, no `File::create`,
-//! no `OpenOptions`, no `remove_file`. Until EPIC-008 brings the interface for
-//! adding a folder, hand-editing this file is the only way to add one, so it
-//! is the user's data and nothing here touches it.
+//! Read-only by construction: this module exposes a path builder and a reader
+//! and no write function. The file is also written, but only by the settings
+//! window through `settings_store` (ADR-0015), which keeps every key it does
+//! not own; hand edits stay the other way to change it.
 //!
 //! Parsing is tolerant: a key this story does not understand is ignored rather
 //! than rejected. A file that cannot be parsed at all is reported, because
@@ -102,6 +101,8 @@ pub(crate) struct AddedFolders {
     /// `false` — theme words stay on. `Default`'s `false` already matches
     /// this for an absent or unreadable settings file.
     pub(crate) theme_words_off: bool,
+    /// `[projects] folders`, expanded, when the file names any.
+    pub(crate) project_folders: Vec<PathBuf>,
 }
 
 /// Reads the folders `settings_file` adds.
@@ -137,6 +138,17 @@ pub(crate) fn read(settings_file: &Path) -> AddedFolders {
         .and_then(toml::Value::as_table)
         .and_then(|launcher| launcher.get(THEME_WORDS))
         .is_some_and(|value| matches!(value, toml::Value::Boolean(false)));
+
+    added.project_folders = table
+        .get(PROJECTS)
+        .and_then(toml::Value::as_table)
+        .and_then(|projects| projects.get("folders"))
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(toml::Value::as_str)
+        .map(crate::settings_store::expand_home)
+        .collect();
 
     // Tolerant: a missing key, a key of the wrong shape, and every key this
     // story does not know are all simply "no added folders from here".
