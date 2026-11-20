@@ -18,7 +18,6 @@ pub mod casefile;
 mod explain;
 mod flat;
 mod lanes;
-pub mod ticket;
 pub mod tickets_panel;
 mod why;
 

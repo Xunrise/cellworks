@@ -1363,6 +1363,9 @@ pub fn sheet_frame(screen: Rect) -> (Pos2, f32) {
 
 /// The part of stage 2's sheet the map shows through: left of the steps,
 /// below the toggle, above the outside-systems panel.
+/// How much a tower outside the case recedes.
+const RECEDES: f32 = 0.06;
+
 const MAP_AREA: [f32; 4] = [24.0, 80.0, 1092.0, 896.0];
 /// Stage 3's window onto the map.
 const HOLE: [f32; 4] = [1216.0, 80.0, 360.0, 230.0];
@@ -1516,7 +1519,7 @@ impl Case {
                         light: if shows(place.steps) {
                             1.0
                         } else {
-                            super::ticket::RECEDES * 2.0
+                            RECEDES * 2.0
                         },
                         pulse: shows(place.steps),
                     })

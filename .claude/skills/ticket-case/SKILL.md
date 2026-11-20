@@ -116,7 +116,7 @@ outside file is drawn in the outside-systems diagram. A system spot names a
 by spots and lanes. `kind` is one of `vault`, `key` (a secret path), `workload`
 (a pod, job, init container), `service`, `queue`, `role` (a database or cloud
 role), `database`, `doc`. `label` is what the diagram prints: the real name
-(`dev/apps/shop-service`, `shop-service`). `group` is free text for
+(`shop/payments`, `db-orders`). `group` is free text for
 grouping, e.g. `vault`.
 
 `lanes[]`: `{from, to, when, kind}`. `from` and `to` are spots. `when` is
@@ -182,6 +182,7 @@ starts." Tags are short upper-case labels.
 
 ## Example
 
-`example-SHOP-42.json` next to this file is a planned case: four steps,
-systems for Vault keys, workloads, roles and databases, and lanes for today and
-after. Use it as the shape to follow, not as content.
+`example-SHOP-42.json` next to this file is a planned case: three steps,
+systems for the checkout pod, the orders database, the payment secret and the
+payments API, and lanes for today and after. Use it as the shape to follow, not as
+content.
