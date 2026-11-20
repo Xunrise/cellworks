@@ -56,7 +56,7 @@ fn rows<'t>(root: Node<'t>) -> Vec<Node<'t>> {
             let node = node.accesskit_node();
             node.role() == Role::Button
                 && node.toggled().is_some()
-                && node.label().as_deref() != Some("lens panel")
+                && !matches!(node.label().as_deref(), Some("lens panel" | "flat view"))
         })
         .collect()
 }
