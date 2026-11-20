@@ -47,7 +47,8 @@ nav a:hover { color: var(--ink); }
 nav .gh { margin-left: auto; color: var(--ink); border: 1px solid var(--line-bright); padding: 6px 14px; clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px)); }
 .brand { color: var(--ink); text-decoration: none; letter-spacing: .2em; font-size: 18px; }
 .brand span { color: var(--yellow); }
-nav .brand { color: var(--ink); font-size: 18px; margin-right: 8px; }
+nav .brand { color: var(--ink); font-size: 18px; margin-right: 8px; display: inline-flex; align-items: center; gap: 10px; }
+nav .brand img { display: block; }
 
 .hero { padding: 72px 0 56px; }
 .hero .wrap { gap: 44px; }
