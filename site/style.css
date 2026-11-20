@@ -126,6 +126,7 @@ footer a:hover { color: var(--yellow); }
   background-size: 250% 100%; animation: sweep 7s ease-in-out infinite;
 }
 @keyframes sweep { from { background-position: 120% 0; } to { background-position: -120% 0; } }
+.hero-pause { position: absolute; right: 30px; bottom: 14px; z-index: 2; background: rgba(13, 17, 23, .85); }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 /* The loop: a plain list without script, a stepper with it. */
@@ -167,6 +168,7 @@ footer a:hover { color: var(--yellow); }
 .progress { height: 2px; background: var(--line); margin-top: -20px; }
 .progress span { display: block; height: 100%; width: 0; background: var(--yellow); box-shadow: 0 0 8px var(--yellow); }
 .progress.run span { animation: fill var(--dwell, 7s) linear forwards; }
+.progress.held span { animation-play-state: paused; }
 @keyframes fill { to { width: 100%; } }
 .controls { display: flex; gap: 8px; align-items: center; margin-top: -14px; }
 .ctl {

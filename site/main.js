@@ -30,6 +30,10 @@ document.querySelectorAll(".copy").forEach((b) => b.addEventListener("click", as
   setTimeout(() => (b.textContent = "Copy"), 1600);
 }));
 
+// Whether a player runs: an explicit pause wins; Play overrides a hover or
+// focus hold until the pointer or focus leaves; off screen it rests.
+const runs = (s) => !s.paused && s.visible && (s.forced || !(s.hover || s.focus));
+
 // ---------------------------------------------------------------- films
 // A film is a run of frames the test harness rendered from the app itself:
 // assets/anim/<name>/00.jpg ... Several names play one after the other.
@@ -70,6 +74,36 @@ const play = (img, urls, fps) => {
     tick();
   });
 };
+
+// ---------------------------------------------------------------- the hero
+// The overview city, looping. The poster is frame 0; the rest load after the
+// page and the loop starts once they are decoded.
+
+const hero = document.querySelector(".hero-shot img[data-film]");
+const heroBtn = document.querySelector(".hero-pause");
+if (hero && !reduce) {
+  const urls = frameUrls(hero);
+  // Hover does not hold the hero; only Pause and leaving the screen do.
+  const hs = { paused: false, hover: false, focus: false, visible: true, forced: true };
+  let i = 0, ready = false;
+  addEventListener("load", () => {
+    preload(urls);
+    Promise.all(urls.map((u) => cache.get(u).decode().catch(() => {}))).then(() => (ready = true));
+  });
+  setInterval(() => {
+    if (!ready || document.hidden || !runs(hs)) return;
+    i = (i + 1) % urls.length;
+    hero.src = urls[i];
+  }, 1000 / (Number(hero.dataset.fps) || 10));
+  new IntersectionObserver(([e]) => (hs.visible = e.isIntersecting)).observe(hero);
+  heroBtn.addEventListener("click", () => {
+    hs.paused = !hs.paused;
+    heroBtn.setAttribute("aria-pressed", String(hs.paused));
+    heroBtn.textContent = hs.paused ? "Play" : "Pause";
+  });
+} else if (heroBtn) {
+  heroBtn.remove();
+}
 
 // ---------------------------------------------------------------- key demos
 
@@ -197,18 +231,24 @@ if (loop && !reduce) {
   loop.classList.add("live");
 
   const DWELL = 7000;
-  let at = 0, timer = null, held = false, userPaused = false;
+  let at = 0, timer = null, left = DWELL, since = 0;
+  const st = { paused: false, hover: false, focus: false, visible: false, forced: false };
   const pauseBtn = controls.querySelector(".pause");
   const count = controls.querySelector(".count");
 
-  const schedule = () => {
+  // Runs the step timer and the progress bar while `runs(st)` holds, keeping
+  // what is left of the step across a pause.
+  const sync = () => {
     clearTimeout(timer);
-    bar.classList.remove("run");
-    if (held || userPaused) return;
-    void bar.offsetWidth;
-    bar.style.setProperty("--dwell", DWELL + "ms");
-    bar.classList.add("run");
-    timer = setTimeout(() => show((at + 1) % steps.length), DWELL);
+    const go = runs(st);
+    bar.classList.toggle("held", !go);
+    if (go) {
+      since = Date.now();
+      timer = setTimeout(() => show((at + 1) % steps.length), left);
+    } else if (since) {
+      left -= Date.now() - since;
+      since = 0;
+    }
   };
 
   function show(i) {
@@ -226,43 +266,50 @@ if (loop && !reduce) {
     const img = step.querySelector("img");
     const still = img.dataset.still || img.getAttribute("src");
     img.dataset.still = still;
-    if (step.dataset.film) {
+    if (step.dataset.film && !st.paused) {
       play(img, frameUrls(step), Number(step.dataset.fps) || 10).then(() => {
-        if (steps[at] === step) img.src = still;
+        if (steps[at] === step && !st.paused) img.src = still;
       });
     }
     // Warm the next step.
     const next = steps[(i + 1) % steps.length];
     preload([next.querySelector("img").dataset.still || next.querySelector("img").getAttribute("src"), ...(next.dataset.film ? frameUrls(next) : [])]);
-    schedule();
+    // A new step starts its bar from empty.
+    left = DWELL;
+    since = 0;
+    bar.style.setProperty("--dwell", DWELL + "ms");
+    bar.classList.remove("run");
+    void bar.offsetWidth;
+    bar.classList.add("run");
+    sync();
   }
 
   controls.addEventListener("click", (e) => {
     const go = e.target.closest("[data-go]");
     if (go) show((at + Number(go.dataset.go) + steps.length) % steps.length);
     if (e.target.closest(".pause")) {
-      userPaused = !userPaused;
-      pauseBtn.setAttribute("aria-pressed", String(userPaused));
-      pauseBtn.textContent = userPaused ? "Play" : "Pause";
-      schedule();
+      st.paused = !st.paused;
+      // Play overrides the hover or focus hold, or it would look inert.
+      st.forced = !st.paused;
+      pauseBtn.setAttribute("aria-pressed", String(st.paused));
+      pauseBtn.textContent = st.paused ? "Play" : "Pause";
+      if (st.paused) steps[at].querySelector("img").playing = {};
+      sync();
     }
   });
   // Hover or focus holds the step; leaving lets it run on.
-  const hold = (on) => { held = on; schedule(); };
-  loop.addEventListener("mouseenter", () => hold(true));
-  loop.addEventListener("mouseleave", () => hold(false));
-  loop.addEventListener("focusin", () => hold(true));
-  loop.addEventListener("focusout", (e) => { if (!loop.contains(e.relatedTarget)) hold(false); });
+  loop.addEventListener("mouseenter", () => { st.hover = true; sync(); });
+  loop.addEventListener("mouseleave", () => { st.hover = st.forced = false; sync(); });
+  loop.addEventListener("focusin", () => { st.focus = true; sync(); });
+  loop.addEventListener("focusout", (e) => {
+    if (!loop.contains(e.relatedTarget)) { st.focus = st.forced = false; sync(); }
+  });
   // Only run while the section is on screen.
-  let visible = false;
   new IntersectionObserver(([e]) => {
-    if (e.isIntersecting === visible) return;
-    visible = e.isIntersecting;
-    if (visible && steps[0].dataset.film) preload(frameUrls(steps[0]));
-    held = !visible || loop.matches(":hover") || loop.contains(document.activeElement);
-    schedule();
+    st.visible = e.isIntersecting;
+    if (st.visible && steps[0].dataset.film) preload(frameUrls(steps[0]));
+    sync();
   }, { threshold: 0.25 }).observe(loop);
 
-  held = true;
   show(0);
 }
