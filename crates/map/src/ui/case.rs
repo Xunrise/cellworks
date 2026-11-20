@@ -3804,7 +3804,7 @@ fn skill(name: &str) -> String {
     path.canonicalize().unwrap_or(path).display().to_string()
 }
 
-/// `$VISUAL`, `$EDITOR` or the `[editor] command` setting when it names an editor with a window of its own;
+/// The `[editor] command` setting, else `$VISUAL` or `$EDITOR`, when it names an editor with a window of its own;
 /// a terminal editor cannot open one from here, so the system's default
 /// text editor opens the file instead.
 fn editor(file: &str, line: usize) -> (String, Command) {

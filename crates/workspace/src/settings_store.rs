@@ -77,7 +77,8 @@ pub struct Settings {
     /// The Linear API key is not here: it lives in the keychain.
     pub linear_enabled: bool,
     pub map: MapDefaults,
-    /// Empty: `$VISUAL`, `$EDITOR`, else the system's text editor.
+    /// Wins over `$VISUAL` and `$EDITOR`; empty falls back to them, else
+    /// the system's text editor.
     pub editor: String,
     /// Empty: `~/.cellworks/cases`.
     pub cases_folder: String,
@@ -124,7 +125,7 @@ impl Default for Settings {
 // ------------------------------------------------------------------ env
 
 /// The environment variables that override a settings value.
-const ENV_VARS: [&str; 8] = [
+const ENV_VARS: [&str; 7] = [
     "CELLWORKS_JIRA_SITE",
     "CELLWORKS_JIRA_OFFLINE",
     "CELLWORKS_COCKPIT_URL",
@@ -132,7 +133,6 @@ const ENV_VARS: [&str; 8] = [
     "CELLWORKS_LINEAR_API_KEY",
     "CELLWORKS_CASES",
     "CELLWORKS_SKILLS",
-    "VISUAL",
 ];
 
 /// The overriding variables that are set. Passed in rather than read where it
@@ -171,7 +171,6 @@ impl Env {
             "tickets.linear.key" => &["CELLWORKS_LINEAR_API_KEY"],
             "cases.folder" => &["CELLWORKS_CASES"],
             "skills.folder" => &["CELLWORKS_SKILLS"],
-            "editor.command" => &["VISUAL", "EDITOR"],
             "tickets.jira.offline" => {
                 // Any value, even empty, as the ticket facade has always read it.
                 return self
@@ -212,9 +211,6 @@ impl Settings {
         }
         if let Some(v) = env.value("CELLWORKS_SKILLS") {
             out.skills_folder = v.to_owned();
-        }
-        if let Some(name) = env.overriding("editor.command") {
-            out.editor = env.value(name).unwrap_or_default().to_owned();
         }
         out
     }
@@ -610,13 +606,21 @@ pub fn skills_folder() -> Option<PathBuf> {
         .or_else(|| RUNTIME.read().ok().and_then(|r| r.skills.clone()))
 }
 
-/// The editor command: `$VISUAL`, `$EDITOR`, else the setting.
+/// The editor command: the setting, else `$VISUAL`, else `$EDITOR`. Most
+/// shells set `$EDITOR`, so it is only the fallback; otherwise nobody could
+/// choose an editor in the window.
 pub fn editor_command() -> Option<String> {
-    ["VISUAL", "EDITOR"]
-        .into_iter()
-        .filter_map(|name| std::env::var(name).ok())
-        .find(|value| !value.trim().is_empty())
-        .or_else(|| RUNTIME.read().ok().and_then(|r| r.editor.clone()))
+    RUNTIME
+        .read()
+        .ok()
+        .and_then(|r| r.editor.clone())
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            ["VISUAL", "EDITOR"]
+                .into_iter()
+                .filter_map(|name| std::env::var(name).ok())
+                .find(|value| !value.trim().is_empty())
+        })
 }
 
 #[cfg(test)]
@@ -715,7 +719,9 @@ mod tests {
         assert_eq!(effective.cockpit.url, "http://env:2");
         assert_eq!(effective.github.repos, vec!["a/b", "c/d"]);
         assert!(effective.jira.offline);
-        assert_eq!(effective.editor, "vim");
+        // $EDITOR is only a fallback; the setting (empty here) stays.
+        assert_eq!(effective.editor, "");
+        assert_eq!(env.overriding("editor.command"), None);
         assert_eq!(
             env.overriding("tickets.cockpit.url"),
             Some("CELLWORKS_COCKPIT_URL")
