@@ -61,6 +61,10 @@ pub(super) struct Focus<'a> {
     /// fly.
     pub network: Option<&'a lanes::Network>,
     pub pointer: Option<Pos2>,
+    /// Whether the lanes are drawn for the flat view: each a straight belt
+    /// from what is used to what uses it, rather than routed through the
+    /// streets and arcing through the air.
+    pub flat: bool,
 }
 
 /// The lanes of one frame, worked out before any is drawn: the import lanes
@@ -140,12 +144,16 @@ pub(super) fn frame<'a>(map: &ProjectMap, view: &View, focus: &Focus<'a>) -> Fra
                 from: flow.from.clone(),
                 to: flow.to.clone(),
                 line: None,
-                screen: route
-                    .points
-                    .iter()
-                    .zip(&route.heights)
-                    .map(|(p, z)| view.to_screen(*p, *z))
-                    .collect(),
+                screen: if focus.flat {
+                    belt(view, flow.to_area, flow.from_area)
+                } else {
+                    route
+                        .points
+                        .iter()
+                        .zip(&route.heights)
+                        .map(|(p, z)| view.to_screen(*p, *z))
+                        .collect()
+                },
                 ground: route.points.clone(),
                 heights: route.heights.clone(),
                 highway: route.highway,
@@ -153,7 +161,11 @@ pub(super) fn frame<'a>(map: &ProjectMap, view: &View, focus: &Focus<'a>) -> Fra
                 lit: false,
                 shown: true,
                 streak: false,
-                ends: [flow.imports[0].0.clone(), flow.imports[0].1.clone()],
+                ends: if focus.flat {
+                    [flow.imports[0].1.clone(), flow.imports[0].0.clone()]
+                } else {
+                    [flow.imports[0].0.clone(), flow.imports[0].1.clone()]
+                },
                 card: Vec::new(),
             });
         }
@@ -171,7 +183,14 @@ pub(super) fn frame<'a>(map: &ProjectMap, view: &View, focus: &Focus<'a>) -> Fra
                 from: call.caller.clone(),
                 to: call.callee.clone(),
                 line: Some(call.line),
-                screen: arc(view, call.start, call.end),
+                screen: if focus.flat {
+                    vec![
+                        view.to_screen(call.end.0, 0.0),
+                        view.to_screen(call.start.0, 0.0),
+                    ]
+                } else {
+                    arc(view, call.start, call.end)
+                },
                 ground: Vec::new(),
                 heights: Vec::new(),
                 highway: false,
@@ -179,7 +198,11 @@ pub(super) fn frame<'a>(map: &ProjectMap, view: &View, focus: &Focus<'a>) -> Fra
                 lit: false,
                 shown: true,
                 streak: false,
-                ends: [call.caller.clone(), call.callee.clone()],
+                ends: if focus.flat {
+                    [call.callee.clone(), call.caller.clone()]
+                } else {
+                    [call.caller.clone(), call.callee.clone()]
+                },
                 card: Vec::new(),
             });
         }
@@ -516,7 +539,7 @@ fn distance_to(points: &[Pos2], at: Pos2) -> f32 {
 }
 
 /// The point `along` screen points down `points`.
-fn point_along(points: &[Pos2], along: f32) -> Option<Pos2> {
+pub(super) fn point_along(points: &[Pos2], along: f32) -> Option<Pos2> {
     let mut left = along;
     for leg in points.windows(2) {
         let piece = (leg[1] - leg[0]).length();
@@ -526,6 +549,22 @@ fn point_along(points: &[Pos2], along: f32) -> Option<Pos2> {
         left -= piece;
     }
     None
+}
+
+/// A straight belt on screen from the edge of the ground `up` to the edge of
+/// the ground `down`, facing each other.
+fn belt(view: &View, up: Rect, down: Rect) -> Vec<Pos2> {
+    let edge = |area: Rect, towards: Pos2| {
+        let d = towards - area.center();
+        let t = (area.width() / 2.0 / d.x.abs().max(1e-3))
+            .min(area.height() / 2.0 / d.y.abs().max(1e-3))
+            .min(1.0);
+        area.center() + d * t
+    };
+    vec![
+        view.to_screen(edge(up, down.center()), 0.0),
+        view.to_screen(edge(down, up.center()), 0.0),
+    ]
 }
 
 /// Small dots running down `points`, subtle, in `colour`.
