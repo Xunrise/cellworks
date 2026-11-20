@@ -42,6 +42,16 @@ pub enum SourceError {
     Other(String),
 }
 
+impl std::fmt::Display for SourceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SourceError::SignIn => f.write_str("not signed in"),
+            SourceError::Unsupported => f.write_str("not supported"),
+            SourceError::Other(reason) => f.write_str(reason),
+        }
+    }
+}
+
 impl From<String> for SourceError {
     fn from(reason: String) -> SourceError {
         SourceError::Other(reason)
@@ -212,6 +222,8 @@ pub enum TicketEvent {
     SignInNeeded(SourceId),
     SignedIn(SourceId),
     SignInFailed(SourceId, String),
+    HubRefs(Result<Vec<String>, String>),
+    Sent(TicketRef, Result<String, String>),
 }
 
 #[derive(Default)]
@@ -241,6 +253,12 @@ pub struct Tickets {
     offline: bool,
     cache_root: PathBuf,
     jira_cache: PathBuf,
+    hub: Option<Arc<cockpit::Cockpit>>,
+    /// `None` until the hub has been asked once.
+    hub_up: Option<bool>,
+    hub_refs: BTreeSet<String>,
+    hub_asked: bool,
+    sent: BTreeMap<TicketRef, Result<String, String>>,
 }
 
 impl Default for Tickets {
@@ -254,6 +272,8 @@ impl Tickets {
         let cache = http::home().join(".cache/cellworks");
         let mut tickets = Tickets::with_sources(config.sources(), cache.join("tickets"));
         tickets.offline = config.offline;
+        tickets.hub = (config.cockpit && !config.offline)
+            .then(|| Arc::new(cockpit::Cockpit::new(&config.cockpit_url)));
         tickets.jira_cache = std::env::var_os("CELLWORKS_JIRA_CACHE")
             .map(PathBuf::from)
             .unwrap_or_else(|| cache.join("jira/issues"));
@@ -282,6 +302,11 @@ impl Tickets {
             offline: false,
             jira_cache: cache_root.join("jira"),
             cache_root,
+            hub: None,
+            hub_up: None,
+            hub_refs: BTreeSet::new(),
+            hub_asked: false,
+            sent: BTreeMap::new(),
         }
     }
 
@@ -448,6 +473,18 @@ impl TicketDesk for Tickets {
                         slot.failure = Some(reason);
                     }
                 }
+                TicketEvent::HubRefs(Ok(refs)) => {
+                    self.hub_up = Some(true);
+                    self.hub_refs = refs.into_iter().collect();
+                }
+                TicketEvent::HubRefs(Err(_)) => self.hub_up = Some(false),
+                TicketEvent::Sent(which, result) => {
+                    self.pending.remove(&which);
+                    if result.is_ok() {
+                        self.hub_refs.insert(which.to_string());
+                    }
+                    self.sent.insert(which, result);
+                }
                 TicketEvent::FetchFailed { which, reason } => {
                     self.pending.remove(&which);
                     self.failed.insert(which, reason);
@@ -510,6 +547,10 @@ impl TicketDesk for Tickets {
     }
 
     fn all(&mut self) -> Vec<(Ticket, Synced)> {
+        if let (false, Some(hub)) = (self.hub_asked, self.hub.clone()) {
+            self.hub_asked = true;
+            self.spawn(move || TicketEvent::HubRefs(hub.hub_refs().map_err(|e| e.to_string())));
+        }
         self.listed(true)
     }
 
@@ -544,6 +585,7 @@ impl TicketDesk for Tickets {
     }
 
     fn refresh(&mut self) {
+        self.hub_asked = false;
         for slot in self.slots.values_mut() {
             slot.list_asked = false;
         }
@@ -576,6 +618,31 @@ impl TicketDesk for Tickets {
                 reason: format!("{} tickets are read-only here", src.id().name()),
             },
             Err(SourceError::Other(reason)) => TicketEvent::FetchFailed { which, reason },
+        });
+    }
+
+    fn cockpit_up(&self) -> bool {
+        self.hub_up == Some(true)
+    }
+
+    fn in_cockpit(&self, which: &TicketRef) -> bool {
+        self.hub_refs.contains(&which.to_string())
+    }
+
+    fn sent(&self, which: &TicketRef) -> Option<Result<String, String>> {
+        self.sent.get(which).cloned()
+    }
+
+    fn send_to_cockpit(&mut self, which: &TicketRef) {
+        let (Some(hub), Some((ticket, _))) = (self.hub.clone(), self.store.get(which).cloned())
+        else {
+            return;
+        };
+        let which = which.clone();
+        self.pending.insert(which.clone());
+        self.spawn(move || {
+            let result = hub.send(&ticket).map_err(|e| e.to_string());
+            TicketEvent::Sent(which, result)
         });
     }
 
@@ -875,6 +942,72 @@ mod tests {
         );
         config.offline = true;
         assert_eq!(ids(&config), [SourceId::Jira]);
+    }
+}
+
+#[cfg(test)]
+mod hub_tests {
+    use super::*;
+
+    fn desk(url: &str) -> Tickets {
+        let mut desk = Tickets::with_sources(Vec::new(), std::env::temp_dir().join("cw-hub-test"));
+        desk.hub = Some(Arc::new(cockpit::Cockpit::new(url)));
+        desk
+    }
+
+    fn drain(desk: &mut Tickets, until: impl Fn(&Tickets) -> bool) {
+        let start = std::time::Instant::now();
+        while !until(desk) && start.elapsed().as_secs() < 20 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            desk.poll();
+        }
+    }
+
+    fn github(key: &str) -> Ticket {
+        Ticket {
+            source: SourceId::GitHub,
+            key: key.into(),
+            title: "t".into(),
+            ..Ticket::default()
+        }
+    }
+
+    #[test]
+    fn mirrored_tickets_are_marked_and_sending_marks_the_rest() {
+        let (url, _) = cockpit::tests::stub(&[
+            ("ticket.list", r#"[{"ref":"github:a/b#1"}]"#),
+            (
+                "ticket.pull",
+                r#"{"key":"a-b-2","created":true,"ticket":{}}"#,
+            ),
+        ]);
+        let mut desk = desk(&url);
+        let (one, two) = (github("a/b#1"), github("a/b#2"));
+        for t in [&one, &two] {
+            desk.put(t.clone(), Synced::Live(SystemTime::now()));
+        }
+        desk.all();
+        drain(&mut desk, |d| d.cockpit_up());
+        assert!(desk.in_cockpit(&one.reference()));
+        assert!(!desk.in_cockpit(&two.reference()));
+        desk.send_to_cockpit(&two.reference());
+        drain(&mut desk, |d| d.sent(&two.reference()).is_some());
+        assert_eq!(
+            desk.sent(&two.reference()),
+            Some(Ok("a-b-2 created".into()))
+        );
+        assert!(desk.in_cockpit(&two.reference()));
+    }
+
+    #[test]
+    fn an_unreachable_hub_disables_sending_and_nothing_else_breaks() {
+        let mut desk = desk("http://127.0.0.1:1");
+        desk.put(github("a/b#1"), Synced::Live(SystemTime::now()));
+        desk.all();
+        drain(&mut desk, |d| d.hub_up.is_some());
+        assert_eq!(desk.hub_up, Some(false));
+        assert!(!desk.cockpit_up());
+        assert!(!desk.in_cockpit(&github("a/b#1").reference()));
     }
 }
 

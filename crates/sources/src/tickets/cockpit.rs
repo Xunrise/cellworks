@@ -51,6 +51,50 @@ impl Cockpit {
         }
     }
 
+    /// Refs (`jira:KEY`...) of the tracker tickets the hub already mirrors.
+    pub fn hub_refs(&self) -> Result<Vec<String>, SourceError> {
+        let rows = self.call("ticket.list", &json!({}))?;
+        let rows = if rows.is_array() {
+            &rows
+        } else {
+            &rows["tickets"]
+        };
+        Ok(array(rows)
+            .iter()
+            .filter_map(|r| r["ref"].as_str())
+            .filter(|r| !r.starts_with("cockpit:"))
+            .map(str::to_owned)
+            .collect())
+    }
+
+    /// Brings `t` into the hub: `ticket.pull`, else `ticket.mirror` when the
+    /// hub lacks the tracker's sign-in. Answers "TIC-5 created" or "... updated".
+    pub fn send(&self, t: &Ticket) -> Result<String, SourceError> {
+        let r = format!("{}:{}", t.source.id(), t.key);
+        let answer = match self.call("ticket.pull", &json!({ "ref": r })) {
+            Ok(a) => a,
+            Err(SourceError::Other(e)) if lacks_sign_in(&e) => {
+                let status = status_name(t.category);
+                self.call(
+                    "ticket.mirror",
+                    &json!({"source": t.source.id(), "external_key": t.key, "title": t.title,
+                        "status": status, "external_status": t.status, "body": t.body,
+                        "url": t.url, "updated": t.updated}),
+                )?
+            }
+            Err(e) => return Err(e),
+        };
+        Ok(format!(
+            "{} {}",
+            answer["key"].as_str().unwrap_or("?"),
+            if answer["created"].as_bool() == Some(true) {
+                "created"
+            } else {
+                "updated"
+            }
+        ))
+    }
+
     /// The daemon's state: every ticket and the repos table.
     fn state(&self) -> Result<Value, String> {
         let r = request(&format!("{}/api/state", self.base), &[], None, 10)?;
@@ -138,6 +182,12 @@ impl TicketSource for Cockpit {
     }
 }
 
+/// Whether a `ticket.pull` error says the hub has no sign-in or key for the tracker.
+fn lacks_sign_in(error: &str) -> bool {
+    let e = error.to_lowercase();
+    e.contains("sign") || e.contains("api key")
+}
+
 fn array(v: &Value) -> &[Value] {
     v.as_array().map(Vec::as_slice).unwrap_or_default()
 }
@@ -213,7 +263,7 @@ fn ticket(t: &Value, repos: &BTreeMap<String, String>) -> Ticket {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     fn fixture(name: &str) -> Value {
@@ -254,6 +304,147 @@ mod tests {
         let mut keys: Vec<&str> = listed.iter().map(|t| t.key.as_str()).collect();
         keys.sort();
         assert_eq!(keys, ["TIC-1", "TIC-2"]);
+    }
+
+    /// A one-thread HTTP stub: answers `POST /api/tools/<name>` with the
+    /// canned body for `name` (else an error body) and records the calls.
+    pub(in crate::tickets) fn stub(
+        answers: &[(&str, &str)],
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let answers: BTreeMap<String, String> = answers
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = calls.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let tool = line
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|p| p.strip_prefix("/api/tools/"))
+                    .unwrap_or_default()
+                    .to_owned();
+                let mut length = 0;
+                loop {
+                    let mut h = String::new();
+                    reader.read_line(&mut h).unwrap();
+                    if h.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(v) = h.to_lowercase().strip_prefix("content-length:") {
+                        length = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                log.lock()
+                    .unwrap()
+                    .push(format!("{tool} {}", String::from_utf8_lossy(&body)));
+                let answer = answers
+                    .get(&tool)
+                    .cloned()
+                    .unwrap_or_else(|| r#"{"error":"no such tool"}"#.to_owned());
+                let _ = write!(
+                    reader.get_mut(),
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
+                    answer.len()
+                );
+            }
+        });
+        (url, calls)
+    }
+
+    fn linear() -> Ticket {
+        Ticket {
+            source: SourceId::Linear,
+            key: "ENG-7".into(),
+            title: "Fix it".into(),
+            body: "details".into(),
+            status: "In Review".into(),
+            category: Category::InProgress,
+            url: "https://linear.app/x/ENG-7".into(),
+            updated: "2026-11-19".into(),
+            ..Ticket::default()
+        }
+    }
+
+    #[test]
+    fn send_pulls_and_reports_created_or_updated() {
+        let (url, calls) = stub(&[(
+            "ticket.pull",
+            r#"{"key":"ENG-7","created":false,"ticket":{}}"#,
+        )]);
+        let done = Cockpit::new(&url).send(&linear()).unwrap();
+        assert_eq!(done, "ENG-7 updated");
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].starts_with("ticket.pull ") && calls[0].contains("linear:ENG-7"));
+    }
+
+    #[test]
+    fn send_mirrors_what_cellworks_holds_when_the_hub_has_no_sign_in() {
+        let (url, calls) = stub(&[
+            ("ticket.pull", r#"{"error":"Linear needs an API key"}"#),
+            (
+                "ticket.mirror",
+                r#"{"key":"linear-ENG-7","created":true,"ticket":{}}"#,
+            ),
+        ]);
+        let done = Cockpit::new(&url).send(&linear()).unwrap();
+        assert_eq!(done, "linear-ENG-7 created");
+        let calls = calls.lock().unwrap();
+        let mirror: Value =
+            serde_json::from_str(calls[1].strip_prefix("ticket.mirror ").unwrap()).unwrap();
+        assert_eq!(
+            (
+                mirror["source"].as_str(),
+                mirror["external_key"].as_str(),
+                mirror["status"].as_str(),
+                mirror["external_status"].as_str(),
+                mirror["title"].as_str(),
+            ),
+            (
+                Some("linear"),
+                Some("ENG-7"),
+                Some("doing"),
+                Some("In Review"),
+                Some("Fix it")
+            )
+        );
+    }
+
+    #[test]
+    fn send_shows_other_errors_without_mirroring() {
+        let (url, calls) = stub(&[("ticket.pull", r#"{"error":"Issue does not exist"}"#)]);
+        let error = Cockpit::new(&url).send(&linear()).unwrap_err();
+        assert!(error.to_string().contains("Issue does not exist"));
+        assert_eq!(calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn hub_refs_lists_mirrors_but_not_cockpit_own_tickets() {
+        let (url, _) = stub(&[(
+            "ticket.list",
+            r#"[{"ref":"cockpit:TIC-2"},{"ref":"jira:SHOP-42"},{"ref":"github:a/b#1"}]"#,
+        )]);
+        assert_eq!(
+            Cockpit::new(&url).hub_refs().unwrap(),
+            ["jira:SHOP-42", "github:a/b#1"]
+        );
+    }
+
+    #[test]
+    fn a_missing_sign_in_is_recognised() {
+        assert!(lacks_sign_in("Jira: not signed in"));
+        assert!(lacks_sign_in("Linear needs an API key"));
+        assert!(!lacks_sign_in("Issue does not exist"));
     }
 
     #[test]

@@ -304,6 +304,30 @@ impl TicketsPanel {
             } else {
                 ui.add_sized([90.0, 16.0], egui::Label::new(status).truncate());
             }
+            if ticket.source != SourceId::Cockpit {
+                if desk.in_cockpit(&which) {
+                    ui.label(RichText::new("IN COCKPIT").small().strong().color(OK))
+                        .on_hover_text("this ticket is mirrored in the Cockpit hub");
+                } else if !desk.cockpit_up() {
+                    ui.add_enabled(false, egui::Button::new(RichText::new("→ Cockpit").small()))
+                        .on_disabled_hover_text("Cockpit is not reachable (127.0.0.1:4747)");
+                } else if ui
+                    .small_button("→ Cockpit")
+                    .on_hover_text("Send to Cockpit")
+                    .clicked()
+                {
+                    desk.send_to_cockpit(&which);
+                }
+                match desk.sent(&which) {
+                    Some(Ok(done)) => {
+                        ui.label(RichText::new(done).small().color(OK));
+                    }
+                    Some(Err(e)) => {
+                        ui.label(RichText::new(e).small().color(DANGER_TEXT));
+                    }
+                    None => {}
+                }
+            }
             if !mark.is_empty() {
                 ui.label(RichText::new(mark).small().strong().color(tone))
                     .on_hover_text("where the case stands");

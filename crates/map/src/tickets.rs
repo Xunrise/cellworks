@@ -265,6 +265,14 @@ pub trait TicketDesk {
     fn set_status(&mut self, which: &TicketRef, category: Category);
     fn sign_in(&self, source: SourceId) -> SignIn;
     fn start_sign_in(&mut self, source: SourceId);
+    /// Whether the Cockpit hub answered at the last look.
+    fn cockpit_up(&self) -> bool;
+    /// Whether the hub already mirrors this tracker ticket.
+    fn in_cockpit(&self, which: &TicketRef) -> bool;
+    /// What the last "send" said ("TIC-5 created", or the error).
+    fn sent(&self, which: &TicketRef) -> Option<Result<String, String>>;
+    /// Brings the ticket into Cockpit, on a background thread.
+    fn send_to_cockpit(&mut self, which: &TicketRef);
 }
 
 /// `at` in local time, through `date`, which knows the time zone.
