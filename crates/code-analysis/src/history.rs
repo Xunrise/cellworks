@@ -90,6 +90,26 @@ pub(crate) fn stories(message: &str) -> Vec<String> {
         }
         offset = start;
     }
+    // Jira-style keys (`SHOP-42`) count when a `Refs:` trailer names them.
+    for line in message.lines() {
+        let Some(refs) = line.trim().strip_prefix("Refs:") else {
+            continue;
+        };
+        for word in refs.split(|c: char| c == ',' || c.is_whitespace()) {
+            let Some((project, number)) = word.split_once('-') else {
+                continue;
+            };
+            let key = project.starts_with(|c: char| c.is_ascii_uppercase())
+                && project
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+                && !number.is_empty()
+                && number.chars().all(|c| c.is_ascii_digit());
+            if key && !project.eq_ignore_ascii_case("story") && seen.insert(word.to_owned()) {
+                found.push(word.to_owned());
+            }
+        }
+    }
     found
 }
 
@@ -152,6 +172,11 @@ closes #79.\n\n\
             "already three digits"
         );
         assert_eq!(stories("no story here"), Vec::<String>::new());
+        assert_eq!(
+            stories("Merge SHOP-42\n\nRefs: SHOP-42, STORY-7"),
+            vec!["STORY-007".to_owned(), "SHOP-42".to_owned()]
+        );
+        assert_eq!(stories("fix UTF-8 handling"), Vec::<String>::new());
     }
 
     #[test]

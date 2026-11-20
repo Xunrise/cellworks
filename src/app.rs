@@ -2686,23 +2686,23 @@ fn iterate_info(ui: &mut egui::Ui, it: &mut crate::iterate::Iterate) -> Option<s
                 .size(11.0)
                 .color(colour)
         };
-        ui.horizontal(|ui| {
-            ui.label(mono(format!("proto/{}", it.slug), theme::YELLOW));
-            match (it.status.port, it.status.live) {
-                (Some(port), true) => {
-                    ui.label(mono(format!("● live :{port}"), theme::OK));
-                    if theme::tab(ui, "open", false, false).clicked()
-                        && let Some(url) = it.url()
-                    {
-                        let _ = std::process::Command::new("open").arg(url).spawn();
-                    }
+        // The branch alone on its line, cut short rather than widening the
+        // column: a panel wider than its exact size slides under the map.
+        ui.add(egui::Label::new(mono(format!("proto/{}", it.slug), theme::YELLOW)).truncate());
+        ui.horizontal(|ui| match (it.status.port, it.status.live) {
+            (Some(port), true) => {
+                ui.label(mono(format!("● live :{port}"), theme::OK));
+                if theme::tab(ui, "open", false, false).clicked()
+                    && let Some(url) = it.url()
+                {
+                    let _ = std::process::Command::new("open").arg(url).spawn();
                 }
-                (Some(port), false) => {
-                    ui.label(mono(format!("○ down :{port}"), theme::DIM));
-                }
-                (None, _) => {
-                    ui.label(mono("○ no launch.json".into(), theme::DIM));
-                }
+            }
+            (Some(port), false) => {
+                ui.label(mono(format!("○ down :{port}"), theme::DIM));
+            }
+            (None, _) => {
+                ui.label(mono("○ no launch.json".into(), theme::DIM));
             }
         });
         match &it.spawned {
