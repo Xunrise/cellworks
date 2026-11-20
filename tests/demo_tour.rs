@@ -98,6 +98,11 @@ fn size() -> egui::Vec2 {
 
 /// Builds the demo world and a scanned app in a headless harness.
 fn start() -> Harness<'static, State> {
+    start_sized(size())
+}
+
+/// [`start`] at a given window size.
+fn start_sized(size: egui::Vec2) -> Harness<'static, State> {
     // SAFETY: set before the app or any thread exists.
     unsafe {
         std::env::set_var("CELLWORKS_DEMO", "1");
@@ -112,7 +117,7 @@ fn start() -> Harness<'static, State> {
     cellworks::demo::init();
     let app = CellworksApp::start();
     let mut h = Harness::builder()
-        .with_size(size())
+        .with_size(size)
         .with_step_dt(1.0 / 20.0)
         .with_max_steps(1)
         .build_ui_state(
@@ -377,59 +382,574 @@ fn demo_tour() {
     drop(h);
 }
 
-/// The README and landing-page screenshots, written to docs/assets/ with the
-/// tour hidden. Run with a private TMPDIR so the demo world is not shared:
+/// The README and landing-page pictures: stills of the city and of every
+/// stage of the ticket loop, plus short frame films of the engine's own
+/// transitions (one frame per harness step of 1/20 s, or every other one),
+/// all with the tour hidden. Run with a private TMPDIR so the demo world is
+/// not shared:
 /// TMPDIR=$(mktemp -d /tmp/cw.XXXX)/ cargo test --release --test demo_tour readme_shots -- --ignored --nocapture
-/// then trim the harness's 8 px edge: for f in docs/assets/*.png; do sips -c 984 1584 "$f"; done
+/// CELLWORKS_SHOTS_OUT=<dir> writes elsewhere than docs/assets;
+/// CELLWORKS_SHOTS_PART=city stops after the city and its films.
 #[test]
 #[ignore]
 fn readme_shots() {
-    let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs/assets");
-    std::fs::create_dir_all(&out).unwrap();
-    let mut h = start();
+    let out = std::env::var("CELLWORKS_SHOTS_OUT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs/assets"));
+    let anim = out.join("anim");
+    let _ = std::fs::remove_dir_all(&anim);
+    std::fs::create_dir_all(&anim).unwrap();
+    let only_city = std::env::var("CELLWORKS_SHOTS_PART").is_ok_and(|p| p == "city");
+    let mut h = start_sized(egui::vec2(1920.0, 1080.0));
     drive(&mut h, "tour-hide");
     let shop = cellworks::demo::root().join("projects/shopfront");
 
+    // The launcher: arrowing through the projects, then opening one.
     drive(&mut h, &format!("select {}", shop.display()));
     frames(&mut h, 800);
-    snap(&mut h, &out, "launcher");
+    still(&mut h, &out, "launcher.jpg");
+    let projects = shop.parent().unwrap().to_path_buf();
+    film(
+        &mut h,
+        &anim.join("launcher/move"),
+        4,
+        3,
+        Crop::Full,
+        |h, i| {
+            let to = ["billing-api", "ops-runbooks", "shopfront"][i - 1];
+            drive(h, &format!("select {}", projects.join(to).display()));
+        },
+    );
+    film_paced(&mut h, &anim.join("launcher/open"), 4, 300, |h| {
+        drive(h, &format!("open {}", shop.display()));
+    });
+    frames(&mut h, 3000);
+    assert!(h.state().app.opened().is_some(), "shopfront opened");
 
-    drive(&mut h, &format!("open {}", shop.display()));
-    frames(&mut h, 6000);
-    drive(&mut h, "agent explorer src/catalog/search.ts");
+    // The plain folder city every film starts from: no explorer, no
+    // sessions pane, no captions, the whole city in view. City pictures are
+    // cut to the towers so the city fills them.
     drive(&mut h, "tree");
+    drive(&mut h, "bare on");
+    h.key_press(egui::Key::S);
     drive(&mut h, "fit");
     settle(&mut h);
-    // Closer than the fit: the city fills the frame beside the panels.
-    h.hover_at(egui::pos2(900.0, 560.0));
-    h.event(egui::Event::Zoom(1.3));
-    h.step();
-    h.step();
-    h.event(egui::Event::MouseWheel {
-        unit: egui::MouseWheelUnit::Point,
-        delta: egui::vec2(130.0, -40.0),
-        phase: egui::TouchPhase::Move,
-        modifiers: egui::Modifiers::NONE,
+    city_still(&mut h, &out, "city.jpg", "");
+
+    let city = anim.join("city");
+    let back = |h: &mut Harness<'_, State>, lines: &[&str]| {
+        script(h, lines);
+        drive(h, "fit");
+        settle(h);
+    };
+    for lens in ["imports", "calls", "co-change", "cells"] {
+        film(&mut h, &city.join(lens), 15, 2, Crop::City(""), |h, i| {
+            if i == 1 {
+                drive(h, &format!("lens {lens}"));
+            }
+        });
+        back(&mut h, &["lens folders"]);
+    }
+    // Import lanes for the whole city; call lanes for one selected tower
+    // only, as a selection shows them: every call at once is too much.
+    film(
+        &mut h,
+        &city.join("lanes-imports"),
+        10,
+        1,
+        Crop::City(""),
+        |h, i| {
+            if i == 1 {
+                drive(h, "lanes imports");
+            }
+        },
+    );
+    back(&mut h, &["lanes imports"]);
+    film(&mut h, &city.join("explorer"), 12, 1, Crop::Full, |h, i| {
+        if i == 1 {
+            drive(h, "tree");
+        }
     });
+    back(&mut h, &["tree"]);
+    // The turn is a cut, not a flight: two frames say it.
+    film(&mut h, &city.join("turn"), 2, 1, Crop::City(""), |h, _| {
+        h.key_press(egui::Key::Q);
+    });
+    for _ in 0..3 {
+        h.key_press(egui::Key::Q);
+        h.step();
+    }
+    back(&mut h, &[]);
+
+    // The flat view: the switch, its belts, a machine up close.
+    let flat = anim.join("flat");
+    film(&mut h, &flat.join("view"), 4, 1, Crop::City(""), |h, i| {
+        if i == 1 {
+            h.key_press(egui::Key::V);
+        }
+    });
+    settle(&mut h);
+    city_still(&mut h, &out, "flat.jpg", "");
+    film(
+        &mut h,
+        &flat.join("belts"),
+        10,
+        1,
+        Crop::City(""),
+        |h, i| {
+            if i == 1 {
+                drive(h, "lanes imports");
+            }
+        },
+    );
+    settle(&mut h);
+    city_still(&mut h, &out, "flat-belts.jpg", "");
+    back(&mut h, &["lanes imports"]);
+    film(&mut h, &flat.join("zoom"), 14, 1, Crop::City(""), |h, i| {
+        if i == 1 {
+            drive(h, "frame src/cart");
+        }
+    });
+    h.key_press(egui::Key::V);
+    back(&mut h, &[]);
+    deselect(&mut h);
+
+    // The hero: import lanes flowing through src, sessions walking and
+    // writing.
+    script(
+        &mut h,
+        &[
+            "lanes imports",
+            "agent explorer src/catalog/search.ts",
+            "agent shop-42 src/cart/totals.ts",
+            "wait 1500",
+            "agent shop-42 src/checkout/order.ts",
+            "frame src",
+        ],
+    );
+    settle(&mut h);
+    let free = cellworks::demo::free_rect(&h.ctx).unwrap_or(egui::Rect::EVERYTHING);
+    h.hover_at(free.center());
+    h.event(egui::Event::Zoom(1.6));
+    h.step();
     h.step();
     h.event(egui::Event::PointerGone);
     settle(&mut h);
-    snap(&mut h, &out, "city");
+    city_still(&mut h, &out, "city-lanes.jpg", "/src/");
+    // Call lanes for one selected tower, so its calls stand out.
+    script(&mut h, &["lanes imports"]);
+    settle(&mut h);
+    let totals = h
+        .state()
+        .app
+        .towers()
+        .iter()
+        .filter(|t| t.path.to_string_lossy().contains("src/cart/totals.ts"))
+        .max_by(|a, b| a.outline.area().total_cmp(&b.outline.area()))
+        .map(|t| t.outline.center())
+        .expect("the totals tower in view");
+    click_at(&mut h, totals);
+    h.event(egui::Event::PointerGone);
+    settle(&mut h);
+    let calls = city.join("lanes-calls");
+    film(&mut h, &calls, 10, 1, Crop::City("/src/"), |h, i| {
+        if i == 1 {
+            drive(h, "lanes calls");
+        }
+    });
+    back(&mut h, &["lanes calls"]);
+    deselect(&mut h);
 
-    h.key_press(egui::Key::V);
+    // Pinch from the whole city into the cart district, look under it,
+    // then step inside a tower.
+    let cart = city_box(&h, "src/cart/").expect("the cart towers").center();
+    film(&mut h, &city.join("zoom"), 14, 1, Crop::City(""), |h, _| {
+        h.hover_at(cart);
+        h.event(egui::Event::Zoom(1.14));
+    });
+    h.event(egui::Event::PointerGone);
     settle(&mut h);
-    snap(&mut h, &out, "flat");
-    h.key_press(egui::Key::V);
-    settle(&mut h);
+    for (name, key) in [("underground", egui::Key::U), ("cables", egui::Key::M)] {
+        film(&mut h, &city.join(name), 3, 1, Crop::City(""), |h, i| {
+            if i == 1 {
+                h.key_press(key);
+            }
+        });
+        h.key_press(key);
+        settle(&mut h);
+    }
+    film(
+        &mut h,
+        &city.join("inside"),
+        14,
+        1,
+        Crop::City(""),
+        |h, i| {
+            if i == 1 {
+                drive(h, "enter src/cart/totals.ts");
+            }
+        },
+    );
+    // Esc layers out of the tower, and also toggles the tour back on.
+    h.key_press(egui::Key::Escape);
+    h.step();
+    drive(&mut h, "tour-hide");
+    back(&mut h, &[]);
+    assert!(
+        h.state().app.opened().is_some(),
+        "Esc left the tower, not the city"
+    );
 
-    drive(&mut h, "tickets");
-    settle(&mut h);
-    snap(&mut h, &out, "tickets");
-
-    drive(&mut h, "case-open SHOP-42");
-    settle(&mut h);
-    drive(&mut h, "case-ingest");
-    settle(&mut h);
-    snap(&mut h, &out, "case");
+    if only_city {
+        return;
+    }
+    loop_shots(&mut h, &out, &anim.join("loop"));
     drop(h);
+}
+
+/// Every stage of SHOP-42, driven with the tour's own commands.
+fn loop_shots(h: &mut Harness<'_, State>, out: &std::path::Path, anim: &std::path::Path) {
+    // The loop shows the app as it is, panels and all.
+    h.key_press(egui::Key::S);
+    drive(h, "bare off");
+    let shot = |h: &mut Harness<'_, State>, name: &str| {
+        settle(h);
+        still(h, out, &format!("{name}.jpg"));
+    };
+    film(h, &anim.join("tickets"), 5, 1, Crop::Full, |h, i| {
+        if i == 1 {
+            drive(h, "tickets");
+        }
+    });
+    shot(h, "loop-1-ticket");
+    film(h, &anim.join("case"), 10, 1, Crop::Full, |h, i| {
+        if i == 1 {
+            drive(h, "case-open SHOP-42");
+            drive(h, "lens-panel off");
+        }
+    });
+    script(h, &["wait 1500", "case-ingest"]);
+    shot(h, "loop-2-case");
+    script(
+        h,
+        &[
+            "lens-reset",
+            "case-prototype",
+            "wait 1500",
+            "devserver",
+            "wait 4000",
+            "app-window",
+            "wait 1500",
+            "write round-1",
+            "agent shop-42 src/cart/promo.ts",
+            "wait 2500",
+            "agent shop-42 src/ui/checkoutView.ts",
+            "wait 1500",
+            "pin src/ui/checkoutView.ts",
+            "type Show the discount on the total, with the old total struck through",
+        ],
+    );
+    shot(h, "loop-3-prototype");
+    // The round carries a screenshot; a copy in the demo world keeps the
+    // repository's path out of the feedback log the freeze shot shows.
+    let capture = cellworks::demo::root().join("capture.jpg");
+    std::fs::copy(out.join("loop-3-prototype.jpg"), &capture).unwrap();
+    h.key_press(egui::Key::C);
+    script(h, &[&format!("image {}", capture.display()), "send"]);
+    film_paced(h, &anim.join("round"), 10, 300, |h| {
+        script(h, &["write round-2", "agent shop-42 src/cart/totals.ts"]);
+    });
+    shot(h, "loop-4-round");
+    script(
+        h,
+        &[
+            "agent shop-42 src/ui/checkoutView.ts",
+            "wait 1500",
+            "round-close",
+            "case-go 5",
+            "wait 800",
+            "case-freeze",
+            "wait 600",
+            "case-file prototyped",
+            "case-go 5",
+        ],
+    );
+    shot(h, "loop-5-freeze");
+    script(
+        h,
+        &["case-file planned", "wait 1500", "case-go 2", "case-go 3"],
+    );
+    shot(h, "loop-6-plan");
+    script(
+        h,
+        &[
+            "case-approve",
+            "lens-reset",
+            "case-close",
+            "open {ROOT}/projects/shopfront-shop-42",
+            "wait 2000",
+            "pipeline build",
+            "write factory/step-1",
+            "agent factory-1 src/cart/promo.ts",
+            "wait 2000",
+            "commit feat(cart): apply promo codes\\n\\nRefs: SHOP-42",
+            "wait 2500",
+            "pipeline checks",
+            "write factory/step-2",
+            "agent factory-2 src/checkout/order.ts",
+            "wait 1500",
+        ],
+    );
+    shot(h, "loop-7-factory");
+    script(
+        h,
+        &[
+            "commit feat(checkout): charge the discounted total\\n\\nRefs: SHOP-42",
+            "wait 2500",
+            "pipeline deliver",
+            "write factory/step-3",
+            "agent factory-3 docs/domain/contexts/Cart/glossary.md",
+            "wait 2000",
+            "commit docs(cart): promo code in the glossary and story\\n\\nRefs: SHOP-42",
+            "wait 1500",
+            "pipeline review",
+            "case-file fixed",
+            "wait 1500",
+            "case-open SHOP-42",
+            "wait 1500",
+            "case-go 6",
+            "file src/cart/promo.ts",
+        ],
+    );
+    shot(h, "loop-8-review");
+    script(
+        h,
+        &[
+            "case-review",
+            "case-close",
+            "merge-case",
+            "open {ROOT}/projects/shopfront",
+            "wait 2000",
+            "lens-reset",
+            "fit",
+            "wait 1500",
+        ],
+    );
+    film_paced(h, &anim.join("deploy"), 12, 300, |h| drive(h, "deploy"));
+    shot(h, "loop-9-deploy");
+    script(h, &["history last", "wait 1500", "history 3", "wait 2500"]);
+    shot(h, "loop-10-history");
+    script(
+        h,
+        &[
+            "history last",
+            "wait 2500",
+            "frame src/cart",
+            "wait 1200",
+            "enter src/cart/promo.ts",
+            "wait 1500",
+            "floor-story",
+        ],
+    );
+    shot(h, "loop-11-why");
+}
+
+/// The harness draws an 8 px edge; every picture leaves it out.
+const FULL: Option<[u32; 4]> = Some([8, 8, 1904, 1064]);
+/// Stills and film frames are scaled to these widths.
+const STILL_WIDTH: u32 = 1600;
+const FILM_WIDTH: u32 = 1000;
+
+fn grab(h: &mut Harness<'_, State>) -> image::RgbaImage {
+    h.render().expect("render")
+}
+
+/// A still for the README and the site, `name` in `out`.
+fn still(h: &mut Harness<'_, State>, out: &std::path::Path, name: &str) {
+    keep(&grab(h), &out.join(name), FULL, Some(STILL_WIDTH), 82);
+}
+
+/// Saves `img` cut to `crop` (x, y, w, h) and scaled to `width`; a `.jpg`
+/// goes through `sips` at `quality`.
+fn keep(
+    img: &image::RgbaImage,
+    path: &std::path::Path,
+    crop: Option<[u32; 4]>,
+    width: Option<u32>,
+    quality: u8,
+) {
+    use image::imageops;
+    let mut img = match crop {
+        Some([x, y, w, h]) => imageops::crop_imm(img, x, y, w, h).to_image(),
+        None => img.clone(),
+    };
+    if let Some(w) = width {
+        let h = img.height() * w / img.width();
+        img = imageops::resize(&img, w, h, imageops::FilterType::Lanczos3);
+    }
+    if path.extension().is_some_and(|e| e == "jpg") {
+        let png = path.with_extension("png");
+        img.save(&png).expect("save");
+        let done = std::process::Command::new("sips")
+            .args(["-s", "format", "jpeg", "-s", "formatOptions"])
+            .arg(quality.to_string())
+            .arg(&png)
+            .arg("--out")
+            .arg(path)
+            .output()
+            .expect("sips");
+        assert!(done.status.success(), "sips failed on {}", png.display());
+        std::fs::remove_file(&png).unwrap();
+    } else {
+        img.save(path).expect("save");
+    }
+}
+
+/// Runs tour script lines: `wait <ms>` lets frames pass, the rest are drive
+/// commands with `{ROOT}` the demo root.
+fn script(h: &mut Harness<'_, State>, lines: &[&str]) {
+    let root = cellworks::demo::root().display().to_string();
+    for line in lines {
+        match line.strip_prefix("wait ") {
+            Some(ms) => frames(h, ms.parse().unwrap_or(0)),
+            None => {
+                drive(h, &line.replace("{ROOT}", &root));
+                frames(h, 100);
+            }
+        }
+    }
+}
+
+/// How a film or still is cut.
+#[derive(Clone, Copy)]
+enum Crop {
+    /// The whole window.
+    Full,
+    /// The towers on the free map whose path holds this, so the city fills
+    /// the picture.
+    City(&'static str),
+}
+
+/// The screen box of the towers on the free map whose path holds `only`,
+/// if any are drawn.
+fn city_box(h: &Harness<'_, State>, only: &str) -> Option<egui::Rect> {
+    let free = cellworks::demo::free_rect(&h.ctx)?;
+    let r = h
+        .state()
+        .app
+        .towers()
+        .iter()
+        .filter(|t| t.path.to_string_lossy().contains(only))
+        .map(|t| t.outline.intersect(free))
+        .filter(|o| o.is_positive())
+        .fold(egui::Rect::NOTHING, |a, b| a.union(b));
+    r.is_positive().then_some(r)
+}
+
+/// A crop of the window's proportions around `bbox` with a margin, inside
+/// the free map, at least `min_w` wide so the picture is not blown up.
+fn fit_crop(h: &Harness<'_, State>, bbox: Option<egui::Rect>, min_w: f32) -> Option<[u32; 4]> {
+    let (bbox, free) = (bbox?, cellworks::demo::free_rect(&h.ctx)?);
+    let aspect = 1904.0 / 1064.0;
+    let mut w = (bbox.width() * 1.1)
+        .max(bbox.height() * 1.1 * aspect)
+        .max(min_w);
+    let mut ht = w / aspect;
+    if w > free.width() {
+        w = free.width();
+        ht = w / aspect;
+    }
+    if ht > free.height() {
+        ht = free.height();
+        w = ht * aspect;
+    }
+    let x = (bbox.center().x - w / 2.0).clamp(free.min.x, free.max.x - w);
+    let y = (bbox.center().y - ht / 2.0).clamp(free.min.y, free.max.y - ht);
+    Some([x as u32, y as u32, w as u32, ht as u32])
+}
+
+/// A still of the city alone, cut to its towers whose path holds `only`.
+fn city_still(h: &mut Harness<'_, State>, out: &std::path::Path, name: &str, only: &str) {
+    let crop = fit_crop(h, city_box(h, only), 1200.0).or(FULL);
+    keep(&grab(h), &out.join(name), crop, Some(STILL_WIDTH), 84);
+}
+
+/// Clicks the empty corner of the free map, which drops the selection.
+fn deselect(h: &mut Harness<'_, State>) {
+    let free = cellworks::demo::free_rect(&h.ctx).expect("the free map");
+    click_at(h, free.left_bottom() + egui::vec2(12.0, -12.0));
+    settle(h);
+    if h.state().app.selection().is_some() {
+        println!("deselect: still {:?}", h.state().app.selection());
+    }
+}
+
+/// A film of `n` frames in `dir` (00.jpg, 01.jpg, ...): frame 0 as things
+/// stand, then `act(h, i)` and `every` harness steps before frame `i`. A
+/// city film keeps one cut for all its frames, around every tower it shows.
+fn film(
+    h: &mut Harness<'_, State>,
+    dir: &std::path::Path,
+    n: usize,
+    every: usize,
+    crop: Crop,
+    mut act: impl FnMut(&mut Harness<'_, State>, usize),
+) {
+    std::fs::create_dir_all(dir).unwrap();
+    let mut shots = vec![grab(h)];
+    let only = match crop {
+        Crop::City(only) => only,
+        Crop::Full => "",
+    };
+    let mut bbox = city_box(h, only);
+    for i in 1..n {
+        act(h, i);
+        for _ in 0..every {
+            h.state_mut().app.apply_pending();
+            h.step();
+        }
+        shots.push(grab(h));
+        bbox = match (bbox, city_box(h, only)) {
+            (Some(a), Some(b)) => Some(a.union(b)),
+            (a, b) => a.or(b),
+        };
+    }
+    let cut = match crop {
+        Crop::Full => FULL,
+        Crop::City(_) => fit_crop(h, bbox, 900.0).or(FULL),
+    };
+    for (i, shot) in shots.iter().enumerate() {
+        keep(
+            shot,
+            &dir.join(format!("{i:02}.jpg")),
+            cut,
+            Some(FILM_WIDTH),
+            72,
+        );
+    }
+    println!("filmed {}", dir.display());
+}
+
+/// A film paced in wall time, for what background threads drive: `start`,
+/// then a frame every `millis`.
+fn film_paced(
+    h: &mut Harness<'_, State>,
+    dir: &std::path::Path,
+    n: usize,
+    millis: u64,
+    start: impl FnOnce(&mut Harness<'_, State>),
+) {
+    std::fs::create_dir_all(dir).unwrap();
+    film_frame(h, dir, 0);
+    start(h);
+    for i in 1..n {
+        frames(h, millis);
+        film_frame(h, dir, i);
+    }
+    println!("filmed {}", dir.display());
+}
+
+fn film_frame(h: &mut Harness<'_, State>, dir: &std::path::Path, i: usize) {
+    let path = dir.join(format!("{i:02}.jpg"));
+    keep(&grab(h), &path, FULL, Some(FILM_WIDTH), 72);
 }
