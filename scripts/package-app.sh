@@ -16,7 +16,7 @@ ZIP="cellworks-app-$VERSION.zip"
 
 cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml"
 
-rm -rf "$APP" "$DIST/$ZIP" "$DIST/manifest.json"
+rm -rf "${APP:?}" "${DIST:?}/$ZIP" "${DIST:?}/manifest.json"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$REPO_ROOT/target/release/cellworks" "$APP/Contents/MacOS/cellworks"
 cp "$REPO_ROOT/assets/icon/Cellworks.icns" "$APP/Contents/Resources/Cellworks.icns"
