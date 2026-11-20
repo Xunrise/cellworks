@@ -240,6 +240,24 @@ fn fitted(text: &str, size: f32, width: f32) -> Option<String> {
     (keep >= 5).then(|| text.chars().take(keep - 1).chain(['…']).collect())
 }
 
+/// The tab text of a folder named `name` and its width on screen, cut with an
+/// ellipsis to `room` points; a width of zero when not even a few characters fit.
+fn hall_tab(name: &str, size: f32, room: f32) -> (String, f32) {
+    // The monospace font runs this wide per character, plus the tab's margins.
+    let per = size * 0.62;
+    let text = format!("{name}/");
+    let count = text.chars().count();
+    let keep = (((room - 12.0) / per).floor().max(0.0) as usize).min(count);
+    if keep == count {
+        return (text, count as f32 * per + 12.0);
+    }
+    if keep < 5 {
+        return (text, 0.0);
+    }
+    let cut: String = text.chars().take(keep - 1).chain(['…']).collect();
+    (cut, keep as f32 * per + 12.0)
+}
+
 /// A machine drawn this frame: its file, where, and its crates.
 struct Machine<'a> {
     node: &'a Node,
@@ -353,13 +371,12 @@ impl<'a> Floor<'a> {
         (rect, name, path, colour, light): (Rect, &str, &Path, Color32, f32),
     ) {
         const SIZE: f32 = 11.0;
-        let text = format!("{name}/");
-        let width = text.chars().count() as f32 * SIZE * 0.62 + 12.0;
+        let (text, width) = hall_tab(name, SIZE, rect.width() - 20.0);
         let tab = Rect::from_min_size(
             pos2(rect.min.x + 10.0, rect.min.y - SIZE * 0.5 - 3.0),
             vec2(width, SIZE + 6.0),
         );
-        let room = rect.width() > width + 24.0 && rect.height() > 60.0;
+        let room = width > 0.0 && rect.height() > 40.0;
         let free = room && !self.taken.iter().any(|taken| taken.intersects(tab));
         if free {
             self.painter.rect(
@@ -1250,6 +1267,18 @@ mod tests {
         assert_eq!(complexity(&item(ItemKind::Type, &["struct S;"])), None);
         assert_eq!(complexity_colour(Some(2)), CX_PLAIN);
         assert_eq!(complexity_colour(Some(30)), CX_KNOTTED);
+    }
+
+    #[test]
+    fn a_hall_tab_is_cut_to_its_hall_never_hidden_while_a_few_characters_fit() {
+        let (whole, width) = hall_tab("src", 11.0, 400.0);
+        assert_eq!(whole, "src/");
+        assert!(width < 400.0);
+        let long = "0005-story-003-a-very-long-folder-name-that-runs-past-its-hall";
+        let (cut, width) = hall_tab(long, 11.0, 200.0);
+        assert!(cut.ends_with('…'), "{cut}");
+        assert!(width <= 200.0, "{width}");
+        assert_eq!(hall_tab(long, 11.0, 30.0).1, 0.0);
     }
 
     #[test]
