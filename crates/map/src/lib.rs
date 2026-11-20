@@ -38,7 +38,7 @@ pub use graph::{
 };
 pub use history::{Commit, LineHistory};
 pub use lanes::{LaneId, LaneKind, Lanes, Network};
-pub use lens::{Flight, Lens, relens};
+pub use lens::{Flight, Lens, project, relens, relens_project};
 pub use review::{ReviewOverlay, TowerReview};
 pub use rules::{PREFIX_RULES, PrefixRule, default_prefix_rule, prefix_rule};
 pub use view::{Pivot, View, fit_visible, turn_at};
@@ -100,6 +100,7 @@ impl ProjectMap {
             cycles: Default::default(),
             contexts: None,
             roads: Vec::new(),
+            links: Vec::new(),
             arrangement: Default::default(),
         };
         map.extent = map.ground();

@@ -15,11 +15,15 @@ mod discovery;
 mod event;
 mod hosts;
 mod launcher;
+mod marks;
 mod project;
 mod recent;
 mod registry;
 mod settings;
 pub mod ui;
+
+pub use marks::{mark, marked, marked_all};
+pub mod theme;
 mod universe;
 mod words;
 

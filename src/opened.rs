@@ -12,9 +12,13 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 use cellworks_code_analysis::CodeAnalysisEvent;
 use cellworks_domain_knowledge::DomainKnowledgeEvent;
-use cellworks_map::{BoundedContexts, Flight, Lanes, Lens, Network, ProjectMap, relens};
+use cellworks_map::project::ProjectLens;
+use cellworks_map::{
+    BoundedContexts, Flight, Lanes, Lens, Network, ProjectMap, relens, relens_project,
+};
 use cellworks_workspace::Project;
 use cellworks_workspace::{Arrangement, WorkspaceEvent};
+use std::sync::Arc;
 
 /// How far the read has got.
 #[derive(Clone, Debug, PartialEq)]
@@ -81,6 +85,8 @@ pub struct OpenedProject {
     /// Whether a drain since this was last asked brought something a tower
     /// is explained from: a map, or the domain knowledge (STORY-019).
     learned: bool,
+    /// The project lens the `Project` lens shows, by name.
+    project_lens: Option<(String, Arc<ProjectLens>)>,
 }
 
 impl OpenedProject {
@@ -106,6 +112,7 @@ impl OpenedProject {
             relensing: None,
             preparing: None,
             learned: false,
+            project_lens: None,
         }
     }
 
@@ -251,6 +258,9 @@ impl OpenedProject {
 
     /// Whether the map can be seen through `lens`.
     pub fn offers(&self, lens: Lens) -> bool {
+        if lens == Lens::Project {
+            return self.project_lens.is_some();
+        }
         self.folders
             .as_ref()
             .is_some_and(|folders| lens.offered(folders))
@@ -285,20 +295,42 @@ impl OpenedProject {
     /// no map. The new map is worked out off the frame loop; until it
     /// arrives the towers lift off where they stand.
     pub fn set_lens(&mut self, lens: Lens, now: f64) {
-        let (Some(folders), ProjectState::Mapped(_)) = (&self.folders, &self.state) else {
-            return;
-        };
         if lens == self.lens {
             return;
         }
+        self.switch(lens, now);
+    }
+
+    /// The project lens shown, by name.
+    pub fn project_lens(&self) -> Option<&(String, Arc<ProjectLens>)> {
+        self.project_lens.as_ref()
+    }
+
+    /// The canonical folder of the map, once read.
+    pub fn root(&self) -> Option<&std::path::Path> {
+        self.folders.as_ref().map(|f| f.root.as_path())
+    }
+
+    /// Shows project lens `name` as defined and built, its towers flying
+    /// there.
+    pub fn show_project_lens(&mut self, name: String, lens: ProjectLens, now: f64) {
+        self.project_lens = Some((name, Arc::new(lens)));
+        self.switch(Lens::Project, now);
+    }
+
+    fn switch(&mut self, lens: Lens, now: f64) {
+        let (Some(folders), ProjectState::Mapped(_)) = (&self.folders, &self.state) else {
+            return;
+        };
         let before = self.shown(now).map(|map| Flight::from(&map, now));
         self.switched_at = Some(now);
         self.lens = lens;
         self.lanes = lens.lanes();
         let (folders, turns) = (folders.clone(), self.turns);
+        let project = self.project_lens.as_ref().map(|(_, l)| l.clone());
         let (sender, relensed) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let mut map = relens(&folders, lens);
+            let mut map = seen_through(&folders, lens, project.as_deref());
             map.turn(turns);
             let network = Network::of(&map);
             // The engineer may have switched again or closed the project.
@@ -371,7 +403,8 @@ impl OpenedProject {
 
     /// `folders` seen through the current lens and turned as far as the map.
     fn seen(&self, folders: &ProjectMap) -> ProjectMap {
-        let mut map = relens(folders, self.lens);
+        let project = self.project_lens.as_ref().map(|(_, l)| l.as_ref());
+        let mut map = seen_through(folders, self.lens, project);
         map.turn(self.turns);
         map
     }
@@ -500,6 +533,15 @@ fn count_nodes(map: &ProjectMap) -> usize {
                     .sum::<usize>()
         })
         .sum()
+}
+
+/// `folders` seen through `lens`, a project lens through `project`.
+fn seen_through(folders: &ProjectMap, lens: Lens, project: Option<&ProjectLens>) -> ProjectMap {
+    match (lens, project) {
+        (Lens::Project, Some(project)) => relens_project(folders, project),
+        (Lens::Project, None) => relens(folders, Lens::Folders),
+        _ => relens(folders, lens),
+    }
 }
 
 #[cfg(test)]

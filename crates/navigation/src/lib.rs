@@ -437,6 +437,23 @@ impl Navigation {
         self.review.take().map(|_| Moved::LeftReview)
     }
 
+    /// Prototype: frames `path` itself (a folder its own district, a node its
+    /// building, an item the building holding it) and selects it.
+    pub fn frame_on(&mut self, map: &ProjectMap, path: PathBuf) {
+        let Some(found) = map.find(&path) else {
+            return;
+        };
+        self.camera = None;
+        self.inside = None;
+        self.framed = match (found.kind, found.parent) {
+            (Element::Folder, _) => Framed::Folder(path.clone()),
+            (Element::Node, _) => Framed::Node(path.clone()),
+            (Element::Item, Some(node)) => Framed::Node(node.to_path_buf()),
+            (Element::Item, None) => Framed::Project,
+        };
+        self.selection = Some(path);
+    }
+
     /// The camera has turned `turn` of the way from the corner towards a
     /// facade, `visible` at the layout's scale in view. Decides the facade
     /// it pivots on, keeping the one it turned to while it stays turned: the
@@ -753,6 +770,16 @@ impl Navigation {
             self.framed = Framed::Project;
         }
         self.pan(visible, at - visible.center());
+    }
+
+    /// PROTOTYPE: points the camera at `area`, a square of ground at the
+    /// layout's scale, on whatever layer is framed.
+    pub fn look_at(&mut self, area: Rect) {
+        if self.framed == Framed::Universe {
+            self.framed = Framed::Project;
+        }
+        self.camera = Some(area);
+        self.facing = None;
     }
 
     /// Brings the whole project into view, on the Project layer, keeping the

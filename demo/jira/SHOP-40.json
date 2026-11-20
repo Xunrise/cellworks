@@ -1,0 +1,20 @@
+{
+  "kind": "Story",
+  "status": "To Do",
+  "category": "new",
+  "priority": "Low",
+  "assignee": "Martin Galusinski",
+  "reporter": "Dana Weber",
+  "updated": "2026-10-27",
+  "criteria_from": "description",
+  "links": [],
+  "comments": [],
+  "key": "SHOP-40",
+  "summary": "Order confirmation page shows the order number",
+  "description": "Order confirmation page shows the order number.\n\nSee the acceptance criteria.",
+  "criteria": [
+    "The order number is shown after payment.",
+    "The number can be copied."
+  ],
+  "url": "https://shopfront.atlassian.net/browse/SHOP-40"
+}

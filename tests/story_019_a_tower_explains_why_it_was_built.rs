@@ -393,10 +393,10 @@ fn no_panel_without_a_selected_tower() {
 
     harness
         .state_mut()
-        .jump(tree.root.join("catalog/discount.rs"));
+        .jump(tree.root.join("catalog"));
     harness.run();
 
-    assert!(harness.state().why().is_none(), "a block is no tower");
+    assert!(harness.state().why().is_none(), "a district is no tower");
     let shown = common::labels(&harness);
     assert!(
         !says(&shown, "How much a customer pays for an order."),

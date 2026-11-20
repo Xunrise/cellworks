@@ -1,0 +1,74 @@
+{
+  "key": "DEMO-1",
+  "repos": [
+    {
+      "name": "vite-demo",
+      "root": "~/Projects/vite-demo",
+      "worktree": "~/Projects/vite-demo-demo-1",
+      "branch": "proto/demo-1-the-counter-button-does",
+      "base_branch": "main"
+    }
+  ],
+  "written": "2026-10-26",
+  "status": "prototyping",
+  "history": [
+    {
+      "status": "ingested",
+      "at": "2026-10-26 17:50"
+    },
+    {
+      "status": "prototyping",
+      "at": "2026-10-26 18:12"
+    }
+  ],
+  "problem": {
+    "headline": "The counter button does not say what it counts.",
+    "plain": "The demo page has one button. It reads Count: 0 and goes up on every click, but nothing tells the visitor that it counts their clicks. The label lives in two places: the initial text in index.html and the label() function the click handler calls.",
+    "problems": [
+      {
+        "id": "P1",
+        "title": "The label says Count, not Clicks",
+        "where": "src/label.ts:2 · label()"
+      },
+      {
+        "id": "P2",
+        "title": "The first render comes from static markup",
+        "where": "index.html:2 · the button's initial text"
+      }
+    ],
+    "today_chain": [
+      {
+        "kind": "doc",
+        "label": "index.html",
+        "danger": false
+      },
+      {
+        "kind": "service",
+        "label": "main.ts click handler",
+        "danger": false
+      },
+      {
+        "kind": "doc",
+        "label": "label.ts",
+        "danger": true
+      }
+    ],
+    "criteria_notes": [
+      "The button reads Clicks: 0 before the first click.",
+      "Every click shows Clicks: n.",
+      "Type checking passes."
+    ]
+  },
+  "open_questions": [],
+  "approach": "",
+  "systems": [
+    {
+      "id": "dev",
+      "kind": "service",
+      "label": "vite dev server :5173",
+      "group": "browser"
+    }
+  ],
+  "steps": [],
+  "lanes": []
+}

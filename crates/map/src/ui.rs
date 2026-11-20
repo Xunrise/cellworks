@@ -13,12 +13,20 @@ use std::path::{Path, PathBuf};
 use egui::{Color32, Pos2, Rect, RichText, Sense, Shape, Stroke, StrokeKind, Vec2, pos2, vec2};
 
 mod buildings;
+pub mod case;
+pub mod casefile;
 mod explain;
+pub mod jira;
 mod lanes;
+pub mod ticket;
 mod why;
 
 pub use buildings::{DrawnBridge, DrawnBuilding, bridge_card};
-pub use explain::{banner, caption, caption_text, lane_toggles, legend, legend_text, lens_help};
+/// PROTOTYPE: the shared look, for the crates downstream of the map.
+pub use cellworks_workspace::theme;
+pub use explain::{
+    banner, caption, caption_text, lane_toggles, legend, legend_text, lens_bar, lens_help,
+};
 pub use lanes::{DrawnLane, colour_of};
 pub use why::{NO_CONTEXT, NO_STORY, why_panel};
 
@@ -109,7 +117,7 @@ impl Outline {
             (Lens::Imports, _) => Outline::Step,
             (Lens::Calls, _) => Outline::Hexagon,
             (Lens::CoChange, _) => Outline::Orbit,
-            (Lens::Folders | Lens::Cells, _) => Outline::Plaza,
+            (Lens::Folders | Lens::Cells | Lens::Project, _) => Outline::Plaza,
         }
     }
 }
@@ -493,6 +501,15 @@ struct Painter<'a> {
     review: Option<&'a ReviewOverlay>,
 }
 
+/// PROTOTYPE: a file or folder of a case lit on the city: everything under
+/// `path`, at `light`, with a pulsing outline when `pulse`.
+#[derive(Clone, Debug)]
+pub struct Spot {
+    pub path: PathBuf,
+    pub light: f32,
+    pub pulse: bool,
+}
+
 /// A name to put on the map: the ground it names, how it is written, the
 /// name, the path it stands for, and how high that ground is raised.
 type Labelled<'a> = (Rect, Naming, &'a str, &'a Path, f32);
@@ -656,6 +673,7 @@ pub fn project(ui: &mut egui::Ui, map: &ProjectMap, options: ViewOptions<'_>) ->
         painter.nodes(ui, &district.nodes, shown);
     }
     roads(ui, map, &view);
+    links(ui, map, &view);
     // The quiet names of folders and blocks lie under the ground's sense, so
     // a click on a tower standing over a name reaches the tower; the names of
     // districts, and of folder outlines written on them, lie over it.
@@ -901,6 +919,56 @@ fn roads(ui: &egui::Ui, map: &ProjectMap, view: &View) {
         ui.painter().rect_filled(label, 3.0, PANEL);
         ui.painter().galley(label.min + vec2(5.0, 2.0), galley, INK);
     }
+}
+
+/// A project lens's lanes between files: a thin line from block to block,
+/// an arrow at the end.
+fn links(ui: &egui::Ui, map: &ProjectMap, view: &View) {
+    let mut centre = std::collections::HashMap::new();
+    for district in &map.districts {
+        for node in graph_nodes(district) {
+            centre.insert(
+                node.path.as_path(),
+                (node.area.center(), district.elevation),
+            );
+        }
+    }
+    for (from, to, _) in &map.links {
+        let (Some((a, za)), Some((b, zb))) = (centre.get(from.as_path()), centre.get(to.as_path()))
+        else {
+            continue;
+        };
+        let line = [view.to_screen(*a, *za), view.to_screen(*b, *zb)];
+        ui.painter().line_segment(
+            line,
+            Stroke::new(
+                1.5,
+                egui::Color32::from_rgba_unmultiplied(120, 220, 255, 140),
+            ),
+        );
+        let back = (line[0] - line[1]).normalized() * 8.0;
+        let side = vec2(-back.y, back.x) * 0.5;
+        let tip = line[1];
+        ui.painter().add(Shape::convex_polygon(
+            vec![tip, tip + back + side, tip + back - side],
+            egui::Color32::from_rgb(120, 220, 255),
+            Stroke::NONE,
+        ));
+    }
+}
+
+/// Every node of `district`, however deep.
+fn graph_nodes(district: &crate::District) -> Vec<&crate::Node> {
+    let mut out: Vec<&crate::Node> = district.nodes.iter().collect();
+    for sub in &district.sub_districts {
+        out.extend(&sub.nodes);
+        let mut pending: Vec<&crate::Group> = sub.groups.iter().collect();
+        while let Some(g) = pending.pop() {
+            out.extend(&g.nodes);
+            pending.extend(&g.groups);
+        }
+    }
+    out
 }
 
 /// The co-change lens's orbits: a faint dashed circle round its hub through
@@ -2072,19 +2140,18 @@ pub fn minimap(ui: &mut egui::Ui, map: &ProjectMap, view: &View, panel: Rect) ->
         return None;
     }
     let at = Rect::from_min_size(panel.max - MINIMAP - Vec2::splat(MINIMAP_MARGIN), MINIMAP);
+    cellworks_workspace::mark(ui.ctx(), "slot.minimap", at);
     let inner = at.shrink(6.0);
     let k = (inner.width() / seen.width()).min(inner.height() / seen.height());
     let offset = inner.center().to_vec2() - seen.center().to_vec2() * k;
     let to_minimap = |ground: Pos2| (iso(ground, 0.0).to_vec2() * k + offset).to_pos2();
 
     let painter = ui.painter_at(at);
-    painter.rect(
-        at,
-        0.0,
-        PANEL.gamma_multiply(0.92),
-        Stroke::new(1.0, DIM.gamma_multiply(0.5)),
-        StrokeKind::Inside,
-    );
+    painter.add(Shape::convex_polygon(
+        cellworks_workspace::theme::chamfer(at.shrink(0.5), 10.0),
+        PANEL.gamma_multiply(0.94),
+        Stroke::new(1.0, LINE_STRONG),
+    ));
     let mut clicked = None;
     for (index, district) in map.districts.iter().enumerate() {
         let colour = district_colour(index);
@@ -2132,14 +2199,12 @@ pub fn minimap(ui: &mut egui::Ui, map: &ProjectMap, view: &View, panel: Rect) ->
     let frame = Rect::from_points(&corners).intersect(at);
     painter.add(Shape::closed_line(
         corners,
-        Stroke::new(1.0, Color32::WHITE.gamma_multiply(0.8)),
+        Stroke::new(1.0, cellworks_workspace::theme::YELLOW.gamma_multiply(0.8)),
     ));
-    painter.text(
-        at.min + vec2(6.0, 4.0),
-        egui::Align2::LEFT_TOP,
-        "minimap",
-        egui::FontId::monospace(10.0),
-        DIM.gamma_multiply(0.9),
+    painter.galley(
+        at.min + vec2(14.0, 6.0),
+        cellworks_workspace::theme::eyebrow(ui.ctx(), "minimap", DIM),
+        DIM,
     );
     let response = ui.interact(frame, ui.id().with("minimap view"), Sense::hover());
     ui.ctx().accesskit_node_builder(response.id, |node| {
@@ -2216,6 +2281,7 @@ pub fn inside(
         .saturating_sub(rows / 2)
         .min(item.floors.len().saturating_sub(rows));
     let mut clicked = None;
+    let mut storied = false;
     for (index, line) in item.floors.iter().enumerate().skip(first).take(rows) {
         let y = top + (index - first) as f32 * ROW;
         let row = Rect::from_min_size(pos2(left - 6.0, y), vec2(panel.max.x - left - 20.0, ROW));
@@ -2251,7 +2317,13 @@ pub fn inside(
         // What built this floor: the pull request that last wrote it and the
         // stories its commit names. Nothing for an uncommitted floor or a
         // commit without a pull request.
-        let mark = crate::why::floor_commit(map, item, index).and_then(why::floor_mark);
+        let commit = crate::why::floor_commit(map, item, index);
+        let mark = commit.and_then(why::floor_mark);
+        // The first floor a story built, for the tutorial to point at.
+        if !storied && commit.is_some_and(|c| !c.stories.is_empty()) {
+            storied = true;
+            cellworks_workspace::mark(ui.ctx(), "floor.story", row);
+        }
         if let Some(mark) = &mark {
             painter.text(
                 pos2(left + MARK_START, middle),
@@ -2331,7 +2403,11 @@ fn district_colour_of(map: &ProjectMap, item: &Item) -> Color32 {
     if let Some(home) = item.standing_file().and_then(|file| map.homes.get(file)) {
         return district_colour(*home);
     }
-    let path = &item.path;
+    innermost_district_colour_at(map, &item.path)
+}
+
+/// The colour of the innermost district whose path holds `path`.
+fn innermost_district_colour_at(map: &ProjectMap, path: &Path) -> Color32 {
     map.districts
         .iter()
         .enumerate()

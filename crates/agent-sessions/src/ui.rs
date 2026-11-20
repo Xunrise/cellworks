@@ -80,6 +80,11 @@ pub struct SessionsView {
     transcripts: PathBuf,
     /// The session pane currently open, if any (design.md requirement 2).
     pane: Option<crate::SessionPane>,
+    pane_top: Option<f32>,
+    dock_right: bool,
+    /// Whether the session pane is folded to its last line.
+    pane_collapsed: bool,
+    hosted: bool,
     /// Set the moment a pane is (re)opened, so the terminal grabs keyboard
     /// focus on its very first draw, before any click into it; cleared once
     /// `pane` consumes it.
@@ -107,6 +112,10 @@ impl SessionsView {
             claude: PathBuf::new(),
             transcripts: PathBuf::new(),
             pane: None,
+            pane_top: None,
+            dock_right: false,
+            pane_collapsed: false,
+            hosted: false,
             want_focus: false,
             pane_ended: false,
             collapsed: false,
@@ -274,6 +283,18 @@ impl SessionsView {
         self.pane = None;
     }
 
+    /// Prototype: types `bytes` into the open pane's terminal.
+    pub fn send_to_pane(&mut self, bytes: &[u8]) {
+        if let Some(pane) = self.pane.as_mut() {
+            pane.send(bytes);
+        }
+    }
+
+    /// Prototype: the id of the session the pane shows.
+    pub fn pane_session(&self) -> Option<&str> {
+        self.pane.as_ref().map(|pane| pane.session_id())
+    }
+
     pub fn pane_open(&self) -> bool {
         self.pane.is_some()
     }
@@ -326,63 +347,73 @@ impl SessionsView {
     /// read-only conversation filling the rest.
     pub fn pane(&mut self, ui: &mut egui::Ui) {
         if self.pane.is_none() {
+            self.pane_top = None;
+            return;
+        }
+        // Prototype: docked right while someone hosts it, it is drawn there
+        // by `pane_at` instead.
+        if self.dock_right && self.hosted {
+            self.pane_top = None;
             return;
         }
 
         let mut close = false;
-        egui::Panel::bottom("session-pane")
-            .resizable(true)
-            .default_size(PANE_HEIGHT)
-            .show(ui, |ui| {
-                let pane = self.pane.as_mut().expect("checked just above");
-                pane.drain();
-                let ended = pane.is_terminal() && pane.has_ended();
-
-                ui.horizontal(|ui| {
-                    ui.strong(format!("Session: {}", pane.name()));
-                    if ui.button("Close (detach)").clicked() {
-                        close = true;
-                    }
-                    if pane.is_terminal() {
-                        if ui.button("Stop").clicked() {
-                            pane.stop();
-                            close = true;
-                        }
-                        if ended {
-                            ui.label("(attach ended)");
-                        }
-                    }
-                });
-
-                if let Some(banner) = pane.banner().map(str::to_owned) {
-                    ui.horizontal(|ui| {
-                        ui.label(&banner);
-                        if !pane.is_terminal() && ui.button("Continue in the background").clicked()
-                        {
-                            pane.continue_in_background();
-                        }
-                    });
-                }
-
-                if pane.screen().is_some() {
-                    terminal_body(ui, pane, &mut self.want_focus);
-                } else if let Some(entries) = pane.entries() {
-                    conversation_body(ui, entries);
-                }
-
-                ui.ctx()
-                    .request_repaint_after(Duration::from_millis(if pane.is_terminal() {
-                        33
-                    } else {
-                        500
-                    }));
-
-                self.pane_ended = ended;
-            });
+        if self.dock_right {
+            egui::Panel::right("session-pane-right")
+                .frame(pane_frame())
+                .resizable(true)
+                .default_size(480.0)
+                .show(ui, |ui| self.pane_body(ui, &mut close));
+            self.pane_top = None;
+        } else {
+            let panel = egui::Panel::bottom("session-pane").frame(pane_frame());
+            let panel = if self.pane_collapsed {
+                panel.resizable(false).exact_size(66.0)
+            } else {
+                panel.resizable(true).default_size(PANE_HEIGHT)
+            };
+            let shown = panel.show(ui, |ui| self.pane_body(ui, &mut close));
+            self.pane_top = Some(shown.response.rect.top());
+        }
 
         if close {
             self.pane = None;
         }
+    }
+
+    /// Prototype: draws the pane into `rect`, for a host that docks it as a
+    /// column (the iterate stage, under its rounds).
+    pub fn pane_at(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        if self.pane.is_none() {
+            return;
+        }
+        let mut close = false;
+        chamfer(
+            ui.painter(),
+            rect,
+            cellworks_map::ui::case::PANEL,
+            cellworks_map::ui::case::LINE,
+            10.0,
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(rect.shrink2(egui::vec2(12.0, 10.0))),
+            |ui| {
+                ui.set_clip_rect(rect);
+                self.pane_body(ui, &mut close);
+            },
+        );
+        if close {
+            self.pane = None;
+        }
+    }
+
+    /// Prototype: whether a host draws the pane when it is docked right.
+    pub fn set_hosted(&mut self, hosted: bool) {
+        self.hosted = hosted;
+    }
+
+    pub fn toggle_dock(&mut self) {
+        self.dock_right = !self.dock_right;
     }
 
     /// Whether the sidebar is folded to a strip.
@@ -395,6 +426,136 @@ impl SessionsView {
         self.collapsed = !self.collapsed;
     }
 
+    pub fn dock_right(&self) -> bool {
+        self.dock_right
+    }
+
+    /// Prototype: whether the session pane is folded to its last line.
+    pub fn pane_collapsed(&self) -> bool {
+        self.pane_collapsed
+    }
+
+    /// Prototype: folds the session pane to its last line, or unfolds it.
+    pub fn toggle_pane_collapsed(&mut self) {
+        self.pane_collapsed = !self.pane_collapsed;
+    }
+
+    fn pane_body(&mut self, ui: &mut egui::Ui, close: &mut bool) {
+        let pane = self.pane.as_mut().expect("checked by the caller");
+        pane.drain();
+        let ended = pane.is_terminal() && pane.has_ended();
+
+        ui.horizontal(|ui| {
+            use cellworks_map::ui::case::{FLOW, INK, INK_DIM, OK};
+            let fold = if self.pane_collapsed { "+" } else { "-" };
+            if nr_ctl(ui, fold, Kind::Plain)
+                .on_hover_text(if self.pane_collapsed {
+                    "Expand"
+                } else {
+                    "Collapse"
+                })
+                .clicked()
+            {
+                self.pane_collapsed = !self.pane_collapsed;
+            }
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("SESSION")
+                    .font(cellworks_map::ui::theme::named(ui.ctx(), 11.0, "semibold"))
+                    .extra_letter_spacing(1.6)
+                    .color(INK_DIM),
+            );
+            ui.label(
+                egui::RichText::new(pane.name())
+                    .font(cellworks_map::ui::theme::named(ui.ctx(), 13.0, "mono-bold"))
+                    .color(INK),
+            );
+            let (state, colour) = if ended {
+                ("ENDED", INK_DIM)
+            } else if pane.is_terminal() {
+                ("ATTACHED", OK)
+            } else {
+                ("TRANSCRIPT", FLOW)
+            };
+            ui.label(
+                egui::RichText::new(format!("● {state}"))
+                    .monospace()
+                    .size(11.0)
+                    .color(colour),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if pane.is_terminal() && nr_ctl(ui, "STOP", Kind::Danger).clicked() {
+                    pane.stop();
+                    *close = true;
+                }
+                if nr_ctl(ui, "DETACH", Kind::Plain).clicked() {
+                    *close = true;
+                }
+                let dock = if self.dock_right {
+                    "DOCK BOTTOM"
+                } else {
+                    "DOCK RIGHT"
+                };
+                if nr_ctl(ui, dock, Kind::Plain).clicked() {
+                    self.dock_right = !self.dock_right;
+                }
+            });
+        });
+        ui.add_space(4.0);
+
+        if self.pane_collapsed {
+            // Folded: the session's last line only.
+            let last = pane
+                .screen()
+                .map(|screen| screen.contents())
+                .and_then(|text| {
+                    text.lines()
+                        .rev()
+                        .map(str::trim)
+                        .find(|line| {
+                            !line.is_empty()
+                                && !line.starts_with('─')
+                                && !line.starts_with('>')
+                                && !line.starts_with('❯')
+                        })
+                        .map(str::to_owned)
+                })
+                .unwrap_or_default();
+            ui.add(egui::Label::new(egui::RichText::new(last).monospace()).truncate());
+        } else {
+            if let Some(banner) = pane.banner().map(str::to_owned) {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(&banner).color(cellworks_map::ui::case::INK_DIM));
+                    if !pane.is_terminal()
+                        && nr_ctl(ui, "Continue in the background", Kind::Plain).clicked()
+                    {
+                        pane.continue_in_background();
+                    }
+                });
+            }
+
+            if pane.screen().is_some() {
+                terminal_body(ui, pane, &mut self.want_focus);
+            } else if let Some(entries) = pane.entries() {
+                conversation_body(ui, entries);
+            }
+        }
+
+        ui.ctx()
+            .request_repaint_after(Duration::from_millis(if pane.is_terminal() {
+                33
+            } else {
+                500
+            }));
+
+        self.pane_ended = ended;
+    }
+
+    /// Prototype: where the pane's top edge was last drawn, while one is open.
+    pub fn pane_top(&self) -> Option<f32> {
+        self.pane.as_ref().and(self.pane_top)
+    }
+
     /// Draws the sidebar: heading, summary (or the listing error), search,
     /// groups. Returns the session clicked, and - when it stands in this
     /// city - the tower centre to recentre the camera on.
@@ -404,14 +565,16 @@ impl SessionsView {
         map: &cellworks_map::ProjectMap,
         common_dir: Option<&std::path::Path>,
     ) -> Option<(String, Option<Pos2>)> {
+        use cellworks_map::ui::case::{DANGER_TEXT, INK, INK_DIM, LINE, TERRAIN_INK};
         if self.collapsed {
             if collapse_toggle(ui, "\u{203a}", "Expand sessions") {
                 self.collapsed = false;
             }
             return None;
         }
+        ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.heading("Sessions");
+            ui.label(nr_text(ui.ctx(), "SESSIONS", 13.0, "semibold", 0.16, INK));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if collapse_toggle(ui, "\u{2039}", "Collapse sessions") {
                     self.collapsed = true;
@@ -421,12 +584,10 @@ impl SessionsView {
         if self.collapsed {
             return None;
         }
+        ui.add_space(2.0);
 
         if let Some(message) = &self.error {
-            ui.colored_label(
-                egui::Color32::from_rgb(255, 120, 120),
-                format!("Could not list sessions: {message}"),
-            );
+            ui.colored_label(DANGER_TEXT, format!("Could not list sessions: {message}"));
         } else {
             let running = self.sessions.len();
             let needs_you = self
@@ -439,21 +600,42 @@ impl SessionsView {
                 .filter(|(heading, _)| *heading != "Other projects")
                 .map(|(_, rows)| rows.len())
                 .sum();
-            ui.label(format!(
-                "{running} running · {needs_you} need you · {in_city} in this city"
-            ));
+            ui.label(
+                egui::RichText::new(format!(
+                    "{running} running · {needs_you} need you · {in_city} in this city"
+                ))
+                .monospace()
+                .size(11.0)
+                .color(INK_DIM),
+            );
         }
+        ui.add_space(6.0);
 
         let mut query = self.query.clone();
-        ui.add(
-            egui::TextEdit::singleline(&mut query)
-                .id(egui::Id::new(SEARCH_ID))
-                .hint_text("search name, project, branch")
-                .desired_width(f32::INFINITY),
-        );
+        egui::Frame::new()
+            .fill(cellworks_map::ui::case::BG_DEEP)
+            .stroke(egui::Stroke::new(1.0, LINE))
+            .inner_margin(egui::Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("/").monospace().color(TERRAIN_INK));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut query)
+                            .id(egui::Id::new(SEARCH_ID))
+                            .frame(egui::Frame::NONE)
+                            .font(egui::FontId::monospace(12.0))
+                            .text_color(INK)
+                            .hint_text(
+                                egui::RichText::new("search name, project, branch")
+                                    .color(TERRAIN_INK),
+                            )
+                            .desired_width(f32::INFINITY),
+                    );
+                });
+            });
         self.query = query;
 
-        ui.separator();
+        ui.add_space(8.0);
 
         let now_seconds = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -467,7 +649,16 @@ impl SessionsView {
         let groups = crate::groups(&self.sessions, map, common_dir, &self.query);
         egui::ScrollArea::vertical().show(ui, |ui| {
             for (heading, rows) in groups {
-                ui.label(egui::RichText::new(heading).strong());
+                ui.add_space(6.0);
+                ui.label(nr_text(
+                    ui.ctx(),
+                    &heading.to_uppercase(),
+                    11.0,
+                    "semibold",
+                    0.16,
+                    INK_DIM,
+                ));
+                ui.add_space(2.0);
                 for session in rows {
                     let (row_clicked, row_opened) =
                         session_row(ui, session, self.selected.as_deref(), now_seconds);
@@ -743,67 +934,75 @@ fn session_row(
 ) -> (bool, bool) {
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 60.0), egui::Sense::click());
-    let state = session.session_state();
-    let fill = if Some(session.id.as_str()) == selected {
-        egui::Color32::from_white_alpha(28)
-    } else if response.hovered() {
-        egui::Color32::from_white_alpha(12)
-    } else {
-        egui::Color32::TRANSPARENT
+    use cellworks_map::ui::case::{
+        ATTENTION, ATTENTION_SOFT, INK, INK_DIM, OK, PANEL_RAISED, TERRAIN_INK,
     };
+    let state = session.session_state();
+    let picked = Some(session.id.as_str()) == selected;
     let painter = ui.painter();
-    painter.rect_filled(rect, 4.0, fill);
+    if picked {
+        painter.rect_filled(rect, 0.0, ATTENTION_SOFT);
+        painter.rect_filled(
+            egui::Rect::from_min_size(rect.min, vec2(2.0, rect.height())),
+            0.0,
+            ATTENTION,
+        );
+    } else if response.hovered() {
+        painter.rect_filled(rect, 0.0, PANEL_RAISED);
+    }
 
     let dot_colour = match state {
-        SessionState::Waiting => egui::Color32::YELLOW,
-        SessionState::Working => egui::Color32::from_rgb(80, 200, 100),
-        SessionState::Idle => egui::Color32::GRAY,
+        SessionState::Waiting => ATTENTION,
+        SessionState::Working => OK,
+        SessionState::Idle => INK_DIM,
     };
-    painter.circle_filled(rect.left_top() + vec2(10.0, 12.0), 5.0, dot_colour);
+    painter.rect_filled(
+        egui::Rect::from_center_size(rect.left_top() + vec2(11.0, 11.0), vec2(7.0, 7.0)),
+        0.0,
+        dot_colour,
+    );
 
     painter.text(
-        rect.left_top() + vec2(22.0, 2.0),
+        rect.left_top() + vec2(22.0, 3.0),
         egui::Align2::LEFT_TOP,
         &session.name,
-        egui::FontId::proportional(13.0),
-        egui::Color32::WHITE,
+        cellworks_map::ui::theme::named(ui.ctx(), 13.0, "semibold"),
+        if picked { ATTENTION } else { INK },
     );
-    painter.text(
-        rect.left_top() + vec2(22.0, 18.0),
-        egui::Align2::LEFT_TOP,
+    // A long branch ends in an ellipsis inside the row, not at the panel's edge.
+    let mut job = egui::text::LayoutJob::simple_singleline(
         format!("{} · {}", session.repo, session.branch),
-        egui::FontId::proportional(11.0),
-        egui::Color32::GRAY,
+        egui::FontId::monospace(10.0),
+        TERRAIN_INK,
     );
+    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 28.0).max(1.0));
+    let galley = painter.layout_job(job);
+    painter.galley(rect.left_top() + vec2(22.0, 20.0), galley, TERRAIN_INK);
 
     let snippet: String = session.summary.chars().take(110).collect();
     let mut job = egui::text::LayoutJob::simple(
         snippet,
         egui::FontId::proportional(11.0),
-        egui::Color32::LIGHT_GRAY,
+        INK_DIM,
         (rect.width() - 28.0).max(1.0),
     );
     job.wrap.max_rows = 2;
     let galley = painter.layout_job(job);
-    painter.galley(
-        rect.left_top() + vec2(22.0, 33.0),
-        galley,
-        egui::Color32::WHITE,
-    );
+    painter.galley(rect.left_top() + vec2(22.0, 34.0), galley, INK_DIM);
 
     let state_word = match state {
-        SessionState::Waiting => "needs you",
-        SessionState::Working => "working",
-        SessionState::Idle => "idle",
+        SessionState::Waiting => "NEEDS YOU",
+        SessionState::Working => "WORKING",
+        SessionState::Idle => "IDLE",
     };
     painter.text(
-        rect.right_top() + vec2(-6.0, 2.0),
+        rect.right_top() + vec2(-6.0, 4.0),
         egui::Align2::RIGHT_TOP,
         format!(
             "{state_word} · {}",
             crate::ago(session.last_active, now_seconds)
         ),
-        egui::FontId::proportional(11.0),
+        egui::FontId::monospace(10.0),
         dot_colour,
     );
 
@@ -834,7 +1033,17 @@ fn conversation_body(ui: &mut egui::Ui, entries: &[Entry]) {
                 } else {
                     ""
                 };
-                ui.label(format!("{prefix}{}", entry.text));
+                let colour = if entry.kind == EntryKind::Prompt {
+                    cellworks_map::ui::case::ATTENTION
+                } else {
+                    cellworks_map::ui::case::INK_DIM
+                };
+                ui.label(
+                    egui::RichText::new(format!("{prefix}{}", entry.text))
+                        .monospace()
+                        .size(12.0)
+                        .color(colour),
+                );
             }
         });
 }
@@ -873,8 +1082,8 @@ fn terminal_body(ui: &mut egui::Ui, pane: &mut crate::SessionPane, want_focus: &
     }
 
     let painter = ui.painter_at(rect);
-    let default_bg = egui::Color32::from_rgb(18, 18, 22);
-    let default_fg = egui::Color32::from_gray(210);
+    let default_bg = cellworks_map::ui::case::BG_DEEP;
+    let default_fg = cellworks_map::ui::case::INK;
     painter.rect_filled(rect, 0.0, default_bg);
 
     let screen = pane
@@ -1049,6 +1258,101 @@ fn collapse_toggle(ui: &mut egui::Ui, glyph: &str, label: &str) -> bool {
     let enabled = response.enabled();
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
     response.clicked()
+}
+
+/// Prototype: `text` in the named Netrunner `family`, tracked by `spacing` em.
+fn nr_text(
+    ctx: &egui::Context,
+    text: &str,
+    size: f32,
+    family: &str,
+    spacing: f32,
+    colour: egui::Color32,
+) -> egui::text::LayoutJob {
+    egui::text::LayoutJob::single_section(
+        text.to_owned(),
+        egui::TextFormat {
+            font_id: cellworks_map::ui::theme::named(ctx, size, family),
+            color: colour,
+            extra_letter_spacing: size * spacing,
+            ..Default::default()
+        },
+    )
+}
+
+/// Prototype: the pane's frame in the Netrunner skin.
+fn pane_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(cellworks_map::ui::case::PANEL)
+        .stroke(egui::Stroke::new(1.0, cellworks_map::ui::case::LINE))
+        .inner_margin(egui::Margin::symmetric(12, 8))
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Plain,
+    Danger,
+}
+
+/// Prototype: a Netrunner control: upper case, chamfered top left and bottom
+/// right, outlined.
+fn nr_ctl(ui: &mut egui::Ui, label: &str, kind: Kind) -> egui::Response {
+    use cellworks_map::ui::case::{DANGER, DANGER_TEXT, FLOW, INK, LINE_STRONG, PANEL_RAISED};
+    let font = cellworks_map::ui::theme::named(ui.ctx(), 11.0, "semibold");
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), font.clone(), INK);
+    let size = egui::vec2(galley.size().x + 22.0 + label.len() as f32 * 1.2, 26.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let (edge, ink) = match (kind, response.hovered()) {
+        (Kind::Danger, _) => (DANGER, DANGER_TEXT),
+        (Kind::Plain, true) => (FLOW, INK),
+        (Kind::Plain, false) => (LINE_STRONG, INK),
+    };
+    let fill = if response.hovered() {
+        PANEL_RAISED
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    chamfer(ui.painter(), rect, fill, edge, 6.0);
+    let mut job = egui::text::LayoutJob::single_section(
+        label.to_owned(),
+        egui::TextFormat {
+            font_id: font,
+            color: ink,
+            extra_letter_spacing: 1.2,
+            ..Default::default()
+        },
+    );
+    job.wrap.max_width = f32::INFINITY;
+    let galley = ui.painter().layout_job(job);
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, ink);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    response
+}
+
+fn chamfer(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    fill: egui::Color32,
+    edge: egui::Color32,
+    cut: f32,
+) {
+    let r = rect.shrink(0.5);
+    let points = vec![
+        egui::pos2(r.min.x + cut, r.min.y),
+        egui::pos2(r.max.x, r.min.y),
+        egui::pos2(r.max.x, r.max.y - cut),
+        egui::pos2(r.max.x - cut, r.max.y),
+        egui::pos2(r.min.x, r.max.y),
+        egui::pos2(r.min.x, r.min.y + cut),
+    ];
+    painter.add(egui::Shape::convex_polygon(
+        points,
+        fill,
+        egui::Stroke::new(1.0, edge),
+    ));
 }
 
 #[cfg(test)]

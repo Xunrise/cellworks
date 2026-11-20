@@ -1,0 +1,20 @@
+{
+  "name": "hexagonal-v2",
+  "question": "Is the backend hexagonal? Tests hidden, adapters grouped by the system they talk to.",
+  "cut": { "split_files": false },
+  "hide": [ "^src/", "^(docs|infra|sdlc|\\.github|\\.claude)/", "^[^/]+$", "\\.test\\.ts$" ],
+  "districts": [
+    { "match": "^server/adapters/postgres/", "as": "postgres" },
+    { "match": "^server/adapters/payments/", "as": "payments" },
+    { "match": "^server/adapters/http/", "as": "http" },
+    { "match": "^server/domain/", "as": "domain" },
+    { "match": "^server/ports/", "as": "ports" },
+    { "match": "^server/api/", "as": "api" }
+  ],
+  "relations": [
+    { "kind": "imports", "viz": "roads", "source": "imports" },
+    { "kind": "violation", "viz": "lanes", "pairs": [
+      { "from": "^server/domain/order\\.ts$", "to": "server/adapters/payments/stripeGateway.ts" }
+    ] }
+  ]
+}

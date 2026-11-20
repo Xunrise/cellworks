@@ -141,6 +141,12 @@ const LAUNCHER_SHOWN_ID: &str = "cellworks-launcher-shown";
 /// after `set_theme` (Order of work step 3).
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
+    add_fonts(&mut fonts);
+    ctx.set_fonts(fonts);
+}
+
+/// Adds the launcher's two named families to `fonts`.
+pub fn add_fonts(fonts: &mut egui::FontDefinitions) {
     fonts.font_data.insert(
         "chakra-petch".to_owned(),
         std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
@@ -161,7 +167,6 @@ pub fn install_fonts(ctx: &egui::Context) {
         egui::FontFamily::Name("jetbrains-mono".into()),
         vec!["jetbrains-mono".to_owned()],
     );
-    ctx.set_fonts(fonts);
 }
 
 /// Chakra Petch, for a label — or egui's own `Proportional` face when the
@@ -1270,7 +1275,24 @@ fn list(ui: &mut egui::Ui, universe: &Universe, launcher: &mut Launcher) -> Opti
             let groups: Vec<(String, Vec<Project>)> = launcher
                 .groups()
                 .into_iter()
-                .map(|(label, projects)| (label, projects.into_iter().cloned().collect()))
+                .map(|(label, projects)| {
+                    (
+                        label,
+                        projects
+                            .into_iter()
+                            // PROTOTYPE (stakeholder demo): the history and
+                            // ticket worktrees are tour plumbing.
+                            .filter(|p| {
+                                std::env::var_os("CELLWORKS_DEMO").is_none()
+                                    || !matches!(
+                                        p.name.as_str(),
+                                        "shopfront-history" | "shopfront-shop-42"
+                                    )
+                            })
+                            .cloned()
+                            .collect(),
+                    )
+                })
                 .collect();
             if groups.is_empty() && !launcher.search_text().is_empty() {
                 list_message(
@@ -1437,6 +1459,13 @@ fn project_row(
         egui::Sense::click(),
     );
     labelled(&entry, egui::WidgetType::Label, label);
+    // PROTOTYPE: a remote row of the same name must not take the local row's id.
+    let place = project.id.host().map_or(String::new(), |h| format!("{h}:"));
+    crate::mark(
+        ui.ctx(),
+        &format!("launcher.row.{place}{}", project.name),
+        rect,
+    );
     if is_selected {
         ui.ctx()
             .accesskit_node_builder(entry.id, |node| node.set_selected(true));
@@ -1734,6 +1763,17 @@ fn inspector(
             host,
         );
     }
+    // PROTOTYPE (stakeholder demo): what the whole project holds, hardcoded.
+    if std::env::var_os("CELLWORKS_DEMO").is_some() && project.name == "shopfront" {
+        let line = ui.painter().layout(
+            "22 code files · 9 docs · 7 open tickets · 4 external systems".to_owned(),
+            egui::FontId::new(12.0, egui::FontFamily::Proportional),
+            INK,
+            inner.width(),
+        );
+        ui.painter()
+            .galley(egui::pos2(inner.left(), y + 10.0), line, INK);
+    }
 
     let can_open = launcher.can_open(&project.id);
     let label = launcher.open_label(&project.id);
@@ -1813,6 +1853,7 @@ fn cta_button(
         })
         .inner;
     labelled(&response, egui::WidgetType::Button, label);
+    crate::mark(ui.ctx(), "launcher.open", rect);
 
     let points = chamfer(rect, CTA_CUT, Corners::TopLeftBottomRight);
     let text_color = if can_open { BG } else { DIM_INK };

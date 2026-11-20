@@ -332,7 +332,6 @@ fn a_hovered_row_shows_the_pointing_hand() {
     );
 }
 
-
 /// The first selection makes the preview pane appear; a double-click whose
 /// second press lands on the very next frame still opens the project.
 #[test]

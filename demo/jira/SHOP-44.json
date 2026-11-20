@@ -1,0 +1,20 @@
+{
+  "kind": "Bug",
+  "status": "To Do",
+  "category": "new",
+  "priority": "High",
+  "assignee": "Martin Galusinski",
+  "reporter": "Dana Weber",
+  "updated": "2026-10-27",
+  "criteria_from": "description",
+  "links": [],
+  "comments": [],
+  "key": "SHOP-44",
+  "summary": "Payment provider timeout is not reported to the shopper",
+  "description": "Payment provider timeout is not reported to the shopper.\n\nSee the acceptance criteria.",
+  "criteria": [
+    "A timeout shows a retry message.",
+    "The cart is kept."
+  ],
+  "url": "https://shopfront.atlassian.net/browse/SHOP-44"
+}

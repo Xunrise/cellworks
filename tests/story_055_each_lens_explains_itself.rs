@@ -140,7 +140,8 @@ fn the_lens_bar_offers_every_lens_and_explains_each() {
     let (_tree, mut harness) = shop();
 
     let offered = buttons(&harness);
-    for lens in Lens::ALL {
+    // Project lenses are picked in the lens panel, not the bar.
+    for lens in Lens::ALL.into_iter().filter(|l| *l != Lens::Project) {
         assert!(
             offered.contains(&lens.name().to_owned()),
             "{} is offered: {offered:?}",

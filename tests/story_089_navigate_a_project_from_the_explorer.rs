@@ -54,7 +54,9 @@ fn rows<'t>(root: Node<'t>) -> Vec<Node<'t>> {
     root.children_recursive()
         .filter(|node| {
             let node = node.accesskit_node();
-            node.role() == Role::Button && node.toggled().is_some()
+            node.role() == Role::Button
+                && node.toggled().is_some()
+                && node.label().as_deref() != Some("lens panel")
         })
         .collect()
 }

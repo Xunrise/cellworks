@@ -7,6 +7,7 @@ mod cells;
 pub(crate) mod cluster;
 mod custom;
 mod flight;
+pub mod project;
 mod relation;
 mod shape;
 mod stair;
@@ -38,17 +39,20 @@ pub enum Lens {
     Cells,
     /// The folder city, arranged by the engineer.
     Custom,
+    /// A lens the project defines in `.cellworks/lenses/`.
+    Project,
 }
 
 impl Lens {
     /// Every lens, in the order they are offered.
-    pub const ALL: [Lens; 6] = [
+    pub const ALL: [Lens; 7] = [
         Lens::Folders,
         Lens::Imports,
         Lens::Calls,
         Lens::CoChange,
         Lens::Cells,
         Lens::Custom,
+        Lens::Project,
     ];
 
     /// The lens's name as the engineer reads it.
@@ -60,6 +64,7 @@ impl Lens {
             Lens::CoChange => "co-change",
             Lens::Cells => "cells",
             Lens::Custom => "custom",
+            Lens::Project => "project",
         }
     }
 
@@ -78,6 +83,7 @@ impl Lens {
                 "The bounded contexts of the domain model, joined by the context map's roads."
             }
             Lens::Custom => "Your own arrangement: drag blocks and districts where you want them.",
+            Lens::Project => "A lens this project defines: see the lens panel.",
         }
     }
 
@@ -87,7 +93,7 @@ impl Lens {
             Lens::Imports => "one file, or the files of an import cycle",
             Lens::Calls => "functions that call each other",
             Lens::CoChange => "files changed together",
-            Lens::Folders | Lens::Cells | Lens::Custom => "a file",
+            Lens::Folders | Lens::Cells | Lens::Custom | Lens::Project => "a file",
         }
     }
 
@@ -100,13 +106,14 @@ impl Lens {
             Lens::CoChange => "blocks changed together, round the one that changes with everything",
             Lens::Cells => "a bounded context; code of none stands apart",
             Lens::Custom => "a crate or folder, where you put it",
+            Lens::Project => "what the project lens rules say",
         }
     }
 
     /// Whether `folders` can be seen through this lens: the cells lens only
     /// for a project that documents bounded contexts.
     pub fn offered(self, folders: &ProjectMap) -> bool {
-        self != Lens::Cells
+        self != Lens::Project && self != Lens::Cells
             || folders
                 .contexts
                 .as_ref()
@@ -125,7 +132,7 @@ impl Lens {
                 imports: false,
                 calls: true,
             },
-            Lens::Folders | Lens::Cells | Lens::Custom => crate::Lanes::default(),
+            Lens::Folders | Lens::Cells | Lens::Custom | Lens::Project => crate::Lanes::default(),
         }
     }
 
@@ -142,6 +149,11 @@ impl Lens {
             other => other.name(),
         }
     }
+}
+
+/// `folders` seen through the project lens `lens`.
+pub fn relens_project(folders: &ProjectMap, lens: &project::ProjectLens) -> ProjectMap {
+    project::seen(folders, lens)
 }
 
 /// The city of `folders`, the folders lens as read and laid out, seen

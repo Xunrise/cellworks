@@ -238,7 +238,7 @@ fn opening_a_background_session_shows_its_own_screen() {
         harness.state().pane_text()
     );
 
-    harness.get_by_label("Close (detach)").click();
+    harness.get_by_label("DETACH").click();
     harness.run();
     assert!(!harness.state().pane_open());
 
@@ -313,20 +313,20 @@ fn closing_the_pane_leaves_the_session_running() {
     let pricing_fix = session("pricing-fix", Some("atch-pf"), vec![event]);
     let mut harness = open_with_pane(&tree, vec![pricing_fix], &env);
 
-    // Closed with "Close (detach)".
+    // Closed with "DETACH".
     double_click(&mut harness, "pricing-fix");
     assert!(wait_for(&mut harness, |app| {
         app.pane_text()
             .is_some_and(|text| text.contains("SESSION SCREEN"))
     }));
-    harness.get_by_label("Close (detach)").click();
+    harness.get_by_label("DETACH").click();
     harness.run();
     assert!(!harness.state().pane_open());
     assert!(
         fs::read_to_string(&env.stop_log)
             .unwrap_or_default()
             .is_empty(),
-        "\"Close (detach)\" only detaches; it never stops pricing-fix"
+        "\"DETACH\" only detaches; it never stops pricing-fix"
     );
 
     // Closed with Esc, once the terminal has lost focus to a click on the
@@ -490,7 +490,7 @@ fn stopping_a_session() {
             .is_some_and(|text| text.contains("SESSION SCREEN atch-pf"))
     }));
 
-    harness.get_by_label("Stop").click();
+    harness.get_by_label("STOP").click();
     harness.run();
 
     let stopped = wait_for(&mut harness, |app| !app.pane_open());

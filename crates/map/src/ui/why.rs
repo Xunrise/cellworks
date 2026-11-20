@@ -36,8 +36,13 @@ pub fn why_panel(ui: &mut egui::Ui, why: &Why, floor: Option<&Commit>) {
         .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
     ui.label(
         RichText::new(format!("Why {name} was built"))
-            .strong()
-            .color(INK),
+            .font(cellworks_workspace::theme::named(
+                ui.ctx(),
+                14.0,
+                "semibold",
+            ))
+            .extra_letter_spacing(1.0)
+            .color(super::case::ATTENTION),
     );
     ui.add_space(6.0);
 
@@ -140,7 +145,16 @@ fn percent(share: f32) -> u32 {
 }
 
 fn heading(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(text).strong().color(hue(INK)));
+    ui.label(
+        RichText::new(text)
+            .font(cellworks_workspace::theme::named(
+                ui.ctx(),
+                11.0,
+                "semibold",
+            ))
+            .extra_letter_spacing(1.6)
+            .color(hue(super::DIM)),
+    );
 }
 
 /// Headings are written in the ink of the panel, a shade back.
