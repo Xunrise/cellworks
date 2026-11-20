@@ -42,6 +42,8 @@ const FOOTER_HEIGHT: f32 = 50.0;
 pub struct ExplorerAction {
     pub clicked: Option<PathBuf>,
     pub lens: Option<Lens>,
+    /// The context cells are to be built, or recalculated, with Claude.
+    pub build_cells: bool,
 }
 
 /// Draws the Explorer: the header ("EXPLORER" and the file count), one row of
@@ -66,80 +68,102 @@ pub fn explorer(
     files: usize,
     explorer: &mut Explorer,
     focus_filter: bool,
+    building_cells: bool,
 ) -> ExplorerAction {
     let mut action = ExplorerAction::default();
     let frame = egui::Frame::new()
         .fill(PANEL)
         .stroke(Stroke::new(1.0, LINE_STRONG))
         .inner_margin(10.0);
-    let outer = frame.show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("EXPLORER").strong().color(INK));
-            ui.label(RichText::new(format!("{files} files")).color(DIM));
-        });
-        ui.add_space(6.0);
-        if !offered.is_empty() {
-            ui.columns(offered.len(), |columns| {
-                for (column, candidate) in columns.iter_mut().zip(offered) {
-                    if chip(column, *candidate, *candidate == lens).clicked() {
-                        action.lens = Some(*candidate);
-                    }
-                }
+    let outer =
+        frame.show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("EXPLORER").strong().color(INK));
+                ui.label(RichText::new(format!("{files} files")).color(DIM));
             });
-        }
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("/").color(DIM).monospace());
-            let id = ui.id().with("explorer filter");
-            let mut text = explorer.filter().to_owned();
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut text)
-                    .id(id)
-                    .hint_text("filter files and symbols")
-                    .desired_width(ui.available_width()),
-            );
-            if focus_filter {
-                response.request_focus();
-            }
-            if response.changed() {
-                explorer.set_filter(text);
-            }
-        });
-        ui.add_space(6.0);
-        let scroll_to = explorer.take_scroll_to();
-        // Shrinks to its rows rather than claiming the rest of the forced
-        // panel height (STORY-089's own binary sizes this tall enough to
-        // reach other panels — a session pane, say — beside the map; a
-        // `ScrollArea` filling blank space below the rows would otherwise
-        // sense drags there and swallow clicks meant for whatever sits
-        // beneath the overlay at that point).
-        egui::ScrollArea::vertical()
-            .id_salt("explorer rows")
-            .auto_shrink([false, true])
-            .max_height(ui.available_height() - FOOTER_HEIGHT)
-            .show(ui, |ui| {
-                for row in explorer.rows(map, changed) {
-                    let selected = navigation.selection() == Some(row.path.as_path());
-                    let response = draw_row(ui, &row, selected);
-                    if Some(&row.path) == scroll_to.as_ref() {
-                        response.scroll_to_me(Some(egui::Align::Center));
-                    }
-                    if response.clicked() {
-                        if row.foldable {
-                            explorer.fold(&row.path);
+            ui.add_space(6.0);
+            if !offered.is_empty() {
+                ui.columns(offered.len(), |columns| {
+                    for (column, candidate) in columns.iter_mut().zip(offered) {
+                        if chip(column, *candidate, *candidate == lens).clicked() {
+                            action.lens = Some(*candidate);
                         }
-                        action.clicked = Some(row.path.clone());
                     }
+                });
+            }
+            // The cells come from the domain docs: Claude writes or refreshes
+            // them, from the cells lens or wherever there are none yet.
+            if lens == Lens::Cells || map.contexts.is_none() {
+                ui.add_space(4.0);
+                let text = if building_cells {
+                    "Claude is building the cells…"
+                } else if map.contexts.is_some() {
+                    "recalculate cells with Claude"
+                } else {
+                    "build context cells with Claude"
+                };
+                let button = ui
+                .add_enabled(!building_cells, egui::Button::new(RichText::new(text).size(12.0)))
+                .on_hover_text(
+                    "Claude Code reads the code and writes the bounded contexts under docs/domain/",
+                );
+                if button.clicked() {
+                    action.build_cells = true;
+                }
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("/").color(DIM).monospace());
+                let id = ui.id().with("explorer filter");
+                let mut text = explorer.filter().to_owned();
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut text)
+                        .id(id)
+                        .hint_text("filter files and symbols")
+                        .desired_width(ui.available_width()),
+                );
+                if focus_filter {
+                    response.request_focus();
+                }
+                if response.changed() {
+                    explorer.set_filter(text);
                 }
             });
-        ui.add_space(6.0);
-        footer(ui);
-        // Reserves the rest of the forced panel height for the Frame's own
-        // opaque background, with no sense attached, so it paints the full
-        // column without intercepting anything below it.
-        ui.allocate_space(vec2(ui.available_width(), ui.available_height()));
-    });
+            ui.add_space(6.0);
+            let scroll_to = explorer.take_scroll_to();
+            // Shrinks to its rows rather than claiming the rest of the forced
+            // panel height (STORY-089's own binary sizes this tall enough to
+            // reach other panels — a session pane, say — beside the map; a
+            // `ScrollArea` filling blank space below the rows would otherwise
+            // sense drags there and swallow clicks meant for whatever sits
+            // beneath the overlay at that point).
+            egui::ScrollArea::vertical()
+                .id_salt("explorer rows")
+                .auto_shrink([false, true])
+                .max_height(ui.available_height() - FOOTER_HEIGHT)
+                .show(ui, |ui| {
+                    for row in explorer.rows(map, changed) {
+                        let selected = navigation.selection() == Some(row.path.as_path());
+                        let response = draw_row(ui, &row, selected);
+                        if Some(&row.path) == scroll_to.as_ref() {
+                            response.scroll_to_me(Some(egui::Align::Center));
+                        }
+                        if response.clicked() {
+                            if row.foldable {
+                                explorer.fold(&row.path);
+                            }
+                            action.clicked = Some(row.path.clone());
+                        }
+                    }
+                });
+            ui.add_space(6.0);
+            footer(ui);
+            // Reserves the rest of the forced panel height for the Frame's own
+            // opaque background, with no sense attached, so it paints the full
+            // column without intercepting anything below it.
+            ui.allocate_space(vec2(ui.available_width(), ui.available_height()));
+        });
     ui.ctx().accesskit_node_builder(outer.response.id, |node| {
         node.set_role(egui::accesskit::Role::Group);
         node.set_label("Explorer");

@@ -257,6 +257,11 @@ impl OpenedProject {
         self.switched_at
     }
 
+    /// Whether the project's domain knowledge is still being read.
+    pub fn is_learning(&self) -> bool {
+        self.knowledge.is_some()
+    }
+
     /// Reads the project's domain knowledge over `knowledge`.
     pub fn know(&mut self, knowledge: Receiver<DomainKnowledgeEvent>) {
         self.knowledge = Some(knowledge);

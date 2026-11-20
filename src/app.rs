@@ -85,6 +85,10 @@ pub struct CellworksApp {
     pub editors: cellworks_editing::Editors,
     /// What the flat view focuses on, if anything, and the lanes it shows.
     pub focus: cellworks_map::ui::Focus,
+    /// Claude building the open project's context cells, and whether the
+    /// cells lens is to be shown again once they are read.
+    pub cells: crate::cells::CellsBuild,
+    cells_reload: bool,
     pub(crate) universe: Universe,
     pub(crate) events: Option<Receiver<WorkspaceEvent>>,
     pub(crate) opened: Option<OpenedProject>,
@@ -292,6 +296,8 @@ impl CellworksApp {
                 updates: Default::default(),
                 editors: Default::default(),
                 focus: Default::default(),
+                cells: Default::default(),
+                cells_reload: false,
                 arrangements: Some(kept(ArrangementStore::beside(&sources.settings_file))),
                 launcher: Launcher::new(
                     sources
@@ -359,6 +365,8 @@ impl CellworksApp {
                 updates: Default::default(),
                 editors: Default::default(),
                 focus: Default::default(),
+                cells: Default::default(),
+                cells_reload: false,
                 arrangements: None,
                 launcher: Launcher::new(None),
                 probe: Arc::new(SshProbe),
@@ -426,6 +434,8 @@ impl CellworksApp {
             updates: Default::default(),
             editors: Default::default(),
             focus: Default::default(),
+            cells: Default::default(),
+            cells_reload: false,
             lens_panel: Default::default(),
             arrangements: None,
             launcher: Launcher::new(None),
@@ -1129,6 +1139,15 @@ impl CellworksApp {
     }
 
     /// Walks the projects folders again, after they changed in the settings.
+    /// Starts Claude on the open project's context cells, unless it already
+    /// works on them.
+    pub fn build_cells(&mut self) {
+        if let Some(root) = self.opened.as_ref().and_then(OpenedProject::root) {
+            let root = root.to_path_buf();
+            self.cells.start(&root);
+        }
+    }
+
     pub(crate) fn rescan_projects(&mut self) {
         let Some(sources) = self.scan_sources.clone() else {
             return;
@@ -1794,6 +1813,28 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
 
     // What the lens bar and the lane toggles asked for: applied once the
     // frame no longer borrows the opened project.
+    // Claude's build of the context cells: once done, the domain docs are
+    // read again, and the cells lens shown once they are.
+    if app.cells.drain(now)
+        && let Some(opened) = &mut app.opened
+        && opened.root() == app.cells.root.as_deref()
+    {
+        let root = app.cells.root.clone().unwrap_or_default();
+        let code = opened.project().contexts.clone();
+        opened.know(cellworks_domain_knowledge::start_read(root, code));
+        app.cells_reload = true;
+    }
+    if app.cells.is_running() || app.cells_reload {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(200));
+    }
+    if app.cells_reload
+        && let Some(opened) = &mut app.opened
+        && !opened.is_learning()
+    {
+        app.cells_reload = false;
+        opened.set_lens(cellworks_map::Lens::Cells, now);
+    }
     if let Some(opened) = &mut app.opened {
         app.lens_panel.drain();
         app.lens_panel.watch(opened, now);
@@ -1806,6 +1847,7 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
         }
     }
     let mut bar: (Option<Lens>, (bool, bool)) = (None, (false, false));
+    let mut build_cells = false;
     // "Leave review" was clicked (STORY-022): reopening the home project
     // replaces `app.opened`, which this match still borrows as `opened`
     // below, so it waits until the match is over.
@@ -2175,6 +2217,7 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
                             opened.files(),
                             &mut app.explorer,
                             focus_filter,
+                            app.cells.is_running(),
                         )
                     })
                     .inner;
@@ -2184,6 +2227,7 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 if let Some(path) = action.clicked {
                     app.navigation.frame(map, path);
                 }
+                build_cells |= action.build_cells;
             }
             // Close enough, the camera turns to face a facade; the pivot
             // glides to it over the next frames.
@@ -2350,6 +2394,10 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
     if flip_mode {
         app.toggle_view_mode();
     }
+    if build_cells {
+        app.build_cells();
+    }
+    cells_status(ui, app, now);
     let (picked, (import_lanes, call_lanes)) = bar;
     if let Some(opened) = &mut app.opened {
         if let Some(lens) = picked {
@@ -3237,6 +3285,50 @@ fn project(
             explorer.saw(drawn.view.visible, flat);
             Some(drawn)
         }
+    }
+}
+
+/// Where Claude's build of the context cells stands, over the bottom of the
+/// map while it runs, a little after it finished, and until a failure is
+/// dismissed.
+fn cells_status(ui: &mut egui::Ui, app: &mut CellworksApp, now: f64) {
+    let (Some((line, failed)), Some(panel)) = (app.cells.status(now), app.panel) else {
+        return;
+    };
+    let colour = if failed {
+        egui::Color32::from_rgb(0xff, 0x4d, 0x6d)
+    } else {
+        egui::Color32::from_rgb(0xfc, 0xee, 0x0a)
+    };
+    let dismissed = egui::Area::new(egui::Id::new("cells status"))
+        .order(egui::Order::Foreground)
+        .pivot(egui::Align2::CENTER_BOTTOM)
+        .fixed_pos(panel.center_bottom() - egui::vec2(0.0, 16.0))
+        .show(ui.ctx(), |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgb(0x0d, 0x11, 0x17))
+                .stroke(egui::Stroke::new(1.0, colour.gamma_multiply(0.6)))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(12, 8))
+                .show(ui, |ui| {
+                    ui.set_max_width(panel.width() * 0.6);
+                    ui.horizontal(|ui| {
+                        if !failed && app.cells.is_running() {
+                            ui.spinner();
+                        }
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(line).monospace().color(colour))
+                                .wrap(),
+                        );
+                        failed && ui.small_button("dismiss").clicked()
+                    })
+                    .inner
+                })
+                .inner
+        })
+        .inner;
+    if dismissed {
+        app.cells.dismiss();
     }
 }
 

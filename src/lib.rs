@@ -5,6 +5,7 @@
 //! opening a window.
 
 pub mod app;
+pub mod cells;
 pub mod cli;
 pub mod demo;
 pub mod iterate;

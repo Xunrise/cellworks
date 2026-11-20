@@ -83,6 +83,7 @@ struct Actions {
     test: Option<SourceId>,
     check_now: bool,
     store_key: Option<String>,
+    build_cells: bool,
 }
 
 /// The settings window's state.
@@ -111,6 +112,11 @@ pub struct SettingsWindow {
     rescan_after_save: bool,
     /// Whether a change to the tickets sources lists them again at once.
     pub(crate) list_on_change: bool,
+    /// The open project whose context cells Claude can build, by name, and
+    /// where that build stands; set by the app each frame.
+    pub cells_project: Option<String>,
+    pub cells_status: Option<(String, bool)>,
+    pub cells_busy: bool,
 }
 
 impl Default for SettingsWindow {
@@ -152,6 +158,9 @@ impl SettingsWindow {
             results: channel(),
             rescan_after_save: false,
             list_on_change: false,
+            cells_project: None,
+            cells_status: None,
+            cells_busy: false,
         }
     }
 
@@ -297,6 +306,9 @@ pub fn keys(ui: &mut Ui, app: &mut CellworksApp) {
 /// Draws the window when open, takes up what was edited and writes it.
 pub fn show(ui: &mut Ui, app: &mut CellworksApp) {
     let now = ui.input(|i| i.time);
+    app.settings.cells_project = app.opened.as_ref().map(|o| o.project().name.clone());
+    app.settings.cells_status = app.cells.status(now);
+    app.settings.cells_busy = app.cells.is_running();
     if app.settings.open {
         let mut actions = Actions::default();
         {
@@ -341,6 +353,9 @@ fn act(app: &mut CellworksApp, actions: Actions) {
     }
     if actions.check_now {
         app.updates.check_now();
+    }
+    if actions.build_cells {
+        app.build_cells();
     }
     if let Some(source) = actions.test {
         let config = app.settings.tickets_config(&app.settings.committed);
@@ -571,7 +586,7 @@ fn form(
             );
         }
         Section::Tickets => tickets(ui, w, desk, &problems, &env, actions),
-        Section::Map => map(ui, w),
+        Section::Map => map(ui, w, actions),
         Section::Editor => editor(ui, w, &problems, &env),
         Section::Updates => updates_section(ui, w, updates, actions),
     }
@@ -746,7 +761,7 @@ fn tickets(
     });
 }
 
-fn map(ui: &mut Ui, w: &mut SettingsWindow) {
+fn map(ui: &mut Ui, w: &mut SettingsWindow, actions: &mut Actions) {
     note(
         ui,
         "What a project opens with when you have not chosen otherwise for it. V in a project switches its view and remembers that.",
@@ -779,6 +794,28 @@ fn map(ui: &mut Ui, w: &mut SettingsWindow) {
     toggle(ui, "Show import lanes", &mut w.draft.map.import_lanes);
     toggle(ui, "Show call lanes", &mut w.draft.map.call_lanes);
     toggle(ui, "Start underground", &mut w.draft.map.underground);
+    ui.add_space(10.0);
+    label(ui, "Context cells");
+    match &w.cells_project {
+        Some(name) => {
+            ui.horizontal(|ui| {
+                let text = format!("Build or recalculate the cells of {name} with Claude");
+                let button = ui.add_enabled(!w.cells_busy, egui::Button::new(text));
+                if button.clicked() {
+                    actions.build_cells = true;
+                }
+            });
+            if let Some((status, failed)) = &w.cells_status {
+                let colour = if *failed { DANGER } else { DIM };
+                ui.label(egui::RichText::new(status).color(colour).size(12.0));
+            }
+            note(
+                ui,
+                "Claude Code reads the code and writes the bounded contexts and their map under docs/domain/; the cells lens is read again when it is done.",
+            );
+        }
+        None => note(ui, "Open a project to build its context cells."),
+    }
 }
 
 fn editor(
