@@ -1,7 +1,8 @@
 {
+  "source": "jira",
   "kind": "Story",
   "status": "To Do",
-  "category": "new",
+  "category": "todo",
   "priority": "High",
   "assignee": "Martin Galusinski",
   "reporter": "Dana Weber",
@@ -32,8 +33,8 @@
     ]
   ],
   "key": "SHOP-42",
-  "summary": "Apply a promo code at checkout",
-  "description": "Shoppers who have a promo code from a newsletter have no place to type it. They pay full price or abandon the cart.\n\nCodes look like SAVE10 and take that percent off the items. Codes below 5 or above 50 percent are not valid, and one code never takes more than 100 EUR off an order.\n\nThe discount must reach the order and the payment, not only the page.",
+  "title": "Apply a promo code at checkout",
+  "body": "Shoppers who have a promo code from a newsletter have no place to type it. They pay full price or abandon the cart.\n\nCodes look like SAVE10 and take that percent off the items. Codes below 5 or above 50 percent are not valid, and one code never takes more than 100 EUR off an order.\n\nThe discount must reach the order and the payment, not only the page.",
   "criteria": [
     "A shopper can enter a promo code on the checkout page.",
     "A valid code shows 'Code applied' and a discount on the total, with the old total struck through.",
@@ -41,5 +42,7 @@
     "The order stores the code and the discount, and the payment charges the discounted total.",
     "No discount takes more than 100 EUR off."
   ],
-  "url": "https://shopfront.atlassian.net/browse/SHOP-42"
+  "url": "https://shopfront.atlassian.net/browse/SHOP-42",
+  "project": "SHOP",
+  "repo": "shopfront"
 }

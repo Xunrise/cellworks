@@ -1,8 +1,8 @@
-//! PROTOTYPE: the case mode for any Jira issue. Opening a ticket takes over
+//! PROTOTYPE: the case mode for any ticket. Opening a ticket takes over
 //! the window and walks through three stages: the problem in plain words,
 //! the proposed fix placed on a map of the code base and the outside
 //! systems, and the evidence for one step (what changes, the lines on disk,
-//! the risks). The ticket comes from Jira; everything beyond it comes from
+//! the risks). The ticket comes from its tracker; everything beyond it comes from
 //! the case file a Claude Code session writes (see `casefile`), which is
 //! watched and shown as soon as it appears. Layout and colours follow the
 //! approved mockup, drawn on a 1600 x 1000 sheet; everything here is laid
@@ -19,8 +19,8 @@ use super::casefile::{
     self, CaseFile, FileSpot, Kind, LaneKind, Level, Loaded, Mark, Spot, Status, System, When,
     expand,
 };
-use super::jira::{Jira, SignIn};
 use crate::ProjectMap;
+use crate::tickets::{SignIn, Ticket, TicketDesk, TicketRef};
 use crate::ui::Spot as MapSpot;
 use egui::text::{LayoutJob, TextFormat};
 use egui::{
@@ -342,7 +342,7 @@ pub struct Prototype {
 }
 
 pub struct Case {
-    /// The issue key, e.g. "SHOP-42".
+    /// The ticket's stable form, `<source>:<key>`, e.g. "jira:SHOP-42".
     pub key: String,
     stage: u8,
     step: usize,
@@ -363,7 +363,7 @@ pub struct Case {
     checked: f64,
     places: Vec<Place>,
     districts: Vec<District>,
-    /// Stage 1 shows the ticket as Jira has it instead of the case.
+    /// Stage 1 shows the ticket as its tracker has it instead of the case.
     raw: bool,
     /// What the last lifecycle button ran, as shown to the user.
     investigating: Option<String>,
@@ -393,7 +393,7 @@ pub struct Case {
 impl Case {
     pub fn new(key: &str, now: f64) -> Case {
         let mut case = Case {
-            key: key.to_owned(),
+            key: TicketRef::parse(key).to_string(),
             stage: 1,
             step: 0,
             after: false,
@@ -814,85 +814,6 @@ pub fn button(ui: &Ui, rect: Rect, label: &str) -> Response {
     response
 }
 
-/// The ticket picker: my open tickets from Jira and a field for any key.
-/// Answers the key to open a case for.
-pub fn picker(ui: &mut Ui, jira: &mut Jira, typed: &mut String) -> Option<String> {
-    jira.poll();
-    let mut open = None;
-    ui.horizontal(|ui| {
-        let field = ui.add(
-            egui::TextEdit::singleline(typed)
-                .hint_text("any key, e.g. SHOP-42")
-                .desired_width(180.0),
-        );
-        let entered = field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-        if (ui.button("Open").clicked() || entered) && !typed.trim().is_empty() {
-            open = Some(typed.trim().to_uppercase());
-        }
-    });
-    ui.separator();
-    let fetching = jira.is_fetching(super::jira::MINE);
-    let failure = jira.failure(super::jira::MINE).map(str::to_owned);
-    let state = jira.sign_in.clone();
-    let mine = jira.mine().cloned();
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("MY OPEN TICKETS").small().strong());
-        let line = match (&mine, fetching) {
-            (_, true) => "syncing…".to_owned(),
-            (Some((_, synced)), _) => synced.label(),
-            (None, _) => "not synced".to_owned(),
-        };
-        ui.label(egui::RichText::new(line).small().weak());
-    });
-    match state {
-        SignIn::Needed | SignIn::Failed(_) => {
-            if ui.button("Sign in to Jira").clicked() {
-                jira.start_sign_in();
-            }
-        }
-        SignIn::Pending => {
-            ui.label(egui::RichText::new("sign-in pending in the browser").weak());
-        }
-        _ => {}
-    }
-    if let Some(reason) = failure {
-        ui.label(egui::RichText::new(format!("sync failed: {reason}")).weak());
-    }
-    egui::ScrollArea::vertical()
-        .max_height(420.0)
-        .show(ui, |ui| {
-            for row in mine.map(|(rows, _)| rows).unwrap_or_default() {
-                let status = super::casefile::status_of(&row.key);
-                ui.horizontal(|ui| {
-                    let (mark, colour) = match status {
-                        Some(Status::Fixed) => ("FIXED", OK),
-                        Some(status) => (status.name(), ATTENTION),
-                        None => ("NEW", INK_DIM),
-                    };
-                    ui.add_sized(
-                        [72.0, 16.0],
-                        egui::Label::new(egui::RichText::new(mark).small().strong().color(colour)),
-                    )
-                    .on_hover_text(if status.is_some() {
-                        "where the case stands"
-                    } else {
-                        "not ingested yet"
-                    });
-                    let label = format!("{}  {}", row.key, row.summary);
-                    let entry = ui.add(egui::Button::selectable(false, label).wrap());
-                    cellworks_workspace::mark(ui.ctx(), &format!("ticket.{}", row.key), entry.rect);
-                    if entry
-                        .on_hover_text(format!("{} · updated {}", row.status, row.updated))
-                        .clicked()
-                    {
-                        open = Some(row.key.clone());
-                    }
-                });
-            }
-        });
-    open
-}
-
 /// `text`, cut with an ellipsis to `max` units at `font`.
 fn elide(s: &Sheet, text: &str, font: Font, max: f32) -> String {
     if s.width(text, font) <= max {
@@ -911,8 +832,13 @@ fn elide(s: &Sheet, text: &str, font: Font, max: f32) -> String {
 
 /// Draws the case over `ui`, on top of the live map when there is one, and
 /// answers what it was asked: false once it is closed.
-pub fn show(ui: &mut Ui, case: &mut Case, jira: &mut Jira, live_map: Option<Live<'_>>) -> bool {
-    jira.poll();
+pub fn show(
+    ui: &mut Ui,
+    case: &mut Case,
+    desk: &mut dyn TicketDesk,
+    live_map: Option<Live<'_>>,
+) -> bool {
+    desk.poll();
     let ctx = ui.ctx().clone();
     let now = ctx.input(|input| input.time);
     case.refresh(now);
@@ -964,7 +890,7 @@ pub fn show(ui: &mut Ui, case: &mut Case, jira: &mut Jira, live_map: Option<Live
     // PROTOTYPE: on stages 4 and 5 the iterate loop draws below the bar.
     if case.stage >= 4 {
         sheet.painter.rect_filled(top, 0.0, PANEL);
-        match top_bar(ui, &sheet, case, jira, live_map.is_some()) {
+        match top_bar(ui, &sheet, case, desk, live_map.is_some()) {
             Some(0) => return false,
             Some(stage) => case.go(stage, now),
             None => {}
@@ -1015,7 +941,7 @@ pub fn show(ui: &mut Ui, case: &mut Case, jira: &mut Jira, live_map: Option<Live
     }
 
     match (case.stage, &live_map) {
-        (1, _) => scrolled(ui, &sheet, case, jira, now),
+        (1, _) => scrolled(ui, &sheet, case, desk, now),
         (_, Some(map)) => {
             live(ui, &sheet, case, now, map);
             if case.stage == 2 {
@@ -1033,7 +959,7 @@ pub fn show(ui: &mut Ui, case: &mut Case, jira: &mut Jira, live_map: Option<Live
             evidence(ui, &sheet, case, now);
         }
     }
-    match top_bar(ui, &sheet, case, jira, live_map.is_some()) {
+    match top_bar(ui, &sheet, case, desk, live_map.is_some()) {
         Some(0) => return false,
         Some(stage) => case.go(stage, now),
         None => {}
@@ -1056,7 +982,13 @@ fn around(screen: Rect, top: Rect, hole: Rect) -> [Rect; 4] {
 }
 
 /// The case's top bar; answers the stage asked for, 0 to leave the case.
-fn top_bar(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, live: bool) -> Option<u8> {
+fn top_bar(
+    ui: &Ui,
+    s: &Sheet,
+    case: &mut Case,
+    desk: &mut dyn TicketDesk,
+    live: bool,
+) -> Option<u8> {
     let mut go = None;
     let screen = ui.ctx().content_rect();
     let bar = Rect::from_min_max(screen.min, pos2(screen.max.x, s.p(0.0, 64.0).y));
@@ -1089,21 +1021,24 @@ fn top_bar(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, live: bool) -> 
     let ui_text = &text_ui;
     let key = font(14.0, "mono-bold", 0.0, 1.25);
     let key_x = 24.0 + tag_w + 12.0;
-    let issue_url = jira.issue(&case.key).map(|(issue, _)| issue.url.clone());
+    let which = TicketRef::parse(&case.key);
+    let ticket = desk.ticket(&which);
+    let issue_url = ticket.as_ref().map(|(ticket, _)| ticket.url.clone());
     s.pick_at(
         ui_text,
         (key_x, 25.0, Align2::LEFT_CENTER),
-        &case.key,
+        &which.key,
         (key, INK, 0.0),
-        issue_url.as_deref().map(|url| (case.key.len(), url)),
+        issue_url.as_deref().map(|url| (which.key.len(), url)),
     );
-    let title_x = key_x + s.width(&case.key, key) + 12.0;
-    // The summary and how fresh it is, from Jira; up to where the rail
+    let title_x = key_x + s.width(&which.key, key) + 12.0;
+    // The title and how fresh it is, from the tracker; up to where the rail
     // starts.
-    let fetching = jira.is_fetching(&case.key);
-    let failure = jira.failure(&case.key).map(str::to_owned);
-    let (summary, synced) = match jira.issue(&case.key) {
-        Some((issue, synced)) => (issue.summary.clone(), synced.label()),
+    let fetching = desk.is_fetching(&which);
+    let failure = desk.failure(&which);
+    let sign_in = desk.sign_in(which.source);
+    let (summary, synced) = match ticket {
+        Some((ticket, synced)) => (ticket.title, synced.label()),
         None => (String::new(), "not synced".to_owned()),
     };
     let title = font(14.0, "sans", 0.0, 1.25);
@@ -1114,7 +1049,7 @@ fn top_bar(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, live: bool) -> 
         (title, INK_DIM, 0.0),
         None,
     );
-    let state = match (&jira.sign_in, fetching, failure) {
+    let state = match (&sign_in, fetching, failure) {
         (SignIn::Pending, _, _) => "sign-in pending in the browser".to_owned(),
         (SignIn::Needed, _, _) => "sign-in needed".to_owned(),
         (SignIn::Failed(reason), _, _) => format!("sign-in failed: {reason}"),
@@ -1123,9 +1058,9 @@ fn top_bar(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, live: bool) -> 
         _ => String::new(),
     };
     let line = if state.is_empty() {
-        format!("from Jira · {synced}")
+        format!("from {} · {synced}", which.source.name())
     } else {
-        format!("from Jira · {synced} · {state}")
+        format!("from {} · {synced} · {state}", which.source.name())
     };
     s.pick_at(
         ui_text,
@@ -1215,10 +1150,11 @@ fn top_bar(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, live: bool) -> 
         }
         right -= w + 16.0;
     }
-    if matches!(jira.sign_in, SignIn::Needed | SignIn::Failed(_)) {
-        let w = s.width("SIGN IN TO JIRA", LABEL) + 32.0;
+    if matches!(sign_in, SignIn::Needed | SignIn::Failed(_)) {
+        let label = format!("SIGN IN TO {}", which.source.name().to_uppercase());
+        let w = s.width(&label, LABEL) + 32.0;
         let rect = s.r(right - w, 10.0, w, 44.0);
-        let response = button(ui, rect, "SIGN IN TO JIRA");
+        let response = button(ui, rect, &label);
         let fill = if response.hovered() {
             PANEL_RAISED
         } else {
@@ -1229,12 +1165,12 @@ fn top_bar(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, live: bool) -> 
             right - w / 2.0,
             32.0,
             Align2::CENTER_CENTER,
-            "SIGN IN TO JIRA",
+            &label,
             LABEL,
             ATTENTION,
         );
         if response.clicked() {
-            jira.start_sign_in();
+            desk.start_sign_in(which.source);
         }
         right -= w + 16.0;
     }
@@ -2330,7 +2266,7 @@ fn glyph(p: &Painter, kind: Glyph, c: Pos2, m: f32, stroke: Stroke) {
 // ---------------------------------------------------------------- stage 1
 
 /// Stage 1 below the top bar, scrolling when it runs past the window.
-fn scrolled(ui: &mut Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, now: f64) {
+fn scrolled(ui: &mut Ui, s: &Sheet, case: &mut Case, desk: &mut dyn TicketDesk, now: f64) {
     let screen = ui.ctx().content_rect();
     let rect = Rect::from_min_max(pos2(screen.min.x, s.p(0.0, 64.0).y), screen.max);
     let mut child = ui.new_child(
@@ -2355,20 +2291,22 @@ fn scrolled(ui: &mut Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, now: f64) 
             let mut sheet = s.clone();
             sheet.painter = ui.painter().clone();
             sheet.o.y = ui.max_rect().min.y - 64.0 * s.k;
-            let bottom = problem(ui, &sheet, case, jira, now);
+            let bottom = problem(ui, &sheet, case, desk, now);
             ui.allocate_space(vec2(ui.available_width(), (bottom + 40.0 - 64.0) * s.k));
         });
 }
 
 /// Draws stage 1 and answers where it ends, in sheet units.
-fn problem(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, now: f64) -> f32 {
+fn problem(ui: &Ui, s: &Sheet, case: &mut Case, desk: &mut dyn TicketDesk, now: f64) -> f32 {
     let (x, top, gap) = (180.0, 104.0, 24.0);
     let left_w = (1240.0 - gap) * 1.25 / 2.25;
     let right_w = 1240.0 - gap - left_w;
     let rx = x + left_w + gap;
-    let issue = jira
-        .issue(&case.key)
-        .map(|(issue, synced)| (issue.clone(), synced.label()));
+    let which = TicketRef::parse(&case.key);
+    let source = which.source.name();
+    let issue: Option<(Ticket, String)> = desk
+        .ticket(&which)
+        .map(|(ticket, synced)| (ticket, synced.label()));
     let file = case.loaded.as_ref().map(|loaded| loaded.case.clone());
     let raw = case.raw || file.is_none();
 
@@ -2391,17 +2329,17 @@ fn problem(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, now: f64) -> f3
         if raw {
             let (summary, description, origin) = match &issue {
                 Some((issue, synced)) => (
-                    issue.summary.clone(),
-                    issue.description.clone(),
-                    format!("from Jira · {synced} · {}", issue.url),
+                    issue.title.clone(),
+                    issue.body.clone(),
+                    format!("from {source} · {synced} · {}", issue.url),
                 ),
                 None => (
-                    case.key.clone(),
-                    "The ticket has not been read from Jira yet.".to_owned(),
-                    "from Jira · not synced".to_owned(),
+                    which.key.clone(),
+                    format!("The ticket has not been read from {source} yet."),
+                    format!("from {source} · not synced"),
                 ),
             };
-            // Jira's wiki markup, reduced to what reads as plain text.
+            // The tracker's markup, reduced to what reads as plain text.
             let description = description
                 .trim()
                 .replace("**", "")
@@ -2432,7 +2370,7 @@ fn problem(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, now: f64) -> f3
                 })
                 .unwrap_or_default();
             (
-                "1 · THE TICKET, AS WRITTEN IN JIRA",
+                format!("1 · THE TICKET, AS WRITTEN IN {}", source.to_uppercase()),
                 origin,
                 summary,
                 description,
@@ -2441,7 +2379,7 @@ fn problem(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, now: f64) -> f3
         } else {
             let file = file.as_ref().expect("a case file when not raw");
             (
-                "1 · THE PROBLEM, IN PLAIN WORDS",
+                "1 · THE PROBLEM, IN PLAIN WORDS".to_owned(),
                 format!("from case by Claude, {}", file.written),
                 file.problem.headline.clone(),
                 file.problem.plain.clone(),
@@ -2465,18 +2403,18 @@ fn problem(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, now: f64) -> f3
     } else {
         body
     };
-    // The origin wraps beside the toggle; in case mode Jira's own summary
-    // follows it, in full.
+    // The origin wraps beside the toggle; in case mode the tracker's own
+    // title follows it, in full.
     let origin_w = if file.is_some() {
         inner - s.width("RAW TICKET", LABEL) - 44.0
     } else {
         inner
     };
-    let jira_line = match (&issue, raw) {
-        (Some((issue, _)), false) => Some(format!("JIRA  {}", issue.summary)),
+    let ticket_line = match (&issue, raw) {
+        (Some((issue, _)), false) => Some(format!("{}  {}", source.to_uppercase(), issue.title)),
         _ => None,
     };
-    let jira_font = font(13.0, "sans", 0.0, 1.4);
+    let ticket_font = font(13.0, "sans", 0.0, 1.4);
     let issue_url = issue.as_ref().map(|(issue, _)| issue.url.clone());
     // The linked issue's page, next to this issue's.
     let linked_url = issue.as_ref().and_then(|(issue, _)| {
@@ -2484,9 +2422,9 @@ fn problem(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, now: f64) -> f3
         let (site, _) = issue.url.rsplit_once("/browse/")?;
         Some(format!("{site}/browse/{key}"))
     });
-    let jira_h = jira_line
+    let jira_h = ticket_line
         .as_ref()
-        .map(|line| s.height(line, jira_font, origin_w) + 6.0)
+        .map(|line| s.height(line, ticket_font, origin_w) + 6.0)
         .unwrap_or(0.0);
     let card_hs: Vec<f32> = cards
         .iter()
@@ -2531,20 +2469,20 @@ fn problem(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, now: f64) -> f3
         .as_ref()
         .map(|f| f.problem.criteria_notes.clone())
         .unwrap_or_default();
-    let jira_criteria = issue
+    let ticket_criteria = issue
         .as_ref()
         .map(|(issue, _)| issue.criteria.clone())
         .unwrap_or_default();
-    // Jira's criteria, with the case's notes under them when they pair up;
-    // the case's own when Jira has none.
+    // The tracker's criteria, with the case's notes under them when they pair
+    // up; the case's own when it has none.
     let (criteria, sub, crit_origin): (Vec<String>, Vec<String>, String) =
-        if !jira_criteria.is_empty() {
-            let sub = if notes.len() == jira_criteria.len() {
+        if !ticket_criteria.is_empty() {
+            let sub = if notes.len() == ticket_criteria.len() {
                 notes.clone()
             } else {
                 Vec::new()
             };
-            (jira_criteria, sub, "from Jira".to_owned())
+            (ticket_criteria, sub, format!("from {source}"))
         } else if !notes.is_empty() {
             (
                 notes.clone(),
@@ -2555,7 +2493,7 @@ fn problem(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, now: f64) -> f3
                 ),
             )
         } else {
-            (Vec::new(), Vec::new(), "none in Jira".to_owned())
+            (Vec::new(), Vec::new(), format!("none in {source}"))
         };
     let crit_hs: Vec<f32> = criteria
         .iter()
@@ -2586,15 +2524,15 @@ fn problem(ui: &Ui, s: &Sheet, case: &mut Case, jira: &mut Jira, now: f64) -> f3
     a.plate(a.r(x, top, left_w, row_h), PANEL, LINE, 16.0);
     let lx = x + 32.0;
     let mut y = top + 32.0;
-    y += a.pick(ui, lx, y, label, LABEL, INK_DIM, 0.0) + 6.0;
+    y += a.pick(ui, lx, y, &label, LABEL, INK_DIM, 0.0) + 6.0;
     y += a.pick(ui, lx, y, &origin, provenance, INK_DIM, origin_w);
-    if let Some(line) = &jira_line {
+    if let Some(line) = &ticket_line {
         y += 6.0
             + a.pick_at(
                 ui,
                 (lx, y + 6.0, Align2::LEFT_TOP),
                 line,
-                (jira_font, INK_DIM, origin_w),
+                (ticket_font, INK_DIM, origin_w),
                 issue_url.as_deref().map(|url| (4, url)),
             );
     }
@@ -3659,7 +3597,7 @@ impl Case {
         if let (Some(worktree), Some(branch)) = (&repo.worktree, &repo.branch) {
             return Some((worktree.clone(), branch.clone()));
         }
-        let key = self.key.to_lowercase();
+        let key = TicketRef::parse(&self.key).file_stem().to_lowercase();
         let words: Vec<String> = self
             .loaded
             .as_ref()?
@@ -3804,17 +3742,23 @@ fn current_branch(root: &Path) -> Option<String> {
 /// Starts a Claude Code session that ingests `key` into a new case file,
 /// in `workspace` (else the home folder). Says what ran.
 fn ingest(key: &str, workspace: Option<&Path>) -> String {
-    if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+    if key.is_empty()
+        || !key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_:/#.".contains(c))
+    {
         return format!("not an issue key: {key}");
     }
     // PROTOTYPE (stakeholder demo): no session; the ingested case file is
     // copied in from the demo's snapshots.
     if std::env::var_os("CELLWORKS_DEMO").is_some() {
         let target = casefile::path(key);
-        let snapshot = target
-            .parent()
-            .and_then(Path::parent)
-            .map(|root| root.join(format!("case-snapshots/{key}.ingested.json")));
+        let snapshot = target.parent().and_then(Path::parent).map(|root| {
+            root.join(format!(
+                "case-snapshots/{}.ingested.json",
+                TicketRef::parse(key).file_stem()
+            ))
+        });
         return match snapshot.map(|from| std::fs::copy(from, &target)) {
             Some(Ok(_)) => format!("demo: ingested {key}"),
             _ => format!("demo: no ingested snapshot for {key}"),

@@ -29,6 +29,7 @@ use cellworks_map::{Lens, ProjectMap, ReviewOverlay, Why, default_prefix_rule, p
 use cellworks_navigation::explorer::Explorer;
 use cellworks_navigation::{Moved, Navigation};
 use cellworks_sources::pull_requests::forge::{Checkout, Forge};
+use cellworks_sources::tickets::TicketDesk;
 use cellworks_workspace::ui::LauncherAction;
 use cellworks_workspace::{
     ArrangementKeeper, ArrangementStore, HostProbe, Launcher, Project, ProjectDetails, ProjectId,
@@ -189,10 +190,10 @@ pub struct CellworksApp {
     pub(crate) case: Option<cellworks_map::ui::case::Case>,
     /// PROTOTYPE: the ticket menu (T), from which a case opens.
     pub(crate) tickets_open: bool,
-    /// PROTOTYPE: Jira, read-only, with the issues fetched this session.
-    jira: cellworks_map::ui::jira::Jira,
-    /// PROTOTYPE: the key typed into the ticket picker.
-    typed_key: String,
+    /// The tickets of every enabled source: Jira, Cockpit, GitHub, Linear.
+    tickets: cellworks_sources::tickets::Tickets,
+    /// The Tickets panel's filters and the key typed into it.
+    tickets_panel: cellworks_map::ui::tickets_panel::TicketsPanel,
 }
 
 /// What the keyboard and the pointer asked for in one frame.
@@ -284,8 +285,8 @@ impl CellworksApp {
                 iterate_view: Default::default(),
                 case: None,
                 tickets_open: false,
-                jira: cellworks_map::ui::jira::Jira::new(),
-                typed_key: String::new(),
+                tickets: cellworks_sources::tickets::Tickets::default(),
+                tickets_panel: Default::default(),
                 universe: Universe::scanning(&sources),
                 events: Some(start_scan(sources)),
                 opened: None,
@@ -341,8 +342,8 @@ impl CellworksApp {
                 iterate_view: Default::default(),
                 case: None,
                 tickets_open: false,
-                jira: cellworks_map::ui::jira::Jira::new(),
-                typed_key: String::new(),
+                tickets: cellworks_sources::tickets::Tickets::default(),
+                tickets_panel: Default::default(),
                 universe: Universe::without_home(),
                 events: None,
                 opened: None,
@@ -400,8 +401,8 @@ impl CellworksApp {
             iterate_view: Default::default(),
             case: None,
             tickets_open: false,
-            jira: cellworks_map::ui::jira::Jira::new(),
-            typed_key: String::new(),
+            tickets: cellworks_sources::tickets::Tickets::default(),
+            tickets_panel: Default::default(),
             universe,
             events: Some(events),
             opened: None,
@@ -1683,16 +1684,14 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
     let mut info_jump: Option<std::path::PathBuf> = None;
     match &app.opened {
         None if app.tickets_open => {
-            // PROTOTYPE: the ticket picker stands in for the launcher.
+            // PROTOTYPE: the Tickets panel stands in for the launcher.
             egui::Panel::top("picker tabs").show(ui, |ui| {
                 if ui.button("PROJECTS (T)").clicked() {
                     app.tickets_open = false;
                 }
             });
             let picked = egui::CentralPanel::default()
-                .show(ui, |ui| {
-                    cellworks_map::ui::case::picker(ui, &mut app.jira, &mut app.typed_key)
-                })
+                .show(ui, |ui| app.tickets_panel.ui(ui, &mut app.tickets, None))
                 .inner;
             case_key = picked.map(|key| (key, ui.input(|input| input.time)));
         }
@@ -1725,6 +1724,11 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
             } else {
                 FOLLOWS_ZOOM
             };
+            let here = opened
+                .project()
+                .id
+                .local_path()
+                .map_or(0, |path| app.tickets.for_repo(path).len());
             let offered: Vec<Lens> = Lens::ALL
                 .into_iter()
                 .filter(|lens| opened.offers(*lens))
@@ -1748,6 +1752,13 @@ pub fn draw(ui: &mut egui::Ui, app: &mut CellworksApp) {
                             app.lens_panel.open = !app.lens_panel.open;
                         }
                         crate::demo::mark(ui.ctx(), "lens.toggle", toggle.rect);
+                        theme::rule(ui);
+                        let label = format!("tickets {here}");
+                        let toggle = theme::tab(ui, &label, app.tickets_open, true);
+                        if toggle.clicked() {
+                            app.tickets_open = !app.tickets_open;
+                        }
+                        crate::demo::mark(ui.ctx(), "tickets.toggle", toggle.rect);
                         theme::rule(ui);
                         let mode = theme::tab(ui, mode, false, false);
                         (mode.clicked(), toggled)
@@ -2907,15 +2918,23 @@ fn iterate_overlay(ui: &mut egui::Ui, app: &mut CellworksApp) {
     }
 }
 
-/// PROTOTYPE: the ticket picker over an open project, and the ticket picked
-/// in it, with when.
+/// The Tickets panel over an open project, and the ticket picked in it, with
+/// when. "This project" filters to the tickets that name the project's folder.
 fn tickets_window(ui: &mut egui::Ui, app: &mut CellworksApp) -> Option<(String, f64)> {
+    let repo = app.opened.as_ref().and_then(|opened| {
+        opened
+            .project()
+            .id
+            .local_path()
+            .map(std::path::Path::to_path_buf)
+    });
     egui::Window::new("Tickets")
         .anchor(egui::Align2::RIGHT_TOP, [-12.0, 40.0])
         .resizable(false)
         .collapsible(false)
+        .min_width(560.0)
         .show(ui.ctx(), |ui| {
-            cellworks_map::ui::case::picker(ui, &mut app.jira, &mut app.typed_key)
+            app.tickets_panel.ui(ui, &mut app.tickets, repo.as_deref())
         })
         .and_then(|shown| shown.inner.flatten())
         .map(|key| (key, ui.input(|input| input.time)))
@@ -2928,7 +2947,7 @@ fn show_case(ui: &mut egui::Ui, app: &mut CellworksApp) {
             map,
             towers: &app.towers,
         });
-        if !cellworks_map::ui::case::show(ui, case, &mut app.jira, live) {
+        if !cellworks_map::ui::case::show(ui, case, &mut app.tickets, live) {
             app.case = None;
         }
     }
@@ -3189,10 +3208,13 @@ pub fn run() -> eframe::Result {
                 });
             }
             let mut app = CellworksApp::start();
+            // Starts the first listing of every source, so the project
+            // badge has tickets to count.
+            app.tickets.all();
             // PROTOTYPE: CELLWORKS_OPEN_CASE=<KEY> starts with that case open
             // (any other value opens SHOP-42).
             if let Ok(key) = std::env::var("CELLWORKS_OPEN_CASE") {
-                let key = if key.contains('-') {
+                let key = if key.contains(['-', ':', '#']) {
                     key
                 } else {
                     "SHOP-42".into()

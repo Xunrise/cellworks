@@ -57,6 +57,9 @@ fn rows<'t>(root: Node<'t>) -> Vec<Node<'t>> {
             node.role() == Role::Button
                 && node.toggled().is_some()
                 && node.label().as_deref() != Some("lens panel")
+                && !node
+                    .label()
+                    .is_some_and(|label| label.starts_with("tickets "))
         })
         .collect()
 }

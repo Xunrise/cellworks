@@ -266,7 +266,7 @@ pub const CHAPTERS: [Chapter; 12] = [
                     egui::Key::T,
                     "T",
                     "Press T to open your tickets",
-                    "Your open Jira tickets, one key away from the map.",
+                    "Your open tickets from every tracker, one key away from the map.",
                 )
             },
             Guided {

@@ -1,7 +1,8 @@
 {
+  "source": "jira",
   "kind": "Story",
   "status": "To Do",
-  "category": "new",
+  "category": "todo",
   "priority": "Medium",
   "assignee": "Martin Galusinski",
   "reporter": "Dana Weber",
@@ -10,11 +11,13 @@
   "links": [],
   "comments": [],
   "key": "SHOP-39",
-  "summary": "Remember the cart after a page reload",
-  "description": "Remember the cart after a page reload.\n\nSee the acceptance criteria.",
+  "title": "Remember the cart after a page reload",
+  "body": "Remember the cart after a page reload.\n\nSee the acceptance criteria.",
   "criteria": [
     "Reloading the page keeps the cart.",
     "Clearing the cart empties the stored copy."
   ],
-  "url": "https://shopfront.atlassian.net/browse/SHOP-39"
+  "url": "https://shopfront.atlassian.net/browse/SHOP-39",
+  "project": "SHOP",
+  "repo": "shopfront"
 }

@@ -56,6 +56,9 @@ Detail in `docs/arc42/03-context.md`.
 - ssh — reachability probe for a remote host (`ssh ... true`)
 - Neovim — embedded with `nvim --embed`
 - Atlassian remote MCP — Jira sync over HTTPS, Cellworks as its own OAuth client
+- Cockpit — local ticket tracker, HTTP on 127.0.0.1:4747 through `curl`, else the `cockpit` binary
+- Linear — tickets over GraphQL through `curl`, personal API key
+- GitHub — pull requests and issues through `gh`
 - Kubernetes — read-only `kubectl get`
 - Terraform — files read from infrastructure repositories
 

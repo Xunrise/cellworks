@@ -16,9 +16,9 @@ mod buildings;
 pub mod case;
 pub mod casefile;
 mod explain;
-pub mod jira;
 mod lanes;
 pub mod ticket;
+pub mod tickets_panel;
 mod why;
 
 pub use buildings::{DrawnBridge, DrawnBuilding, bridge_card};
