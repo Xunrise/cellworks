@@ -1285,6 +1285,8 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
         .zip(mapped(&app.opened))
         .and_then(|(case, map)| case.spots(map));
     let casing = app.case.is_some();
+    // PROTOTYPE: the demo can leave the map without its captions and minimap.
+    let bare = crate::demo::bare(app);
     if app.opened.is_none() {
         app.towers.clear();
         app.buildings.clear();
@@ -2009,7 +2011,7 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
                             return (drawn, None, None, (Vec::new(), None, false));
                         };
                         // PROTOTYPE: a case brings its own chrome; the map's stays away.
-                        let minimap = if casing {
+                        let minimap = if casing || bare {
                             None
                         } else {
                             let minimap =

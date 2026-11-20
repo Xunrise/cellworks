@@ -201,6 +201,14 @@ pub struct Tour {
     /// When the deploy packet left the Depot, in egui time.
     deploy_at: Option<f64>,
     history: Option<History>,
+    /// `bare on`: the map without its captions, legend, hints and minimap,
+    /// for pictures of the city alone.
+    bare: bool,
+}
+
+/// Whether the demo hides the map's captions, legend and minimap.
+pub fn bare(app: &CellworksApp) -> bool {
+    app.demo.as_ref().is_some_and(|t| t.bare)
 }
 
 const STAGES: [&str; 5] = ["BUILD", "CHECKS", "DELIVER", "REVIEW", "DEPLOY"];
@@ -686,6 +694,11 @@ pub fn command(ui: &mut egui::Ui, app: &mut CellworksApp, line: &str) -> bool {
                 tour.tut.hidden = true;
             }
         }
+        "bare" => {
+            if let Some(tour) = &mut app.demo {
+                tour.bare = arg.trim() == "on";
+            }
+        }
         "tour-go" => {
             if let (Some(tour), Ok(chapter)) = (&mut app.demo, arg.trim().parse::<usize>()) {
                 tour.tut.go_chapter(chapter);
@@ -698,6 +711,18 @@ pub fn command(ui: &mut egui::Ui, app: &mut CellworksApp, line: &str) -> bool {
             if let Some(opened) = &mut app.opened {
                 let next = opened.next_lens();
                 opened.set_lens(next, now);
+            }
+        }
+        // `lens <name>`: switches straight to one lens, as its flight shows it.
+        "lens" => {
+            let now = ui.input(|i| i.time);
+            if let (Some(opened), Some(lens)) = (
+                &mut app.opened,
+                cellworks_map::Lens::ALL
+                    .into_iter()
+                    .find(|l| l.name() == arg.trim()),
+            ) {
+                opened.set_lens(lens, now);
             }
         }
         "lanes" => {
