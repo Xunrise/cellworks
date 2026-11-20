@@ -376,3 +376,60 @@ fn demo_tour() {
     // Dropping the app kills the dev server the tour started.
     drop(h);
 }
+
+/// The README and landing-page screenshots, written to docs/assets/ with the
+/// tour hidden. Run with a private TMPDIR so the demo world is not shared:
+/// TMPDIR=$(mktemp -d /tmp/cw.XXXX)/ cargo test --release --test demo_tour readme_shots -- --ignored --nocapture
+/// then trim the harness's 8 px edge: for f in docs/assets/*.png; do sips -c 984 1584 "$f"; done
+#[test]
+#[ignore]
+fn readme_shots() {
+    let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs/assets");
+    std::fs::create_dir_all(&out).unwrap();
+    let mut h = start();
+    drive(&mut h, "tour-hide");
+    let shop = cellworks::demo::root().join("projects/shopfront");
+
+    drive(&mut h, &format!("select {}", shop.display()));
+    frames(&mut h, 800);
+    snap(&mut h, &out, "launcher");
+
+    drive(&mut h, &format!("open {}", shop.display()));
+    frames(&mut h, 6000);
+    drive(&mut h, "agent explorer src/catalog/search.ts");
+    drive(&mut h, "tree");
+    drive(&mut h, "fit");
+    settle(&mut h);
+    // Closer than the fit: the city fills the frame beside the panels.
+    h.hover_at(egui::pos2(900.0, 560.0));
+    h.event(egui::Event::Zoom(1.3));
+    h.step();
+    h.step();
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(130.0, -40.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.step();
+    h.event(egui::Event::PointerGone);
+    settle(&mut h);
+    snap(&mut h, &out, "city");
+
+    h.key_press(egui::Key::V);
+    settle(&mut h);
+    snap(&mut h, &out, "flat");
+    h.key_press(egui::Key::V);
+    settle(&mut h);
+
+    drive(&mut h, "tickets");
+    settle(&mut h);
+    snap(&mut h, &out, "tickets");
+
+    drive(&mut h, "case-open SHOP-42");
+    settle(&mut h);
+    drive(&mut h, "case-ingest");
+    settle(&mut h);
+    snap(&mut h, &out, "case");
+    drop(h);
+}

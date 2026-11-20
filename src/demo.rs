@@ -681,6 +681,11 @@ pub fn command(ui: &mut egui::Ui, app: &mut CellworksApp, line: &str) -> bool {
                 tour.tut.press_n = true;
             }
         }
+        "tour-hide" => {
+            if let Some(tour) = &mut app.demo {
+                tour.tut.hidden = true;
+            }
+        }
         "tour-go" => {
             if let (Some(tour), Ok(chapter)) = (&mut app.demo, arg.trim().parse::<usize>()) {
                 tour.tut.go_chapter(chapter);
