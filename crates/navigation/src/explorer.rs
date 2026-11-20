@@ -58,13 +58,18 @@ pub struct Row {
 }
 
 /// The file tree navigator beside the map: what is folded, the filter, and
-/// the camera's flight to a newly framed row.
+/// the camera's flight to whatever is newly framed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Explorer {
     open: bool,
     unfolded: HashSet<PathBuf>,
     filter: String,
     flight: Option<(Rect, Rect, f64)>,
+    /// Where the camera lands, and whether in the flat view: framing
+    /// anything else starts a flight there.
+    landing: Option<(Rect, bool)>,
+    /// The ground in view as last drawn, and whether in the flat view.
+    seen: Option<(Rect, bool)>,
     followed: Option<PathBuf>,
     scroll_to: Option<PathBuf>,
 }
@@ -76,6 +81,8 @@ impl Default for Explorer {
             unfolded: HashSet::new(),
             filter: String::new(),
             flight: None,
+            landing: None,
+            seen: None,
             followed: None,
             scroll_to: None,
         }
@@ -105,6 +112,7 @@ impl Explorer {
         self.unfolded.clear();
         self.filter.clear();
         self.flight = None;
+        self.landing = None;
         self.followed = None;
         self.scroll_to = None;
     }
@@ -200,13 +208,41 @@ impl Explorer {
         self.followed = Some(path);
     }
 
-    /// Starts flying the camera from `from` to `to`, beginning at `now`.
-    pub fn fly(&mut self, from: Rect, to: Rect, now: f64) {
-        self.flight = Some((from, to, now));
+    /// Where the camera lands now, `None` for a free camera: a landing that
+    /// moved starts a flight there from the ground last drawn, in the same
+    /// view; a free camera ends any flight.
+    pub fn land(&mut self, landing: Option<(Rect, bool)>, now: f64) {
+        let Some((to, flat)) = landing else {
+            self.flight = None;
+            self.landing = None;
+            return;
+        };
+        let moved = self
+            .landing
+            .is_none_or(|(last, was_flat)| was_flat != flat || !near(last, to));
+        if moved
+            && let Some((from, seen_flat)) = self.seen
+            && seen_flat == flat
+            && !near(from, to)
+        {
+            self.flight = Some((from, to, now));
+        }
+        self.landing = Some((to, flat));
+    }
+
+    /// Whether the camera is flying to what was newly framed.
+    pub fn is_flying(&self) -> bool {
+        self.flight.is_some()
+    }
+
+    /// Notes the ground in view as drawn, in the flat view or not.
+    pub fn saw(&mut self, visible: Rect, flat: bool) {
+        self.seen = Some((visible, flat));
     }
 
     /// The camera `duration` seconds into the flight `fly` started, at `now`;
-    /// `None` once it has landed (the flight is then cleared).
+    /// `None` once it has landed (the flight is then cleared). It eases in
+    /// and out, and zooms at an even pace however far it zooms.
     pub fn flying(&mut self, now: f64, duration: f64) -> Option<Rect> {
         let (from, to, started) = self.flight?;
         let t = ((now - started) / duration) as f32;
@@ -214,8 +250,32 @@ impl Explorer {
             self.flight = None;
             return Some(to);
         }
-        Some(flown(from, to, t.max(0.0)))
+        Some(eased(from, to, t.max(0.0)))
     }
+}
+
+/// Whether `a` and `b` are the same ground but for rounding.
+fn near(a: Rect, b: Rect) -> bool {
+    let tolerance = a.size().max_elem().max(b.size().max_elem()) * 1e-3;
+    (a.min - b.min).length() <= tolerance && (a.max - b.max).length() <= tolerance
+}
+
+/// `t` (0 to 1) of an eased flight from `from` to `to`: slow off and slow
+/// in, the size changing by the same factor each moment so a deep zoom does
+/// not rush its last stretch, the centre keeping pace with the size.
+pub fn eased(from: Rect, to: Rect, t: f32) -> Rect {
+    let t = t.clamp(0.0, 1.0);
+    let s = t * t * (3.0 - 2.0 * t);
+    let (a, b) = (from.size().max_elem(), to.size().max_elem());
+    if a <= 0.0 || b <= 0.0 || (a - b).abs() <= a.max(b) * 1e-3 {
+        return flown(from, to, s);
+    }
+    let size = a * (b / a).powf(s);
+    // The share of the zoom done, which the centre follows.
+    let k = (size - a) / (b - a);
+    let centre = from.center() + (to.center() - from.center()) * k;
+    let shape = from.size() + (to.size() - from.size()) * k;
+    Rect::from_center_size(centre, shape)
 }
 
 /// `t` (0 to 1) of the way from `from` to `to`'s corner and size; exactly
@@ -462,6 +522,48 @@ fn walk_node(
             foldable: false,
             unfolded: false,
         });
+    }
+}
+
+#[cfg(test)]
+mod flight_tests {
+    use super::*;
+    use egui::{pos2, vec2};
+
+    #[test]
+    fn an_eased_flight_starts_and_lands_exactly_and_never_overshoots() {
+        let from = Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 800.0));
+        let to = Rect::from_min_size(pos2(600.0, 300.0), vec2(20.0, 16.0));
+        assert_eq!(eased(from, to, 0.0), from);
+        assert!(near(eased(from, to, 1.0), to));
+        let mut last = from.width();
+        for step in 1..=20 {
+            let now = eased(from, to, step as f32 / 20.0);
+            assert!(now.width() <= last + 1e-3, "zooms back out at {step}");
+            last = now.width();
+        }
+    }
+
+    #[test]
+    fn framing_something_new_flies_there_and_a_free_camera_ends_the_flight() {
+        let a = Rect::from_min_size(pos2(0.0, 0.0), vec2(100.0, 100.0));
+        let b = Rect::from_min_size(pos2(50.0, 50.0), vec2(10.0, 10.0));
+        let mut explorer = Explorer::default();
+        explorer.saw(a, false);
+        explorer.land(Some((a, false)), 0.0);
+        assert_eq!(explorer.flying(0.1, 0.6), None, "nothing moved");
+        explorer.land(Some((b, false)), 1.0);
+        assert!(
+            explorer
+                .flying(1.3, 0.6)
+                .is_some_and(|r| !near(r, a) && !near(r, b))
+        );
+        explorer.land(None, 1.4);
+        assert_eq!(explorer.flying(1.4, 0.6), None);
+        // Switching views is no flight.
+        explorer.saw(a, false);
+        explorer.land(Some((b, true)), 2.0);
+        assert_eq!(explorer.flying(2.1, 0.6), None);
     }
 }
 

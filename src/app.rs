@@ -71,7 +71,8 @@ const EXPLORER_MARGIN: f32 = 10.0;
 
 /// How long the camera takes to fly to a newly framed element from the
 /// Explorer.
-const EXPLORER_FLIGHT: f64 = 0.6;
+/// How long the camera flies to what is newly framed, in seconds.
+const FLIGHT: f64 = 0.7;
 
 /// The Cellworks application: the universe it shows, the scan that fills it
 /// in, the project opened from it, if any, and where the view is.
@@ -1563,7 +1564,6 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
     // Whether something read here should (re)start the Explorer's 0.6 s
     // flight beside the panel (STORY-089 requirement 9): set by whichever of
     // the branches below actually moved what is framed.
-    let mut explorer_framed = false;
     if lens
         && !app.explorer.is_open()
         && let Some(opened) = &mut app.opened
@@ -1654,7 +1654,6 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
         {
             app.explorer
                 .step(map, &app.changed, &mut app.navigation, explorer_step);
-            explorer_framed = true;
         }
         if explorer_right
             && let Some(map) = mapped(&app.opened)
@@ -1683,30 +1682,11 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 _ => {
                     if let Some(parent) = map.find(&path).and_then(|found| found.parent) {
                         app.navigation.frame(map, parent.to_path_buf());
-                        explorer_framed = true;
                     }
                 }
             }
         }
     }
-    // Starts the Explorer's flight for whatever the keys above just framed,
-    // before the map is drawn, so this frame's `project()` can already
-    // animate towards it; a row clicked in the Explorer's own panel, drawn
-    // after the map, triggers the same flight again further down.
-    if explorer_framed
-        && app.explorer.is_open()
-        && let Some(map) = mapped(&app.opened)
-    {
-        fly_explorer(
-            &mut app.explorer,
-            &app.navigation,
-            map,
-            app.panel,
-            app.view,
-            now,
-        );
-    }
-    explorer_framed = false;
     // A trackpad pan moves the camera before the map is drawn, so it shows
     // in the very frame it arrives in.
     if scroll != egui::Vec2::ZERO
@@ -2140,25 +2120,13 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 }
                 if let Some(path) = action.clicked {
                     app.navigation.frame(map, path);
-                    explorer_framed = true;
                 }
-            }
-            if explorer_framed
-                && app.explorer.is_open()
-                && let Some(map) = mapped(&app.opened)
-            {
-                fly_explorer(
-                    &mut app.explorer,
-                    &app.navigation,
-                    map,
-                    app.panel,
-                    app.view,
-                    now,
-                );
             }
             // Close enough, the camera turns to face a facade; the pivot
             // glides to it over the next frames.
-            if let Some(map) = mapped(&app.opened).filter(|_| !drawn.view.is_flat()) {
+            if let Some(map) =
+                mapped(&app.opened).filter(|_| !drawn.view.is_flat() && !app.explorer.is_flying())
+            {
                 let turn = cellworks_map::turn_at(drawn.view.scale());
                 let middle = drawn
                     .view
@@ -2434,17 +2402,6 @@ pub fn drive_line(ui: &mut egui::Ui, app: &mut CellworksApp, line: &str) {
         "frame" => {
             if let Some(map) = mapped(&app.opened) {
                 app.navigation.frame_on(map, map.root.join(arg));
-                if app.explorer.is_open() {
-                    let now = ui.input(|i| i.time);
-                    fly_explorer(
-                        &mut app.explorer,
-                        &app.navigation,
-                        map,
-                        app.panel,
-                        app.view,
-                        now,
-                    );
-                }
             }
         }
         // PROTOTYPE: steps inside the tower of the file `arg` a story built,
@@ -3129,12 +3086,23 @@ fn project(
         }
         ProjectState::Mapped(map) => {
             let framing = navigation.framing(map);
+            let panel = ui.available_rect_before_wrap();
+            let flat = opened.view_mode() == ViewMode::Flat;
+            // Whatever is newly framed, the camera flies there rather than
+            // jumping; a free camera goes where it is moved.
+            let landing = navigation.is_framed().then(|| {
+                let seen = seen_in(explorer.is_open(), panel);
+                let to = if flat {
+                    cellworks_map::fit_flat(framing, seen).visible
+                } else {
+                    cellworks_map::fit_visible(framing, seen)
+                };
+                (to, flat)
+            });
+            explorer.land(landing, now);
             // Mid-flight, the ground in view is drawn as a free camera would.
-            let framing = match explorer
-                .is_open()
-                .then(|| explorer.flying(now, EXPLORER_FLIGHT))
-            {
-                Some(Some(area)) => {
+            let framing = match explorer.flying(now, FLIGHT) {
+                Some(area) => {
                     ui.ctx().request_repaint();
                     cellworks_map::Framing {
                         area,
@@ -3143,10 +3111,8 @@ fn project(
                         headroom: 0.0,
                     }
                 }
-                _ => framing,
+                None => framing,
             };
-            let panel = ui.available_rect_before_wrap();
-            let flat = opened.view_mode() == ViewMode::Flat;
             let shown = opened
                 .shown(ui.input(|input| input.time))
                 .unwrap_or(std::borrow::Cow::Borrowed(map));
@@ -3164,11 +3130,13 @@ fn project(
                 review,
                 within: Some(seen_in(explorer.is_open(), panel)),
             };
-            Some(if flat {
+            let drawn = if flat {
                 cellworks_map::ui::flat(ui, &shown, options, changed)
             } else {
                 cellworks_map::ui::project(ui, &shown, options)
-            })
+            };
+            explorer.saw(drawn.view.visible, flat);
+            Some(drawn)
         }
     }
 }
@@ -3181,36 +3149,6 @@ fn seen_in(explorer_open: bool, panel: egui::Rect) -> egui::Rect {
     } else {
         panel
     }
-}
-
-/// Starts the Explorer's camera flight to wherever `navigation` now frames:
-/// called whenever moving the cursor, unfolding to the parent or clicking a
-/// row changes what is framed (STORY-089 requirement 9). `panel` and `view`
-/// are the previous frame's — this frame's are not known yet at the points
-/// this is called from.
-///
-/// The flight runs between the ground in view now and the ground in view once
-/// landed, both drawn as a free camera, so it pans and zooms straight from one
-/// to the other without first zooming out.
-fn fly_explorer(
-    explorer: &mut Explorer,
-    navigation: &Navigation,
-    map: &ProjectMap,
-    panel: Option<egui::Rect>,
-    view: Option<View>,
-    now: f64,
-) {
-    let (Some(panel), Some(view)) = (panel, view) else {
-        return;
-    };
-    let framing = navigation.framing(map);
-    let seen = seen_in(true, panel);
-    let target = if view.is_flat() {
-        cellworks_map::fit_flat(framing, seen).visible
-    } else {
-        cellworks_map::fit_visible(framing, seen)
-    };
-    explorer.fly(view.visible, target, now);
 }
 
 /// `store`, with a thread keeping what is handed to it.

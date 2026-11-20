@@ -782,6 +782,11 @@ impl Navigation {
         self.facing = None;
     }
 
+    /// Whether the camera frames what is framed rather than standing free.
+    pub fn is_framed(&self) -> bool {
+        self.camera.is_none()
+    }
+
     /// Swaps the camera for `camera`, returning the one it had: the city and
     /// the flat view each keep a camera of their own, and the one not shown
     /// is parked while the other is (`None` frames what is framed). The layer
