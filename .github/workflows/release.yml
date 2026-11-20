@@ -60,3 +60,28 @@ jobs:
           done
           echo "the latest manifest still says $got" >&2
           exit 1
+
+      # The cask template in packaging/homebrew, with this release's version and sha256.
+      - uses: actions/checkout@v6
+        with:
+          path: src
+          sparse-checkout: packaging/homebrew
+      # Only stable tags update the tap, and only once the HOMEBREW_TAP_TOKEN secret exists.
+      - name: Update Homebrew tap
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then echo "HOMEBREW_TAP_TOKEN not set; skipping tap update"; exit 0; fi
+          version=$(jq -r .version manifest.json)
+          sha=$(jq -r .app.sha256 manifest.json)
+          sed -e "s/^  version \".*\"$/  version \"$version\"/" \
+              -e "s/^  sha256 \".*\"$/  sha256 \"$sha\"/" \
+              src/packaging/homebrew/cellworks.rb > cellworks.rb
+          grep -q "version \"$version\"" cellworks.rb && grep -q "sha256 \"$sha\"" cellworks.rb
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/Xunrise/homebrew-tap.git" tap
+          mkdir -p tap/Casks && cp cellworks.rb tap/Casks/cellworks.rb
+          cd tap
+          git config user.name "cellworks release"; git config user.email "actions@users.noreply.github.com"
+          git add Casks/cellworks.rb
+          git diff --cached --quiet || { git commit -m "cellworks $version" && git push; }

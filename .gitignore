@@ -22,3 +22,6 @@ demo/.cache
 tests/snapshots/
 /dist
 .claude/worktrees/
+
+# Screenshots copied into the site by the Pages workflow
+/site/assets/
