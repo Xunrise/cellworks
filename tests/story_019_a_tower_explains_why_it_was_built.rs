@@ -391,9 +391,7 @@ fn no_panel_without_a_selected_tower() {
     let explained = common::labels(&harness);
     assert!(says(&explained, "How much a customer pays for an order."));
 
-    harness
-        .state_mut()
-        .jump(tree.root.join("catalog"));
+    harness.state_mut().jump(tree.root.join("catalog"));
     harness.run();
 
     assert!(harness.state().why().is_none(), "a district is no tower");
