@@ -54,7 +54,10 @@ crops, scales and writes JPEGs itself; keep the TMPDIR short and neutral, since 
 TMPDIR=$(mktemp -d /tmp/cw.XXXX)/ cargo test --release --test demo_tour readme_shots -- --ignored --nocapture
 ```
 
-The site's `data-n` counts in `site/index.html` must match the number of frames each film has.
+The site's `data-n` and `data-steady-n` counts in `site/index.html` must match the number of frames each film
+has. The steady loops (`*-loop`, and the hero) pick their length where the last frame comes closest to the first, so
+their counts can change between renders; the test prints them. The hero is Cellworks' own repository, rendered by
+`hero_shot` (same command, test name `hero_shot`).
 
 `demo/setup.sh` runs `npm install` once for the sample shop; point `CELLWORKS_NPM_CACHE` at a warm npm cache to stay
 offline.
