@@ -3255,9 +3255,15 @@ fn notice_text(notice: &OpenedNotice) -> String {
 pub fn native_options() -> eframe::NativeOptions {
     eframe::NativeOptions {
         viewport: {
-            let viewport = egui::ViewportBuilder::default()
+            let mut viewport = egui::ViewportBuilder::default()
                 .with_title("Cellworks")
                 .with_app_id("cellworks");
+            // The mark from site/favicon.svg, drawn by scripts/make-icon.py.
+            if let Ok(icon) =
+                eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon/icon.png"))
+            {
+                viewport = viewport.with_icon(icon);
+            }
             // PROTOTYPE: the demo opens large enough to show the city beside the tour card.
             if crate::demo::is_demo() {
                 viewport.with_inner_size([1600.0, 1000.0])
@@ -3359,6 +3365,12 @@ pub fn run() -> eframe::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_wears_the_cellworks_icon() {
+        let icon = native_options().viewport.icon.expect("an icon");
+        assert_eq!((icon.width, icon.height), (512, 512));
+    }
 
     #[test]
     fn native_options_titles_the_window_cellworks() {

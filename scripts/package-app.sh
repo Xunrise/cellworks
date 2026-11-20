@@ -19,6 +19,7 @@ cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml"
 rm -rf "$APP" "$DIST/$ZIP" "$DIST/manifest.json"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$REPO_ROOT/target/release/cellworks" "$APP/Contents/MacOS/cellworks"
+cp "$REPO_ROOT/assets/icon/Cellworks.icns" "$APP/Contents/Resources/Cellworks.icns"
 
 # Apps started from Finder get a bare PATH; Cellworks runs git, claude, gh,
 # kubectl and nvim, so it takes the login shell's PATH first.
@@ -39,6 +40,7 @@ cat >"$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>Cellworks</string>
   <key>CFBundleIdentifier</key><string>io.github.xunrise.cellworks</string>
   <key>CFBundleExecutable</key><string>launch</string>
+  <key>CFBundleIconFile</key><string>Cellworks</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
