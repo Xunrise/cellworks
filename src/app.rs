@@ -75,6 +75,8 @@ const EXPLORER_FLIGHT: f64 = 0.6;
 /// The Cellworks application: the universe it shows, the scan that fills it
 /// in, the project opened from it, if any, and where the view is.
 pub struct CellworksApp {
+    /// Self-update from GitHub Releases; inert outside a `.app` bundle.
+    pub updates: crate::update::Updater,
     universe: Universe,
     events: Option<Receiver<WorkspaceEvent>>,
     pub(crate) opened: Option<OpenedProject>,
@@ -254,6 +256,7 @@ impl CellworksApp {
     pub fn start() -> CellworksApp {
         match crate::demo::sources().or_else(Sources::for_this_user) {
             Some(sources) => CellworksApp {
+                updates: Default::default(),
                 arrangements: Some(kept(ArrangementStore::beside(&sources.settings_file))),
                 launcher: Launcher::new(
                     sources
@@ -315,6 +318,7 @@ impl CellworksApp {
                 review: None,
             },
             None => CellworksApp {
+                updates: Default::default(),
                 arrangements: None,
                 launcher: Launcher::new(None),
                 probe: Arc::new(SshProbe),
@@ -377,6 +381,7 @@ impl CellworksApp {
     /// loop without a scan thread.
     pub fn over(universe: Universe, events: Receiver<WorkspaceEvent>) -> CellworksApp {
         CellworksApp {
+            updates: Default::default(),
             lens_panel: Default::default(),
             arrangements: None,
             launcher: Launcher::new(None),
@@ -1087,6 +1092,8 @@ impl eframe::App for CellworksApp {
             });
         }
         draw(ui, self);
+        self.updates.tick(ui.ctx());
+        self.updates.corner(ui.ctx());
 
         // egui draws on demand, and a scan or read finishing is not an input
         // event. Asking for the next frame while one is still running is what

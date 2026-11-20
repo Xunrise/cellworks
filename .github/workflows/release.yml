@@ -1,0 +1,62 @@
+name: Release
+
+# Push a tag vX.Y.Z whose version matches Cargo.toml. The build job has no
+# write token; the publish job has no build. Releases go out only from tags
+# pushed by the repository owner.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.actor == github.repository_owner
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v6
+      - name: The tag matches Cargo.toml
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME, Cargo.toml $version" >&2; exit 1; }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: scripts/package-app.sh "$GITHUB_REPOSITORY"
+      - name: The packaged app reports its version
+        run: |
+          said=$(dist/Cellworks.app/Contents/MacOS/cellworks --version)
+          [ "$said" = "cellworks ${GITHUB_REF_NAME#v}" ] || { echo "$said" >&2; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: |
+            dist/cellworks-app-*.zip
+            dist/manifest.json
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --latest --generate-notes \
+            cellworks-app-*.zip manifest.json
+      - name: The latest manifest names this version
+        run: |
+          for _ in $(seq 1 30); do
+            got=$(curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/manifest.json" | jq -r .version || true)
+            [ "v$got" = "$GITHUB_REF_NAME" ] && exit 0
+            sleep 10
+          done
+          echo "the latest manifest still says $got" >&2
+          exit 1

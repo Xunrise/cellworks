@@ -13,5 +13,6 @@ pub mod lens_panel;
 pub mod opened;
 pub mod review;
 pub mod tools;
+pub mod update;
 
 pub use app::draw;
