@@ -193,6 +193,9 @@ pub struct Tickets {
     slots: BTreeMap<SourceId, Slot>,
     store: BTreeMap<TicketRef, (Ticket, Synced)>,
     asked: BTreeSet<TicketRef>,
+    /// Tickets whose own cache file was read: a list row in the store must not
+    /// hide the full copy cached beside it.
+    read: BTreeSet<TicketRef>,
     pending: BTreeSet<TicketRef>,
     failed: BTreeMap<TicketRef, String>,
     offline: bool,
@@ -227,6 +230,7 @@ impl Tickets {
             rx,
             store: BTreeMap::new(),
             asked: BTreeSet::new(),
+            read: BTreeSet::new(),
             pending: BTreeSet::new(),
             failed: BTreeMap::new(),
             offline: false,
@@ -430,7 +434,7 @@ impl TicketDesk for Tickets {
     }
 
     fn ticket(&mut self, which: &TicketRef) -> Option<(Ticket, Synced)> {
-        if !self.store.contains_key(which)
+        if self.read.insert(which.clone())
             && let Some((ticket, synced)) =
                 load::<Ticket>(&self.dir(which.source).join(file_name(&which.key)))
         {
@@ -825,5 +829,93 @@ mod tests {
         );
         config.offline = true;
         assert_eq!(ids(&config), [SourceId::Jira]);
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn thin() -> Ticket {
+        Ticket {
+            source: SourceId::Jira,
+            key: "SHOP-42".into(),
+            title: "t".into(),
+            ..Ticket::default()
+        }
+    }
+
+    fn full() -> Ticket {
+        Ticket {
+            kind: "Story".into(),
+            reporter: Some("Dana".into()),
+            body: "text".into(),
+            criteria: vec!["one".into()],
+            ..thin()
+        }
+    }
+
+    fn assert_full(t: &Ticket) {
+        assert_eq!(t.kind, "Story");
+        assert_eq!(t.reporter.as_deref(), Some("Dana"));
+        assert_eq!(t.body, "text");
+        assert_eq!(t.criteria, ["one"]);
+    }
+
+    /// Offline, with a list row and the full issue cached side by side (the
+    /// demo's layout), the case's ticket is the full one.
+    #[test]
+    fn a_cached_issue_beats_its_list_row_offline() {
+        let dir = tempfile::tempdir().unwrap();
+        let jira = dir.path().join("jira");
+        save(&jira.join("mine.json"), &vec![thin()]);
+        save(&jira.join("SHOP-42.json"), &full());
+        let src: Arc<dyn TicketSource> = Arc::new(jira::Jira::new(None));
+        let mut desk = Tickets::with_sources(vec![src], dir.path().to_owned());
+        desk.offline = true;
+        assert_eq!(desk.all().len(), 1);
+        assert_full(&desk.ticket(&TicketRef::parse("SHOP-42")).unwrap().0);
+    }
+
+    struct One;
+    impl TicketSource for One {
+        fn id(&self) -> SourceId {
+            SourceId::Jira
+        }
+        fn list_mine(&self) -> Result<Vec<Ticket>, SourceError> {
+            Ok(vec![thin()])
+        }
+        fn list(&self, _: &str) -> Result<Vec<Ticket>, SourceError> {
+            self.list_mine()
+        }
+        fn get(&self, _: &str) -> Result<Ticket, SourceError> {
+            Ok(full())
+        }
+    }
+
+    /// An issue fetched once comes back full on the next start, even though
+    /// the cached list holds only its thin row.
+    #[test]
+    fn a_fetched_issue_is_full_on_the_next_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let which = TicketRef::parse("SHOP-42");
+        let mut first = Tickets::with_sources(vec![Arc::new(One)], dir.path().to_owned());
+        let end = Instant::now() + Duration::from_secs(2);
+        loop {
+            first.poll();
+            first.all();
+            if first.ticket(&which).is_some_and(|(t, _)| t.body == "text")
+                && !first.sources()[0].fetching
+            {
+                break;
+            }
+            assert!(Instant::now() < end);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut next = Tickets::with_sources(vec![Arc::new(One)], dir.path().to_owned());
+        next.offline = true;
+        next.all();
+        assert_full(&next.ticket(&which).unwrap().0);
     }
 }
