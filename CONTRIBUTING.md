@@ -50,7 +50,8 @@ The images in `docs/assets/` are rendered headlessly from the demo world:
 
 ```sh
 TMPDIR=$(mktemp -d /tmp/cw.XXXX)/ cargo test --release --test demo_tour readme_shots -- --ignored --nocapture
-for f in docs/assets/*.png; do sips -c 984 1584 "$f"; done   # trim the harness's edge
+for f in docs/assets/{launcher,city,flat,tickets,case}.png; do sips -c 984 1584 "$f"; done   # trim the harness's edge
+sips -c 440 760 --cropOffset 250 480 docs/assets/city.png --out docs/assets/city-detail.png   # the site's close-up
 ```
 
 `demo/setup.sh` runs `npm install` once for the sample shop; point `CELLWORKS_NPM_CACHE` at a warm npm cache to stay

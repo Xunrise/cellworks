@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cellworks: your projects as a city</title>
+<meta name="description" content="A native macOS map of your projects: code as a zoomable 3D city, live Claude Code sessions walking it, and tickets from Jira, Cockpit, GitHub and Linear opened as cases.">
+<meta property="og:title" content="Cellworks: your projects as a city">
+<meta property="og:description" content="Code as a zoomable city, agent sessions on the map, tickets as cases. Native, macOS, MIT.">
+<meta property="og:image" content="https://xunrise.github.io/cellworks/assets/city.png">
+<meta name="theme-color" content="#07090c">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preload" href="fonts/ChakraPetch-SemiBold.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="stylesheet" href="style.css">
+<script src="main.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header>
+  <nav aria-label="Main">
+    <a class="brand" href="#" aria-label="Cellworks home">CELL<span>WORKS</span></a>
+    <a href="#features">Features</a>
+    <a href="#install">Install</a>
+    <a href="https://github.com/Xunrise/cellworks#readme">Docs</a>
+    <a class="gh" href="https://github.com/Xunrise/cellworks">GitHub</a>
+  </nav>
+</header>
+
+<main id="main">
+<section class="hero">
+  <div class="wrap">
+    <div class="pitch">
+      <p class="eyebrow">// native map for engineers · macOS</p>
+      <h1>Your projects, code, agents and tickets. <em>One map.</em></h1>
+      <p class="lead">Cellworks draws every project on your machine as a zoomable city: folders become districts, files become towers, functions become floors. Your Claude Code sessions walk to the files they touch, and tickets open as cases you take from problem to prototype to review.</p>
+      <div class="cmd hero-cmd"><code>curl -fsSL https://raw.githubusercontent.com/Xunrise/cellworks/main/install.sh | sh</code><button type="button" class="copy">Copy</button></div>
+      <div class="actions">
+        <a class="btn primary" href="#install">Install Cellworks</a>
+        <a class="btn" href="https://github.com/Xunrise/cellworks">View on GitHub</a>
+      </div>
+      <p class="fine">MIT · macOS 13+ on Apple silicon · no server, no account, no telemetry</p>
+    </div>
+    <figure class="shot hero-shot">
+      <img src="assets/city.png" width="1584" height="984" alt="A TypeScript shop open as a city in Cellworks: districts per folder, towers per file, a Claude Code session writing in the catalog district" fetchpriority="high">
+    </figure>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <div class="row">
+      <div class="copy-col">
+        <p class="tag">01 · the city</p>
+        <h2>Read a codebase from above.</h2>
+        <p class="dim">Districts for folders, towers for files, floors for functions, tests in the cellar. Zoom from the whole project down into one tower. Lenses rearrange the same city by folders, imports, calls, co-change or your bounded contexts, and lanes show what imports or calls what.</p>
+        <ul class="keys"><li><kbd>L</kbd> next lens</li><li><kbd>G</kbd> import lanes</li><li><kbd>A</kbd> call lanes</li><li><kbd>E</kbd> explorer</li></ul>
+      </div>
+      <figure class="shot"><img src="assets/city-detail.png" width="760" height="440" loading="lazy" alt="Close up of the src district: towers per file with floors of functions, a session writing in the catalog"></figure>
+    </div>
+
+    <div class="row flip">
+      <div class="copy-col">
+        <p class="tag">02 · the factory floor</p>
+        <h2>Flip to 2D with one key.</h2>
+        <p class="dim">The flat view lays the same project out as a floor plan seen from straight above: halls for folders, machines for files. Selection, Explorer and panels carry over, and every project remembers which view you left it in.</p>
+        <ul class="keys"><li><kbd>V</kbd> city ↔ flat</li><li><kbd>F</kbd> fit</li><li><kbd>Enter</kbd> / <kbd>Esc</kbd> layer in / out</li></ul>
+      </div>
+      <figure class="shot"><img src="assets/flat.png" width="1584" height="984" loading="lazy" alt="The same project as a flat factory floor seen from above"></figure>
+    </div>
+
+    <div class="row">
+      <div class="copy-col">
+        <p class="tag">03 · tickets as cases</p>
+        <h2>From ticket to frozen plan, on the map.</h2>
+        <p class="dim">One panel lists tickets from Jira, Cockpit, GitHub and Linear. Open one as a case: Claude ingests it into problems tied to real files and functions, you prototype it in a worktree with the app running, iterate in rounds, freeze, plan and review.</p>
+        <ul class="keys"><li><kbd>T</kbd> tickets</li><li>ingest → prototype → freeze → plan → review</li></ul>
+      </div>
+      <figure class="shot"><img src="assets/case.png" width="1584" height="984" loading="lazy" alt="Ticket SHOP-42 as a case: the problem in plain words, tied to the files and functions it touches"></figure>
+    </div>
+
+    <div class="row flip">
+      <div class="copy-col">
+        <p class="tag">04 · the launcher</p>
+        <h2>Every project, one keystroke away.</h2>
+        <p class="dim">A keyboard-first palette of every git repository under your project folders and on the hosts you reach over ssh, with branch, size and open tickets at a glance.</p>
+        <ul class="keys"><li><kbd>⌘K</kbd> search</li><li><kbd>j</kbd>/<kbd>k</kbd> move</li><li><kbd>⌘,</kbd> settings</li></ul>
+      </div>
+      <figure class="shot"><img src="assets/launcher.png" width="1584" height="984" loading="lazy" alt="The launcher listing local and remote projects"></figure>
+    </div>
+
+    <div class="grid">
+      <div class="card"><p class="tag">sessions</p><h3>Agents on the map</h3><p class="dim">Claude Code sessions show up on the towers they read and write. Follow and steer them from the sessions pane.</p></div>
+      <div class="card"><p class="tag">history</p><h3>Why was this built?</h3><p class="dim">Select a tower or floor: the why panel shows the commits, pull requests and stories behind each line.</p></div>
+      <div class="card"><p class="tag">review</p><h3>Pull requests as cities</h3><p class="dim">Press P to open a pull request as its own city at the head, compared against the merge base.</p></div>
+      <div class="card"><p class="tag">lenses</p><h3>Ask, and the map reshapes</h3><p class="dim">The lens panel asks Claude a question about the project and builds a lens that answers it.</p></div>
+      <div class="card"><p class="tag">updates</p><h3>Updates itself</h3><p class="dim">Checks GitHub Releases, verifies size, SHA-256 and signature, swaps in place, and rolls back if the new version fails to start.</p></div>
+      <div class="card"><p class="tag">local</p><h3>Nothing to host</h3><p class="dim">No server, no account. It reads your disk and runs the tools you already have: git, claude, gh, kubectl, nvim.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="install" class="alt">
+  <div class="wrap narrow">
+    <p class="tag">install</p>
+    <h2>Jack in.</h2>
+    <div class="tabs" role="tablist" aria-label="Install method">
+      <button type="button" role="tab" id="t-sh" aria-controls="p-sh" aria-selected="true">curl</button>
+      <button type="button" role="tab" id="t-brew" aria-controls="p-brew" aria-selected="false" tabindex="-1">Homebrew</button>
+      <button type="button" role="tab" id="t-cargo" aria-controls="p-cargo" aria-selected="false" tabindex="-1">from source</button>
+    </div>
+    <div role="tabpanel" id="p-sh" aria-labelledby="t-sh">
+      <div class="cmd"><code>curl -fsSL https://raw.githubusercontent.com/Xunrise/cellworks/main/install.sh | sh</code><button type="button" class="copy">Copy</button></div>
+      <p class="dim small">Verifies the download against the release manifest and installs Cellworks.app to /Applications (or ~/Applications). No sudo. Re-run to upgrade; <code>| sh -s -- --version 0.3.0</code> pins a version.</p>
+    </div>
+    <div role="tabpanel" id="p-brew" aria-labelledby="t-brew" hidden>
+      <div class="cmd"><code>brew install --cask xunrise/tap/cellworks</code><button type="button" class="copy">Copy</button></div>
+      <p class="dim small">The app is ad-hoc signed, not notarized. If macOS refuses to open it, the cask's caveat shows the one command that clears the quarantine flag.</p>
+    </div>
+    <div role="tabpanel" id="p-cargo" aria-labelledby="t-cargo" hidden>
+      <div class="cmd"><code>cargo install --git https://github.com/Xunrise/cellworks --locked</code><button type="button" class="copy">Copy</button></div>
+      <p class="dim small">Needs Rust 1.85+. Installs the bare binary; the self-updater works only in the .app, so re-run to upgrade.</p>
+    </div>
+    <p class="dim small">macOS 13 or later on Apple silicon. Needs <code>git</code>; <code>claude</code>, <code>gh</code>, <code>nvim</code>, <code>kubectl</code> and <code>cockpit</code> light up more of the map. Prefer a download? Grab the zip from the <a href="https://github.com/Xunrise/cellworks/releases/latest">releases page</a> and right-click → Open on first launch.</p>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span class="brand">CELL<span>WORKS</span></span>
+    <a href="https://github.com/Xunrise/cellworks">GitHub</a>
+    <a href="https://github.com/Xunrise/cellworks#readme">Docs</a>
+    <a href="https://github.com/Xunrise/cellworks/releases">Releases</a>
+    <a href="https://github.com/Xunrise/cellworks/blob/main/LICENSE">MIT license</a>
+    <span>Fonts: Chakra Petch, JetBrains Mono (OFL)</span>
+    <span>No cookies, no tracking</span>
+  </div>
+</footer>
+</body>
+</html>
