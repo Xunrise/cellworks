@@ -84,6 +84,12 @@ pub struct Settings {
     pub cases_folder: String,
     /// Empty: the skills of this source tree.
     pub skills_folder: String,
+    /// The terminal editor files open in inside Cellworks, with its flags;
+    /// empty: the embedded Neovim.
+    pub embedded_editor: String,
+    /// The configuration the embedded Neovim reads instead of the user's own;
+    /// empty: the user's own, colour scheme and all.
+    pub nvim_config: String,
     pub auto_check: bool,
 }
 
@@ -117,6 +123,8 @@ impl Default for Settings {
             editor: String::new(),
             cases_folder: String::new(),
             skills_folder: String::new(),
+            embedded_editor: String::new(),
+            nvim_config: String::new(),
             auto_check: true,
         }
     }
@@ -247,6 +255,7 @@ impl Settings {
         for (key, value) in [
             ("cases.folder", &self.cases_folder),
             ("skills.folder", &self.skills_folder),
+            ("editor.nvim_config", &self.nvim_config),
         ] {
             let v = value.trim();
             if !(v.is_empty() || v.starts_with('/') || v.starts_with("~/")) {
@@ -271,6 +280,7 @@ impl Settings {
                 "tickets.jira.site" => out.jira.site = previous.jira.site.clone(),
                 "cases.folder" => out.cases_folder = previous.cases_folder.clone(),
                 "skills.folder" => out.skills_folder = previous.skills_folder.clone(),
+                "editor.nvim_config" => out.nvim_config = previous.nvim_config.clone(),
                 "map.default_lens" => out.map.default_lens = previous.map.default_lens.clone(),
                 _ => {}
             }
@@ -387,6 +397,8 @@ impl Settings {
             editor: text(table, &["editor", "command"], ""),
             cases_folder: text(table, &["cases", "folder"], ""),
             skills_folder: text(table, &["skills", "folder"], ""),
+            embedded_editor: text(table, &["editor", "embedded"], ""),
+            nvim_config: text(table, &["editor", "nvim_config"], ""),
             auto_check: flag(table, &["updates", "auto_check"], true),
         }
     }
@@ -472,6 +484,16 @@ impl Settings {
             Boolean(self.map.underground),
         );
         put(table, &["editor", "command"], Str(self.editor.clone()));
+        put(
+            table,
+            &["editor", "embedded"],
+            Str(self.embedded_editor.clone()),
+        );
+        put(
+            table,
+            &["editor", "nvim_config"],
+            Str(self.nvim_config.clone()),
+        );
         put(table, &["cases", "folder"], Str(self.cases_folder.clone()));
         put(
             table,
@@ -722,6 +744,8 @@ mod tests {
         // $EDITOR is only a fallback; the setting (empty here) stays.
         assert_eq!(effective.editor, "");
         assert_eq!(env.overriding("editor.command"), None);
+        assert_eq!(effective.embedded_editor, "");
+        assert_eq!(effective.nvim_config, "");
         assert_eq!(
             env.overriding("tickets.cockpit.url"),
             Some("CELLWORKS_COCKPIT_URL")

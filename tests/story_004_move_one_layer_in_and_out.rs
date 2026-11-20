@@ -271,9 +271,10 @@ fn enter_on_a_node_frames_it_at_inspection_distance() {
     );
 }
 
-/// Enter on a framed node changes nothing yet
+/// Enter on a framed node opens its file in the editor, over the map, which
+/// stays where it was.
 #[test]
-fn enter_on_a_framed_node_changes_nothing_yet() {
+fn enter_on_a_framed_node_opens_it_in_the_editor() {
     let mut universe = universe();
     universe.frame(&["catalog", "pricing", "rules", "discount.rs"]);
     let before = universe.rect_of("discount.rs");
@@ -282,6 +283,12 @@ fn enter_on_a_framed_node_changes_nothing_yet() {
 
     assert_eq!(universe.layer(), Layer::File);
     assert_eq!(universe.rect_of("discount.rs"), before);
+    let open = universe.harness.state().editors.shown();
+    assert_eq!(open.len(), 1);
+    assert!(
+        open[0].path.ends_with("catalog/pricing/rules/discount.rs"),
+        "{open:?}"
+    );
 }
 
 /// Esc moves one level out

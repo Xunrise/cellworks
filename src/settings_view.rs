@@ -252,6 +252,13 @@ fn apply(app: &mut CellworksApp, old: Option<&Settings>) {
     let changed = |f: &dyn Fn(&Settings) -> bool| old.is_none_or(|old| f(old) != f(&new));
     cellworks_workspace::apply_runtime(&new.effective(&app.settings.env));
     app.updates.auto_check = new.auto_check;
+    let effective = new.effective(&app.settings.env);
+    app.editors.configure(
+        Some(effective.embedded_editor.trim().to_owned()),
+        Some(effective.nvim_config.trim())
+            .filter(|v| !v.is_empty())
+            .map(cellworks_workspace::expand_home),
+    );
     app.launcher.set_theme_words(new.theme_words);
     if changed(&|s| s.map.show_ignored) {
         app.show_ignored = new.map.show_ignored;
@@ -788,6 +795,24 @@ fn editor(
         env,
         &eff.editor,
         &mut w.draft.editor,
+        problems,
+    );
+    env_text(
+        ui,
+        "Editor inside Cellworks (empty: Neovim; or e.g. hx, vim, micro)",
+        "editor.embedded",
+        env,
+        &eff.embedded_editor,
+        &mut w.draft.embedded_editor,
+        problems,
+    );
+    env_text(
+        ui,
+        "Neovim configuration (empty: your own init.lua, colour scheme and all)",
+        "editor.nvim_config",
+        env,
+        &eff.nvim_config,
+        &mut w.draft.nvim_config,
         problems,
     );
     env_text(

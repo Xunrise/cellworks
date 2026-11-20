@@ -14,6 +14,7 @@
 //! `CodeAnalysisEvent` values.
 
 use std::collections::HashSet;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -79,6 +80,9 @@ const FLIGHT: f64 = 0.7;
 pub struct CellworksApp {
     /// Self-update from GitHub Releases; inert outside a `.app` bundle.
     pub updates: crate::update::Updater,
+    /// The files open for editing: one docked beside the map, the rest popped
+    /// out; the same in the city and the flat view.
+    pub editors: cellworks_editing::Editors,
     pub(crate) universe: Universe,
     pub(crate) events: Option<Receiver<WorkspaceEvent>>,
     pub(crate) opened: Option<OpenedProject>,
@@ -284,6 +288,7 @@ impl CellworksApp {
         match crate::demo::sources().or_else(Sources::for_this_user) {
             Some(sources) => CellworksApp {
                 updates: Default::default(),
+                editors: Default::default(),
                 arrangements: Some(kept(ArrangementStore::beside(&sources.settings_file))),
                 launcher: Launcher::new(
                     sources
@@ -314,6 +319,7 @@ impl CellworksApp {
                 tickets: cellworks_sources::tickets::Tickets::default(),
                 tickets_panel: Default::default(),
                 settings: Default::default(),
+
                 scan_sources: Some(sources.clone()),
                 universe: Universe::scanning(&sources),
                 events: Some(start_scan(sources)),
@@ -348,6 +354,7 @@ impl CellworksApp {
             },
             None => CellworksApp {
                 updates: Default::default(),
+                editors: Default::default(),
                 arrangements: None,
                 launcher: Launcher::new(None),
                 probe: Arc::new(SshProbe),
@@ -413,6 +420,7 @@ impl CellworksApp {
     pub fn over(universe: Universe, events: Receiver<WorkspaceEvent>) -> CellworksApp {
         CellworksApp {
             updates: Default::default(),
+            editors: Default::default(),
             lens_panel: Default::default(),
             arrangements: None,
             launcher: Launcher::new(None),
@@ -1306,6 +1314,7 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
     }
     // A focused session terminal owns the keyboard: the map's keys do nothing.
     let terminal = app.sessions.has_keyboard(ui)
+        || app.editors.has_keyboard()
         || ui.memory(|m| m.has_focus(egui::Id::new("iterate-note")))
         || (app.case.is_none() && app.iterate.as_ref().is_some_and(|it| it.draft.is_some()))
         || app.settings.open;
@@ -1447,6 +1456,15 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 view_mode: !typing && plain && pressed(egui::Key::V),
             }
         })
+    };
+
+    // Over an open editor the wheel and the trackpad scroll its code, not the
+    // map beneath it.
+    let over_editor = pointer.is_some_and(|pointer| app.editors.covers(pointer));
+    let (zoom, scroll) = if over_editor {
+        (1.0, egui::Vec2::ZERO)
+    } else {
+        (zoom, scroll)
     };
 
     // PROTOTYPE: T opens the ticket menu or closes the open case.
@@ -1722,6 +1740,17 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
             Some(Moved::LeftReview) => app.leave_review(),
             Some(Moved::Opened(_)) | None => {}
         }
+    }
+    // Enter on a file already framed opens it in the editor: the first Enter
+    // frames it, the second steps into its code.
+    if enter
+        && app.navigation.layer() == cellworks_navigation::Layer::File
+        && let Some(map) = mapped(&app.opened)
+        && let Some(selection) = app.navigation.selection()
+        && map.find(selection).map(|found| found.kind) == Some(cellworks_map::Element::Node)
+    {
+        let selection = selection.to_path_buf();
+        edit(&mut app.editors, map, &selection);
     }
     if enter
         && (app.opened.is_some()
@@ -2052,6 +2081,10 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 return;
             };
             app.towers = drawn.towers;
+            if !casing {
+                app.editors
+                    .show(ui, seen_in(explorer, drawn.panel), drawn.panel);
+            }
             // PROTOTYPE: the case's buildings outlined on the live map (the
             // source branch also receded the rest; skipped here).
             if let Some(spots) = &spots {
@@ -2203,13 +2236,20 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 && let Some(entered) = drawn.entered
                 && let Some(map) = mapped(&app.opened)
             {
-                // A tower is stepped inside; a machine or a hall of the flat
-                // view is framed, as Enter would.
-                if map.item(&entered).is_some() {
-                    app.navigation.step_inside(map, entered);
-                } else {
-                    app.navigation.frame(map, entered);
+                // A file opens in the editor, framed; a tower opens its file at
+                // the tower's first line, the file framed and the tower kept
+                // selected; a folder is framed, as Enter would.
+                let item = map
+                    .find(&entered)
+                    .filter(|f| f.kind == cellworks_map::Element::Item);
+                match item.and_then(|found| found.parent) {
+                    Some(file) => {
+                        app.navigation.frame(map, file.to_path_buf());
+                        app.navigation.select(entered.clone());
+                    }
+                    None => app.navigation.frame(map, entered.clone()),
                 }
+                edit(&mut app.editors, map, &entered);
             }
             if zoom != 1.0
                 && !over_case
@@ -3139,6 +3179,49 @@ fn project(
             Some(drawn)
         }
     }
+}
+
+/// Opens the file at `path` in the editor: a node's file from its top, or the
+/// file an item stands in at the item's first line. False for a folder, or a
+/// node that is no file on disk.
+fn edit(editors: &mut cellworks_editing::Editors, map: &ProjectMap, path: &Path) -> bool {
+    use cellworks_map::Element;
+    let Some(found) = map.find(path) else {
+        return false;
+    };
+    let (file, line) = match found.kind {
+        Element::Folder => return false,
+        Element::Node => (path, 1),
+        Element::Item => {
+            let line = map
+                .item(path)
+                .and_then(|item| item.floors.first())
+                .map_or(1, |floor| floor.number);
+            match found.parent {
+                Some(node) => (node, line),
+                None => return false,
+            }
+        }
+    };
+    if !file.is_file() {
+        return false;
+    }
+    let title = file
+        .strip_prefix(&map.root)
+        .unwrap_or(file)
+        .display()
+        .to_string();
+    let items = map.items_of(file).unwrap_or_default();
+    let lines = items
+        .iter()
+        .filter_map(|item| item.floors.last())
+        .map(|floor| floor.number)
+        .max()
+        .unwrap_or(0);
+    let language = file.extension().and_then(|e| e.to_str()).unwrap_or("file");
+    let detail = format!("{language} · {lines} lines · {} items", items.len());
+    editors.open(file, line, title, detail);
+    true
 }
 
 /// The part of the map `panel` that what is framed is fitted and centred

@@ -32,6 +32,7 @@ flowchart TB
   bin --> code
   bin --> ws
   bin --> map
+  bin --> ed
   nav --> map
   nav --> ed
   code --> map
@@ -48,7 +49,8 @@ projects) and AgentSessions → Workspace (session folders become projects, writ
 dependencies they would form a cycle through `map → workspace`, so the binary wires them: it takes the events from
 `code-analysis` and `agent-sessions` and calls `workspace`. Sources → Navigation ("show code") is a lane to a node in
 another project and needs no crate dependency either. The binary also depends on `map` directly: it holds the opened
-project's map and calls the Map's painter from the frame loop it owns. Opening a pull request as a review is wired the
+project's map and calls the Map's painter from the frame loop it owns, and on `editing` directly: it owns the open
+editors and shows them over whichever view the map is drawn in, so they stay open across the city and the flat view. Opening a pull request as a review is wired the
 same way: Sources produces the pull request, its diff, its placement on the head's towers and its story text; the
 binary turns that into `cellworks_map::ReviewOverlay` (working out impacted towers itself, since Map owns the calls)
 and into `cellworks_navigation::ReviewMode`, and opens the checked-out head as an ordinary project ([ADR-0011](../adr/0011-review-mode-opens-the-pull-request-head-as-the-city.md)). Neither `map` nor

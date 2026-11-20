@@ -103,6 +103,8 @@ pub fn app(projects: Vec<Project>, git: Arc<dyn GitListing + Send + Sync>) -> Ce
         .expect("the app is listening");
     let mut app = CellworksApp::over(Universe::scanning(&sources), receiver).with_git(git);
     app.apply_pending();
+    // Tests read files as text; they never start Neovim.
+    app.editors = cellworks_editing::Editors::read_only();
     app
 }
 

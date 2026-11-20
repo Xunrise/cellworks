@@ -27,6 +27,7 @@ toml = "1"
 cellworks-agent-sessions = { path = "crates/agent-sessions" }
 cellworks-code-analysis = { path = "crates/code-analysis" }
 cellworks-domain-knowledge = { path = "crates/domain-knowledge" }
+cellworks-editing = { path = "crates/editing" }
 cellworks-map = { path = "crates/map" }
 cellworks-navigation = { path = "crates/navigation" }
 cellworks-sources = { path = "crates/sources" }
