@@ -219,9 +219,9 @@ fn editor_shots() {
     snap(&mut harness, "3-flat-popped");
 }
 
-/// In the flat view a double-click on a folder focuses it, its files in the
-/// middle; a double-click on one of them opens it in the editor, and Esc
-/// steps back out to the floor.
+/// In the flat view a double-click focuses: a folder, its files in the
+/// middle, then one of them; Enter opens the selected file in the editor, and
+/// Esc steps back out one focus at a time to the floor.
 #[test]
 fn a_folder_double_clicked_in_the_flat_view_is_focused_until_esc() {
     let (tree, mut harness) = shop_city();
@@ -257,15 +257,29 @@ fn a_folder_double_clicked_in_the_flat_view_is_focused_until_esc() {
     click_at(&mut harness, at, 1);
     let at = card(&harness);
     click_at(&mut harness, at, 2);
-    let open = harness.state().editors.shown();
-    assert!(
-        open.iter().any(|e| e.path.ends_with("catalog/pricing.rs")),
-        "{open:?}"
+    let pricing = tree.root.join("catalog/pricing.rs");
+    assert_eq!(
+        harness.state().focus.path(),
+        Some(pricing.as_path()),
+        "a double-click focuses the file, it does not open it"
     );
+    assert!(harness.state().editors.shown().is_empty());
 
+    // Enter opens the selected file.
+    harness.key_press(Key::Enter);
+    harness.run();
+    let open = harness.state().editors.shown();
+    assert_eq!(open.len(), 1, "{open:?}");
+    assert_eq!(open[0].path, pricing);
+    assert_eq!(harness.state().focus.path(), Some(pricing.as_path()));
+
+    // Esc leaves the editor, then steps back out one focus at a time.
     harness.key_press(Key::Escape);
     harness.run();
     assert!(!harness.state().editors.has_keyboard());
+    harness.key_press(Key::Escape);
+    harness.run();
+    assert_eq!(harness.state().focus.path(), Some(catalog.as_path()));
     harness.key_press(Key::Escape);
     harness.run();
     assert_eq!(

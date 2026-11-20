@@ -1774,6 +1774,22 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
             Some(Moved::Opened(_)) | None => {}
         }
     }
+    // In the flat view's focus, Enter opens the selected file, or the file of
+    // the selected crate at its line, and does nothing else.
+    let focusing = app.focus.path().is_some()
+        && app
+            .opened
+            .as_ref()
+            .is_some_and(|o| o.view_mode() == ViewMode::Flat);
+    if enter
+        && focusing
+        && let Some(map) = mapped(&app.opened)
+        && let Some(selection) = app.navigation.selection()
+    {
+        let selection = selection.to_path_buf();
+        edit(&mut app.editors, map, &selection);
+    }
+    let enter = enter && !focusing;
     // Enter on a file already framed opens it in the editor: the first Enter
     // frames it, the second steps into its code.
     if enter
@@ -2318,19 +2334,20 @@ fn draw_app(ui: &mut egui::Ui, app: &mut CellworksApp) {
                 }
                 if let Some(path) = focused.entered {
                     app.navigation.select(path.clone());
-                    edit(&mut app.editors, map, &path);
+                    app.focus.enter(path);
                 }
             }
-            // In the flat view a folder or a file double-clicked is focused.
+            // In the flat view a double-click focuses: a folder or a file
+            // itself, a crate the file it stands in, kept selected for Enter.
             let entered = match drawn.entered {
-                Some(path)
-                    if drawn.view.is_flat()
-                        && mapped(&app.opened)
-                            .and_then(|map| map.find(&path))
-                            .is_some_and(|found| found.kind != cellworks_map::Element::Item) =>
-                {
+                Some(path) if drawn.view.is_flat() => {
+                    let file = mapped(&app.opened)
+                        .and_then(|map| map.find(&path))
+                        .filter(|found| found.kind == cellworks_map::Element::Item)
+                        .and_then(|found| found.parent)
+                        .map(Path::to_path_buf);
                     app.navigation.select(path.clone());
-                    app.focus.enter(path);
+                    app.focus.enter(file.unwrap_or(path));
                     None
                 }
                 other => other,

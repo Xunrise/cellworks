@@ -84,7 +84,7 @@ impl Focus {
 pub struct FocusDrawn {
     /// A file or folder clicked: selected.
     pub clicked: Option<PathBuf>,
-    /// A file in the middle double-clicked: entered, as on the floor.
+    /// A file in the middle double-clicked: focused next.
     pub entered: Option<PathBuf>,
     /// A neighbour double-clicked: focused next.
     pub refocus: Option<PathBuf>,
@@ -425,7 +425,7 @@ pub fn focus(
         CONTEXT,
     );
     let mut x = bar.right() - 12.0;
-    let hint = "double-click a neighbour to focus it · Esc back";
+    let hint = "double-click to focus · Enter opens the selected file · Esc back";
     let hint_w = hint.chars().count() as f32 * 11.0 * 0.62;
     painter.text(
         pos2(x, bar.center().y),
@@ -605,7 +605,10 @@ pub fn focus(
         } else if response.clicked() {
             drawn.clicked = Some(node.path.clone());
         }
-        let label = response.on_hover_text(format!("{} — double-click to open", node.name));
+        let label = response.on_hover_text(format!(
+            "{} — double-click to focus it, Enter to open it",
+            node.name
+        ));
         ui.ctx()
             .accesskit_node_builder(label.id, |b| b.set_label(node.name.clone()));
     }

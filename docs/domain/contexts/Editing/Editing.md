@@ -19,8 +19,9 @@ Source refs are line numbers of [the prototype findings](../../../discovery/2026
 
 ## As built
 
-- Entering a file (double-click on a file or a tower, or Enter on a framed file) opens it in one editor over the
-  map, the same in the city and the flat view; a tower opens its file at its first line.
+- Entering a file opens it in one editor over the map, the same in the city and the flat view: in the city a
+  double-click on a file or a tower, or Enter on a framed file; in the flat view's focus, Enter on the selected
+  file or crate (a double-click there focuses). A tower or crate opens its file at its first line.
 - The editor floats over most of the map and can fill the map's panel (⌘F); popped out, it becomes a window of
   its own that stays open while the next file opens over the map.
 - It runs the user's own Neovim (`nvim --embed`, their configuration and colour scheme); Settings › Editor can
