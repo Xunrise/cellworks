@@ -514,8 +514,8 @@ fn readme_shots() {
     back(&mut h, &[]);
     deselect(&mut h);
 
-    // The hero: import lanes flowing through src, sessions walking and
-    // writing.
+    // The hero: the whole city, nothing selected, import lanes running as
+    // highways between the districts with their traffic, sessions at work.
     script(
         &mut h,
         &[
@@ -524,9 +524,15 @@ fn readme_shots() {
             "agent shop-42 src/cart/totals.ts",
             "wait 1500",
             "agent shop-42 src/checkout/order.ts",
-            "frame src",
+            "fit",
         ],
     );
+    settle(&mut h);
+    let frames_in_loop = hero_loop(&mut h, &anim.join("hero"));
+    println!("hero loop: {frames_in_loop} frames");
+    std::fs::copy(anim.join("hero/00.jpg"), out.join("city-lanes.jpg")).unwrap();
+    // Call lanes for one selected tower, filmed from close over src.
+    script(&mut h, &["frame src"]);
     settle(&mut h);
     let free = cellworks::demo::free_rect(&h.ctx).unwrap_or(egui::Rect::EVERYTHING);
     h.hover_at(free.center());
@@ -535,8 +541,6 @@ fn readme_shots() {
     h.step();
     h.event(egui::Event::PointerGone);
     settle(&mut h);
-    city_still(&mut h, &out, "city-lanes.jpg", "/src/");
-    // Call lanes for one selected tower, so its calls stand out.
     script(&mut h, &["lanes imports"]);
     settle(&mut h);
     let totals = h
@@ -928,6 +932,39 @@ fn film(
         );
     }
     println!("filmed {}", dir.display());
+}
+
+/// The hero's loop in `dir`: the fitted city cut to its towers, filmed a
+/// frame per 0.1 s. Each lane's traffic runs on its own seeded period, so
+/// nothing repeats exactly; the loop ends where a frame comes closest to the
+/// first, which keeps the seam quiet. Returns the frame count.
+fn hero_loop(h: &mut Harness<'_, State>, dir: &std::path::Path) -> usize {
+    let mut shots = Vec::new();
+    for _ in 0..40 {
+        for _ in 0..2 {
+            h.state_mut().app.apply_pending();
+            h.step();
+        }
+        shots.push(grab(h));
+    }
+    // The district grounds and the staging node reach past the towers.
+    let cut = fit_crop(h, city_box(h, "").map(|r| r.expand(40.0)), 1200.0).or(FULL);
+    let apart = |a: &image::RgbaImage, b: &image::RgbaImage| -> u64 {
+        a.as_raw()
+            .iter()
+            .zip(b.as_raw())
+            .step_by(7)
+            .map(|(x, y)| u64::from(x.abs_diff(*y)))
+            .sum()
+    };
+    let len = (20..=32)
+        .min_by_key(|&k| apart(&shots[0], &shots[k]))
+        .unwrap();
+    std::fs::create_dir_all(dir).unwrap();
+    for (i, shot) in shots[..len].iter().enumerate() {
+        keep(shot, &dir.join(format!("{i:02}.jpg")), cut, Some(1600), 64);
+    }
+    len
 }
 
 /// A film paced in wall time, for what background threads drive: `start`,
