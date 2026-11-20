@@ -1,5 +1,5 @@
 //! PROTOTYPE: the case file a Claude Code session writes for one ticket,
-//! `~/.cellworks/cases/<KEY>.json` (`CELLWORKS_CASES` moves the folder).
+//! `~/.cellworks/cases/<KEY>.json` (`CELLWORKS_CASES` or the `[cases] folder` setting moves the folder).
 //! Cellworks only reads it, and reads it again when it changes. The schema
 //! is as small as the three case screens need; the `ticket-case`
 //! skill documents it field by field for the session that writes it.
@@ -14,10 +14,7 @@ use serde::{Deserialize, Serialize};
 /// a bare Jira key) lives, whether or not it exists.
 pub fn path(key: &str) -> PathBuf {
     let stem = crate::tickets::TicketRef::parse(key).file_stem();
-    std::env::var_os("CELLWORKS_CASES")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(".cellworks/cases"))
-        .join(format!("{stem}.json"))
+    cellworks_workspace::cases_folder().join(format!("{stem}.json"))
 }
 
 fn home() -> PathBuf {

@@ -78,9 +78,9 @@ pub trait TicketSource: Send + Sync {
     }
 }
 
-/// Which sources are on, and how each reaches its tracker. A settings menu
-/// will fill it from settings.toml; until then [`TicketsConfig::from_env`]
-/// reads optional environment overrides.
+/// Which sources are on, and how each reaches its tracker. The settings
+/// window fills it through [`TicketsConfig::from_settings`];
+/// [`TicketsConfig::from_env`] reads the environment alone.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TicketsConfig {
     pub jira: bool,
@@ -130,6 +130,26 @@ impl TicketsConfig {
                 .unwrap_or_default(),
             linear_api_key: var("CELLWORKS_LINEAR_API_KEY"),
             ..default
+        }
+    }
+
+    /// The config of `settings` (already merged with the environment, see
+    /// `Settings::effective`) and the Linear key, from the environment or the
+    /// keychain. Without a key the Linear source is off.
+    pub fn from_settings(
+        settings: &cellworks_workspace::Settings,
+        linear_api_key: Option<String>,
+    ) -> TicketsConfig {
+        TicketsConfig {
+            jira: settings.jira.enabled,
+            jira_site: Some(settings.jira.site.trim().to_owned()).filter(|s| !s.is_empty()),
+            cockpit: settings.cockpit.enabled,
+            cockpit_url: settings.cockpit.url.trim().to_owned(),
+            github: settings.github.enabled,
+            github_repos: settings.github.repos.clone(),
+            linear: settings.linear_enabled,
+            linear_api_key,
+            offline: settings.jira.offline,
         }
     }
 
@@ -218,6 +238,12 @@ impl Tickets {
             .map(PathBuf::from)
             .unwrap_or_else(|| cache.join("jira/issues"));
         tickets
+    }
+
+    /// Starts over with the sources `config` names; what the old sources had
+    /// brought is read again from the cache.
+    pub fn reconfigure(&mut self, config: TicketsConfig) {
+        *self = Tickets::new(config);
     }
 
     /// The facade over `sources`, caching under `cache_root/<source>`.

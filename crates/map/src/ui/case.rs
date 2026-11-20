@@ -3798,21 +3798,16 @@ fn session(dir: &Path, prompt: &str) -> String {
 /// A ticket skill's SKILL.md: under `CELLWORKS_SKILLS`, else in this
 /// source tree.
 fn skill(name: &str) -> String {
-    let root = std::env::var_os("CELLWORKS_SKILLS")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.claude/skills"));
+    let root = cellworks_workspace::skills_folder().unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.claude/skills"));
     let path = root.join(name).join("SKILL.md");
     path.canonicalize().unwrap_or(path).display().to_string()
 }
 
-/// `$VISUAL` or `$EDITOR` when it names an editor with a window of its own;
+/// `$VISUAL`, `$EDITOR` or the `[editor] command` setting when it names an editor with a window of its own;
 /// a terminal editor cannot open one from here, so the system's default
 /// text editor opens the file instead.
 fn editor(file: &str, line: usize) -> (String, Command) {
-    let named = ["VISUAL", "EDITOR"]
-        .into_iter()
-        .filter_map(|name| std::env::var(name).ok())
-        .find(|value| !value.trim().is_empty());
+    let named = cellworks_workspace::editor_command();
     if let Some(value) = named {
         let mut words = value.split_whitespace();
         let program = words.next().unwrap_or_default().to_owned();
