@@ -397,7 +397,6 @@ fn readme_shots() {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs/assets"));
     let anim = out.join("anim");
-    let _ = std::fs::remove_dir_all(&anim);
     std::fs::create_dir_all(&anim).unwrap();
     let only_city = std::env::var("CELLWORKS_SHOTS_PART").is_ok_and(|p| p == "city");
     let mut h = start_sized(egui::vec2(1920.0, 1080.0));
@@ -452,7 +451,7 @@ fn readme_shots() {
     }
     // Import lanes for the whole city; call lanes for one selected tower
     // only, as a selection shows them: every call at once is too much.
-    film(
+    let cut = film(
         &mut h,
         &city.join("lanes-imports"),
         10,
@@ -464,6 +463,8 @@ fn readme_shots() {
             }
         },
     );
+    let path = city.join("lanes-imports-loop");
+    steady(&mut h, &path, cut, 16..=20, FILM_WIDTH, 64);
     back(&mut h, &["lanes imports"]);
     film(&mut h, &city.join("explorer"), 12, 1, Crop::Full, |h, i| {
         if i == 1 {
@@ -490,7 +491,7 @@ fn readme_shots() {
     });
     settle(&mut h);
     city_still(&mut h, &out, "flat.jpg", "");
-    film(
+    let cut = film(
         &mut h,
         &flat.join("belts"),
         10,
@@ -502,6 +503,8 @@ fn readme_shots() {
             }
         },
     );
+    let path = flat.join("belts-loop");
+    steady(&mut h, &path, cut, 16..=20, FILM_WIDTH, 64);
     settle(&mut h);
     city_still(&mut h, &out, "flat-belts.jpg", "");
     back(&mut h, &["lanes imports"]);
@@ -514,8 +517,7 @@ fn readme_shots() {
     back(&mut h, &[]);
     deselect(&mut h);
 
-    // The hero: the whole city, nothing selected, import lanes running as
-    // highways between the districts with their traffic, sessions at work.
+    // Import lanes with sessions at work, for the call lanes film below.
     script(
         &mut h,
         &[
@@ -528,9 +530,6 @@ fn readme_shots() {
         ],
     );
     settle(&mut h);
-    let frames_in_loop = hero_loop(&mut h, &anim.join("hero"));
-    println!("hero loop: {frames_in_loop} frames");
-    std::fs::copy(anim.join("hero/00.jpg"), out.join("city-lanes.jpg")).unwrap();
     // Call lanes for one selected tower, filmed from close over src.
     script(&mut h, &["frame src"]);
     settle(&mut h);
@@ -556,11 +555,13 @@ fn readme_shots() {
     h.event(egui::Event::PointerGone);
     settle(&mut h);
     let calls = city.join("lanes-calls");
-    film(&mut h, &calls, 10, 1, Crop::City("/src/"), |h, i| {
+    let cut = film(&mut h, &calls, 10, 1, Crop::City("/src/"), |h, i| {
         if i == 1 {
             drive(h, "lanes calls");
         }
     });
+    let path = city.join("lanes-calls-loop");
+    steady(&mut h, &path, cut, 16..=20, FILM_WIDTH, 64);
     back(&mut h, &["lanes calls"]);
     deselect(&mut h);
 
@@ -609,6 +610,48 @@ fn readme_shots() {
     }
     loop_shots(&mut h, &out, &anim.join("loop"));
     drop(h);
+}
+
+/// The site's hero and the README's overview: Cellworks' own repository as a
+/// city, whole, nothing selected, its import lanes running as highways
+/// between the crates with their traffic. The shop has too few imports
+/// between districts for that; Cellworks has plenty. Its main branch is
+/// exported into the private demo world, so no local path shows.
+/// TMPDIR=$(mktemp -d /tmp/cw.XXXX)/ cargo test --release --test demo_tour hero_shot -- --ignored --nocapture
+#[test]
+#[ignore]
+fn hero_shot() {
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let out = std::env::var("CELLWORKS_SHOTS_OUT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(manifest).join("docs/assets"));
+    let mut h = start_sized(egui::vec2(1920.0, 1080.0));
+    drive(&mut h, "tour-hide");
+    let repo = cellworks::demo::root().join("projects/cellworks");
+    std::fs::create_dir_all(&repo).unwrap();
+    let exported = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "git -C '{manifest}' archive --format=tar origin/main | tar -x -C '{}'",
+            repo.display()
+        ))
+        .status()
+        .expect("git archive");
+    assert!(exported.success(), "export of origin/main failed");
+    drive(&mut h, &format!("open {}", repo.display()));
+    let began = Instant::now();
+    while h.state().app.towers().is_empty() && began.elapsed() < Duration::from_secs(120) {
+        frames(&mut h, 500);
+    }
+    frames(&mut h, 3000);
+    drive(&mut h, "tree");
+    drive(&mut h, "bare on");
+    h.key_press(egui::Key::S);
+    script(&mut h, &["lanes imports", "fit"]);
+    settle(&mut h);
+    let n = hero_loop(&mut h, &out.join("anim/hero"));
+    println!("hero loop: {n} frames");
+    std::fs::copy(out.join("anim/hero/00.jpg"), out.join("city-lanes.jpg")).unwrap();
 }
 
 /// Every stage of SHOP-42, driven with the tour's own commands.
@@ -898,7 +941,7 @@ fn film(
     every: usize,
     crop: Crop,
     mut act: impl FnMut(&mut Harness<'_, State>, usize),
-) {
+) -> Option<[u32; 4]> {
     std::fs::create_dir_all(dir).unwrap();
     let mut shots = vec![grab(h)];
     let only = match crop {
@@ -932,23 +975,37 @@ fn film(
         );
     }
     println!("filmed {}", dir.display());
+    cut
 }
 
-/// The hero's loop in `dir`: the fitted city cut to its towers, filmed a
-/// frame per 0.1 s. Each lane's traffic runs on its own seeded period, so
-/// nothing repeats exactly; the loop ends where a frame comes closest to the
-/// first, which keeps the seam quiet. Returns the frame count.
+/// The hero's loop in `dir`: the fitted city cut to its towers, at 1600 px.
 fn hero_loop(h: &mut Harness<'_, State>, dir: &std::path::Path) -> usize {
+    // The district grounds and the staging node reach past the towers.
+    let cut = fit_crop(h, city_box(h, "").map(|r| r.expand(40.0)), 1200.0).or(FULL);
+    steady(h, dir, cut, 25..=28, 1600, 64)
+}
+
+/// A seamless loop of the scene as it stands, cut to `cut`: nothing moves
+/// but the traffic, filmed a frame per 0.1 s. Each lane's traffic runs on
+/// its own seeded period, so nothing repeats exactly; the loop ends, within
+/// `lengths`, where a frame comes closest to the first, which keeps the
+/// seam quiet. Returns the frame count.
+fn steady(
+    h: &mut Harness<'_, State>,
+    dir: &std::path::Path,
+    cut: Option<[u32; 4]>,
+    lengths: std::ops::RangeInclusive<usize>,
+    width: u32,
+    quality: u8,
+) -> usize {
     let mut shots = Vec::new();
-    for _ in 0..40 {
+    for _ in 0..=*lengths.end() {
         for _ in 0..2 {
             h.state_mut().app.apply_pending();
             h.step();
         }
         shots.push(grab(h));
     }
-    // The district grounds and the staging node reach past the towers.
-    let cut = fit_crop(h, city_box(h, "").map(|r| r.expand(40.0)), 1200.0).or(FULL);
     let apart = |a: &image::RgbaImage, b: &image::RgbaImage| -> u64 {
         a.as_raw()
             .iter()
@@ -957,13 +1014,21 @@ fn hero_loop(h: &mut Harness<'_, State>, dir: &std::path::Path) -> usize {
             .map(|(x, y)| u64::from(x.abs_diff(*y)))
             .sum()
     };
-    let len = (20..=32)
+    let len = lengths
         .min_by_key(|&k| apart(&shots[0], &shots[k]))
         .unwrap();
+    let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir).unwrap();
     for (i, shot) in shots[..len].iter().enumerate() {
-        keep(shot, &dir.join(format!("{i:02}.jpg")), cut, Some(1600), 64);
+        keep(
+            shot,
+            &dir.join(format!("{i:02}.jpg")),
+            cut,
+            Some(width),
+            quality,
+        );
     }
+    println!("looped {} in {len} frames", dir.display());
     len
 }
 
