@@ -43,8 +43,10 @@ process, never through a shell, and is treated as data.
   name. Follow-ups must go through `attach`, or the session must be stopped first and resumed with its name.
 - A child that inherits a host's Claude environment (for example when Cellworks is started from a Claude session)
   fails to authenticate, so the environment must be cleared explicitly.
-- Bash reads (`cat`, `grep`) are not file events. A session is seen only at the files it opens through Claude Code's
-  file tools.
+- A shell command is placed only by what it names: the first file or folder it mentions, `cd`, `git -C`, `--test`
+  and `-p`; otherwise at the project as a whole. What it actually reads or writes is not seen.
+- Newer transcripts also hold `api-request-blob` lines that replay earlier tool calls; only `assistant` and `user`
+  lines count.
 
 ### Neutral
 - Sessions often touch files outside their working directory. A session belongs to a project's city by the paths it
