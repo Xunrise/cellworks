@@ -42,7 +42,7 @@
       <p class="fine">MIT · macOS 13+ on Apple silicon · no server, no account, no telemetry</p>
     </div>
     <figure class="shot hero-shot">
-      <img src="assets/anim/hero/00.jpg" width="1600" height="894" data-film="hero" data-n="25" data-fps="10" alt="The whole demo shop as a city in Cellworks: import lanes run as highways between the districts with traffic moving along them, agent sessions writing" fetchpriority="high">
+      <img src="assets/anim/hero/00.jpg" width="1600" height="894" data-film="hero" data-n="27" data-fps="10" alt="The Cellworks repository itself as a city: its crates, tests and app source joined by import highways with traffic moving along them" fetchpriority="high">
       <button type="button" class="ctl hero-pause" aria-pressed="false">Pause</button>
     </figure>
   </div>
@@ -174,8 +174,8 @@
           <button type="button" class="key" data-key="l" data-film="city/cells" data-n="15" data-fps="12" data-caption="Cells lens: districts are the bounded contexts of the domain model.">cells</button>
           <button type="button" class="key" data-key="l" data-reset data-caption="Folders lens: districts are folders, blocks are files.">folders</button>
           <span class="group-label">lanes</span>
-          <button type="button" class="key" data-key="g" data-film="city/lanes-imports" data-n="10" data-fps="20" data-caption="Import lanes: imports between files, along the ground; traffic runs downstream."><kbd>G</kbd> imports</button>
-          <button type="button" class="key" data-key="a" data-film="city/lanes-calls" data-n="10" data-fps="20" data-caption="Call lanes, for the selected tower: from its lines to the functions they call, through the air."><kbd>A</kbd> calls</button>
+          <button type="button" class="key" data-key="g" data-film="city/lanes-imports" data-n="10" data-fps="20" data-steady="city/lanes-imports-loop" data-steady-n="19" data-caption="Import lanes: imports between files, along the ground; traffic runs downstream."><kbd>G</kbd> imports</button>
+          <button type="button" class="key" data-key="a" data-film="city/lanes-calls" data-n="10" data-fps="20" data-steady="city/lanes-calls-loop" data-steady-n="20" data-caption="Call lanes, for the selected tower: from its lines to the functions they call, through the air."><kbd>A</kbd> calls</button>
           <span class="group-label">move</span>
           <button type="button" class="key" data-key="enter" data-film="city/zoom city/inside" data-n="14 14" data-fps="20" data-caption="Enter layers in: the camera flies to the cart district, then steps inside a tower to read it floor by floor."><kbd>Enter</kbd> in</button>
           <button type="button" class="key" data-key="u" data-film="city/zoom city/underground" data-n="14 3" data-fps="20" data-caption="U goes underground: the cellar comes within reach and the city above steps back."><kbd>U</kbd> under</button>
@@ -198,7 +198,7 @@
         <p class="dim">The flat view lays the same project out as a floor plan seen from straight above: halls for folders, machines for files, belts for lanes. Selection, Explorer and panels carry over, and every project remembers which view you left it in.</p>
         <div class="keycaps" role="group" aria-label="Flat view actions">
           <button type="button" class="key" data-key="v" data-film="flat/view" data-n="4" data-fps="6" data-caption="V flips the city to the flat factory floor."><kbd>V</kbd> city ↔ flat</button>
-          <button type="button" class="key" data-key="g" data-film="flat/belts" data-n="10" data-fps="20" data-caption="Import lanes become belts between the machines."><kbd>G</kbd> belts</button>
+          <button type="button" class="key" data-key="g" data-film="flat/belts" data-n="10" data-fps="20" data-steady="flat/belts-loop" data-steady-n="19" data-caption="Import lanes become belts between the machines."><kbd>G</kbd> belts</button>
           <button type="button" class="key" data-key="enter" data-film="flat/zoom" data-n="14" data-fps="20" data-caption="Enter flies to the cart hall and its machines."><kbd>Enter</kbd> in</button>
           <button type="button" class="key" data-key="f" data-reset data-caption="F fits the whole floor."><kbd>F</kbd> fit</button>
         </div>

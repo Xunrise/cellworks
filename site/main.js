@@ -55,8 +55,11 @@ const preload = (urls) => urls.forEach((u) => {
   cache.set(u, img);
 });
 
-// Plays `urls` on `img` at `fps`; resolves when done or superseded.
-const play = (img, urls, fps) => {
+// Plays `urls` on `img` at `fps`; resolves when done or superseded. With
+// `loop` it starts over after the last frame until superseded: a steady
+// state's loop is filmed to close on its first frame. While `img.paused` is
+// set it waits on the frame it shows.
+const play = (img, urls, fps, loop = false) => {
   const token = (img.playing = {});
   preload(urls);
   if (reduce || urls.length < 2) {
@@ -67,9 +70,13 @@ const play = (img, urls, fps) => {
     let i = 0;
     const tick = () => {
       if (img.playing !== token) return done();
+      if (img.paused) return setTimeout(tick, 200);
       img.src = urls[i];
       if (++i < urls.length) setTimeout(tick, 1000 / fps);
-      else done();
+      else if (loop) {
+        i = 0;
+        setTimeout(tick, 1000 / fps);
+      } else done();
     };
     tick();
   });
@@ -138,7 +145,13 @@ rows.forEach((row) => {
       return;
     }
     current = key;
+    // The change once, then its steady state (lanes with their traffic)
+    // for as long as it is picked.
     await play(img, frameUrls(key), fps);
+    if (key.dataset.steady && mine === seq) {
+      const loop = { dataset: { film: key.dataset.steady, n: key.dataset.steadyN } };
+      play(img, frameUrls(loop), 10, true);
+    }
   };
 
   keys.forEach((k) => {
@@ -155,8 +168,14 @@ rows.forEach((row) => {
   };
 
   new IntersectionObserver((entries) => entries.forEach((e) => {
-    if (e.isIntersecting) keys.forEach((k) => preload(frameUrls(k)));
+    if (!e.isIntersecting) return;
+    keys.forEach((k) => {
+      preload(frameUrls(k));
+      if (k.dataset.steady) preload(frameUrls({ dataset: { film: k.dataset.steady, n: k.dataset.steadyN } }));
+    });
   }), { rootMargin: "300px" }).observe(row);
+  // A film rests only while its picture is wholly off screen.
+  new IntersectionObserver(([e]) => (img.paused = !e.isIntersecting)).observe(img);
 });
 
 // The row most in view takes the keyboard.
@@ -241,6 +260,8 @@ if (loop && !reduce) {
   const sync = () => {
     clearTimeout(timer);
     const go = runs(st);
+    // Pause holds the step's film too; scrolling never does.
+    steps.forEach((s) => (s.querySelector("img").paused = st.paused || !st.visible));
     bar.classList.toggle("held", !go);
     if (go) {
       since = Date.now();
@@ -253,6 +274,10 @@ if (loop && !reduce) {
 
   function show(i) {
     at = i;
+    // The film of the step left stops; a step shown again plays from the start.
+    steps.forEach((s, k) => {
+      if (k !== i) s.querySelector("img").playing = {};
+    });
     steps.forEach((s, k) => s.classList.toggle("on", k === i));
     buttons.forEach((b, k) => {
       b.classList.toggle("done", k < i);
@@ -268,7 +293,7 @@ if (loop && !reduce) {
     img.dataset.still = still;
     if (step.dataset.film && !st.paused) {
       play(img, frameUrls(step), Number(step.dataset.fps) || 10).then(() => {
-        if (steps[at] === step && !st.paused) img.src = still;
+        if (steps[at] === step) img.src = still;
       });
     }
     // Warm the next step.
@@ -293,23 +318,29 @@ if (loop && !reduce) {
       st.forced = !st.paused;
       pauseBtn.setAttribute("aria-pressed", String(st.paused));
       pauseBtn.textContent = st.paused ? "Play" : "Pause";
-      if (st.paused) steps[at].querySelector("img").playing = {};
       sync();
     }
   });
-  // Hover or focus holds the step; leaving lets it run on.
-  loop.addEventListener("mouseenter", () => { st.hover = true; sync(); });
-  loop.addEventListener("mouseleave", () => { st.hover = st.forced = false; sync(); });
+  // Hovering the stage strip or the controls holds the step; the rest of the
+  // section passes under the pointer while scrolling, so it does not.
+  [strip, controls].forEach((el) => {
+    el.addEventListener("mouseenter", () => { st.hover = true; sync(); });
+    el.addEventListener("mouseleave", () => { st.hover = st.forced = false; sync(); });
+  });
   loop.addEventListener("focusin", () => { st.focus = true; sync(); });
   loop.addEventListener("focusout", (e) => {
     if (!loop.contains(e.relatedTarget)) { st.focus = st.forced = false; sync(); }
   });
   // Only run while the section is on screen.
+  // It rests only once (almost) all of it has scrolled away, and picks up
+  // the same step and progress when it is back.
   new IntersectionObserver(([e]) => {
-    st.visible = e.isIntersecting;
-    if (st.visible && steps[0].dataset.film) preload(frameUrls(steps[0]));
+    const visible = e.intersectionRatio >= 0.1;
+    if (visible === st.visible) return;
+    st.visible = visible;
+    if (visible && steps[0].dataset.film) preload(frameUrls(steps[0]));
     sync();
-  }, { threshold: 0.25 }).observe(loop);
+  }, { threshold: [0, 0.1] }).observe(loop);
 
   show(0);
 }
