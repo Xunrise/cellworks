@@ -54,6 +54,9 @@ first open (moved into the repo's `.work/` when the case names a repository, kep
   through Cockpit's API, and so does wishlang (problems, coverage). External trackers are reached through Cockpit.
 - **Without Cockpit**: Cellworks keeps its direct Jira, GitHub and Linear adapters and the `.work/` folder, so tickets,
   cases and problems work. Session claims and the cross-repo view are the features Cockpit adds.
+- **Send to Cockpit**: a Jira, GitHub or Linear row in the Tickets panel has a "→ Cockpit" action that calls the hub's
+  `ticket.pull` with `<source>:<key>`, and `ticket.mirror` with the data Cellworks holds when the hub lacks the tracker's
+  sign-in. Rows already mirrored (`ticket.list` `ref`) show "IN COCKPIT"; with no hub the action is disabled.
 - **Onboarding**: the Cellworks settings window detects Cockpit. When it is missing it offers one step to install and
   start it, and then hands over: the direct adapters' sign-ins and caches are imported into Cockpit, and Cellworks
   switches to the hub.
